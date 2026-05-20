@@ -2,10 +2,13 @@ defmodule ExAthena.Chat.Repl do
   @moduledoc """
   Interactive REPL driver for `mix athena.chat`.
 
-  Sets up `Owl.LiveScreen` with a pinned status block, reads input lines
-  from stdin, dispatches slash commands, and routes free-form prompts through
-  `ExAthena.run/2` while streaming tokens, tool calls, and tool results to the
-  terminal via `ExAthena.Chat.Renderer`.
+  Reads input lines from stdin, dispatches slash commands, and routes
+  free-form prompts through `ExAthena.run/2` while streaming tokens, tool
+  calls, and tool results to the terminal via `ExAthena.Chat.Renderer`.
+
+  Each turn ends with a single-line dim status footer (model · mode · iter
+  · tokens · cost) — so the most recent stats are always the last line
+  before the next prompt.
 
   Thin glue around the pure modules; manual smoke-test only.
   """
@@ -19,22 +22,17 @@ defmodule ExAthena.Chat.Repl do
   def start(opts \\ []) do
     # Silence routine adapter chatter (`[info] [ExAthena.ReqLLM] →stream …`,
     # `←done …`, debug text_delta breadcrumbs) so the chat shows just the
-    # prompt, response, and pinned status block. `:warning` keeps real
+    # prompt, response, and per-turn status line. `:warning` keeps real
     # errors like `←error …` visible.
     prior_log_level = Logger.level()
     Logger.configure(level: :warning)
 
     try do
-      {:ok, _pid} = ensure_live_screen_started()
-      Owl.LiveScreen.add_block(:status, render: &render_status_block/1)
-
       session = opts |> Session.new() |> reconcile_model_with_ollama()
-      update_status(session)
       print_banner(session)
 
       loop(session)
     after
-      Owl.LiveScreen.flush()
       Logger.configure(level: prior_log_level)
     end
   end
@@ -110,8 +108,7 @@ defmodule ExAthena.Chat.Repl do
   def select_initial_model(_desired, {:error, reason}), do: {:error, reason}
 
   defp loop(session) do
-    Owl.LiveScreen.await_render()
-    input = Owl.IO.input(label: prompt_label(session))
+    input = read_prompt(session)
 
     case Commands.parse(input) do
       :exit ->
@@ -139,13 +136,15 @@ defmodule ExAthena.Chat.Repl do
 
   defp handle_message(session, text) do
     session = Session.append_user(session, text)
-    callback = build_event_callback(session)
+    IO.write(Owl.Data.to_chardata(Renderer.assistant_prefix(session.model)))
+
+    callback = build_event_callback()
     run_opts = build_run_opts(session, callback)
 
     case ExAthena.run(nil, run_opts) do
       {:ok, result} ->
         new_session = Session.apply_result(session, result)
-        update_status(new_session)
+        print_status(new_session)
         new_session
 
       {:error, reason} ->
@@ -181,26 +180,8 @@ defmodule ExAthena.Chat.Repl do
     end
   end
 
-  defp build_event_callback(session) do
-    fn event ->
-      Renderer.render_event(event)
-
-      case event do
-        {:iteration, n} ->
-          update_status(%{session | iteration: n})
-
-        {:usage, u} when is_map(u) ->
-          merged = %{
-            input_tokens: session.usage.input_tokens + Map.get(u, :input_tokens, 0),
-            output_tokens: session.usage.output_tokens + Map.get(u, :output_tokens, 0)
-          }
-
-          update_status(%{session | usage: merged})
-
-        _ ->
-          :ok
-      end
-    end
+  defp build_event_callback do
+    &Renderer.render_event/1
   end
 
   defp handle_command(session, :help, _) do
@@ -211,7 +192,6 @@ defmodule ExAthena.Chat.Repl do
   defp handle_command(session, :clear, _) do
     cleared = Session.clear_messages(session)
     Owl.IO.puts(Owl.Data.tag("History cleared.", :light_black))
-    update_status(cleared)
     cleared
   end
 
@@ -231,7 +211,6 @@ defmodule ExAthena.Chat.Repl do
       {:ok, mode} ->
         new = Session.set_mode(session, mode)
         Owl.IO.puts(Owl.Data.tag("Mode → #{inspect(mode)}", :light_black))
-        update_status(new)
         new
 
       :error ->
@@ -248,7 +227,6 @@ defmodule ExAthena.Chat.Repl do
       mode ->
         new = Session.set_mode(session, mode)
         Owl.IO.puts(Owl.Data.tag("Mode → #{inspect(mode)}", :light_black))
-        update_status(new)
         new
     end
   end
@@ -256,7 +234,6 @@ defmodule ExAthena.Chat.Repl do
   defp handle_command(session, :model, [arg | _]) when is_binary(arg) do
     new = Session.set_model(session, arg)
     Owl.IO.puts(Owl.Data.tag("Model → #{arg}", :light_black))
-    update_status(new)
     new
   end
 
@@ -280,7 +257,6 @@ defmodule ExAthena.Chat.Repl do
           chosen ->
             new = Session.set_model(session, chosen)
             Owl.IO.puts(Owl.Data.tag("Model → #{chosen}", :light_black))
-            update_status(new)
             new
         end
 
@@ -307,8 +283,16 @@ defmodule ExAthena.Chat.Repl do
     ArgumentError -> :error
   end
 
-  defp prompt_label(session) do
-    "[#{session.model} | #{inspect(session.mode)}] you"
+  defp read_prompt(session) do
+    case IO.gets(Owl.Data.to_chardata(prompt_label(session))) do
+      :eof -> :eof
+      {:error, _} -> :eof
+      line when is_binary(line) -> String.trim_trailing(line, "\n")
+    end
+  end
+
+  defp prompt_label(_session) do
+    Owl.Data.tag("me ▸ ", [:green, :bright])
   end
 
   defp print_banner(session) do
@@ -326,27 +310,15 @@ defmodule ExAthena.Chat.Repl do
     )
   end
 
-  defp update_status(session) do
-    Owl.LiveScreen.update(:status, session_to_status(session))
-  end
-
-  defp session_to_status(session) do
-    %{
-      model: session.model,
-      mode: session.mode,
-      iteration: session.iteration,
-      usage: session.usage,
-      cost_usd: session.cost_usd
-    }
-  end
-
-  defp render_status_block(nil), do: ""
-  defp render_status_block(state) when is_map(state), do: Renderer.status_text(state)
-
-  defp ensure_live_screen_started do
-    case Process.whereis(Owl.LiveScreen) do
-      nil -> Owl.LiveScreen.start_link([])
-      pid -> {:ok, pid}
-    end
+  defp print_status(session) do
+    Owl.IO.puts(
+      Renderer.status_text(%{
+        model: session.model,
+        mode: session.mode,
+        iteration: session.iteration,
+        usage: session.usage,
+        cost_usd: session.cost_usd
+      })
+    )
   end
 end

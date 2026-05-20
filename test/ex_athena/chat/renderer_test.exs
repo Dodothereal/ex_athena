@@ -89,7 +89,7 @@ defmodule ExAthena.Chat.RendererTest do
   end
 
   describe "status_text/1" do
-    test "renders a single-line status with model, mode, iteration, tokens, cost" do
+    test "renders a single-line status with model, mode, iteration, tokens, cost separated by ·" do
       status = %{
         model: "llama3.1",
         mode: :react,
@@ -107,10 +107,25 @@ defmodule ExAthena.Chat.RendererTest do
 
       assert text =~ "llama3.1"
       assert text =~ "react"
-      assert text =~ "3"
-      assert text =~ "120"
-      assert text =~ "45"
-      assert text =~ "0.0042"
+      assert text =~ "iter=3"
+      assert text =~ "120/45 tok"
+      assert text =~ "$0.0042"
+      # Fields separated by middle-dot for readability
+      assert text =~ " · "
+    end
+  end
+
+  describe "assistant_prefix/1" do
+    test "returns a styled prefix containing the model name and a ▸ arrow" do
+      text =
+        "qwen3.5:latest"
+        |> Renderer.assistant_prefix()
+        |> Owl.Data.to_chardata()
+        |> IO.iodata_to_binary()
+        |> strip_ansi()
+
+      assert text =~ "qwen3.5:latest"
+      assert text =~ "▸"
     end
   end
 

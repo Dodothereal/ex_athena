@@ -61,6 +61,10 @@ defmodule ExAthena.Chat.Renderer do
   @doc """
   Build iodata for the pinned `Owl.LiveScreen` status block.
 
+  Renders a single dim line with `·` separators between fields:
+
+      qwen3.5:latest · :react · iter=1 · 120/45 tok · $0.0042
+
   Accepts a status map with `:model`, `:mode`, `:iteration`, `:usage`, and
   `:cost_usd` keys.
   """
@@ -68,21 +72,31 @@ defmodule ExAthena.Chat.Renderer do
   def status_text(%{model: model, mode: mode, iteration: iter, usage: usage, cost_usd: cost}) do
     Owl.Data.tag(
       [
-        "model=",
         to_string(model),
-        "  mode=",
+        " · ",
         inspect(mode),
-        "  iter=",
+        " · iter=",
         Integer.to_string(iter),
-        "  tokens=",
+        " · ",
         Integer.to_string(Map.get(usage, :input_tokens, 0)),
         "/",
         Integer.to_string(Map.get(usage, :output_tokens, 0)),
-        "  $",
+        " tok · $",
         :erlang.float_to_binary(cost / 1.0, decimals: 4)
       ],
       :light_black
     )
+  end
+
+  @doc """
+  Build iodata for the per-turn assistant prefix line.
+
+  Printed just before the model's streamed output, so it's clear which side
+  of the conversation is speaking. Styled bold cyan.
+  """
+  @spec assistant_prefix(String.t()) :: IO.chardata()
+  def assistant_prefix(model) when is_binary(model) do
+    Owl.Data.tag([model, " ▸ "], [:cyan, :bright])
   end
 
   defp preview_args(args) when is_map(args) and map_size(args) == 0, do: ""
