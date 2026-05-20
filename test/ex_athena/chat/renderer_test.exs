@@ -43,6 +43,32 @@ defmodule ExAthena.Chat.RendererTest do
       assert stripped =~ "boom"
     end
 
+    test ":tool_result with multi-line content shows first line and total line count" do
+      content = "exit 0\nCHANGELOG.md\nLICENSE\nREADME.md\n_build/"
+      tr = %ToolResult{tool_call_id: "1", content: content, is_error: false}
+
+      output = capture_io(fn -> Renderer.render_event({:tool_result, tr}) end)
+
+      stripped = strip_ansi(output)
+      assert stripped =~ "← exit 0"
+      assert stripped =~ "5 lines"
+      # Subsequent lines collapse into the count — no raw newlines in the preview.
+      refute stripped =~ "CHANGELOG.md"
+      refute stripped =~ "LICENSE"
+      # The whole event still renders on a single terminal line.
+      assert length(String.split(String.trim(stripped), "\n")) == 1
+    end
+
+    test ":tool_result with single-line content omits the line count" do
+      tr = %ToolResult{tool_call_id: "1", content: "ok", is_error: false}
+
+      output = capture_io(fn -> Renderer.render_event({:tool_result, tr}) end)
+
+      stripped = strip_ansi(output)
+      assert stripped =~ "← ok"
+      refute stripped =~ "lines"
+    end
+
     test ":tool_result truncates very long previews" do
       long = String.duplicate("x", 1_000)
       tr = %ToolResult{tool_call_id: "1", content: long, is_error: false}

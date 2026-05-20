@@ -26,8 +26,7 @@ defmodule ExAthena.Chat.Renderer do
 
   def render_event({:tool_result, %ToolResult{content: content, is_error: is_error}}) do
     color = if is_error, do: :red, else: :light_black
-    preview = content |> to_string() |> truncate(@preview_chars)
-    Owl.IO.puts(Owl.Data.tag("← #{preview}", color))
+    Owl.IO.puts(Owl.Data.tag("← #{summarize_result(content)}", color))
   end
 
   def render_event({:tool_ui, _payload}), do: :ok
@@ -116,6 +115,17 @@ defmodule ExAthena.Chat.Renderer do
   @spec assistant_prefix(String.t()) :: IO.chardata()
   def assistant_prefix(model) when is_binary(model) do
     Owl.Data.tag([model, " ▸ "], [:cyan, :bright])
+  end
+
+  defp summarize_result(content) do
+    text = content |> to_string() |> String.trim_trailing("\n")
+    lines = String.split(text, "\n")
+    first_line = lines |> List.first("") |> truncate(@preview_chars)
+
+    case length(lines) do
+      1 -> first_line
+      n -> "#{first_line} · #{n} lines"
+    end
   end
 
   defp preview_args(args) when is_map(args) and map_size(args) == 0, do: ""
