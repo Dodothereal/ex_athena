@@ -25,3 +25,4 @@ ex_athena-*.tar
 .artifacts/*
 !.artifacts/adr-*.md
 .claude/
+.exathena/
