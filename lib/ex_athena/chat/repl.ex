@@ -14,6 +14,7 @@ defmodule ExAthena.Chat.Repl do
   """
 
   alias ExAthena.Chat.{Commands, Ollama, Renderer, Session}
+  alias ExAthena.Messages.ToolResult
   alias ExAthena.Tools
 
   @modes [:react, :plan_and_solve, :reflexion]
@@ -228,6 +229,27 @@ defmodule ExAthena.Chat.Repl do
     cleared
   end
 
+  defp handle_command(session, :expand, args) do
+    results = Session.tool_results(session)
+    total = length(results)
+    n = parse_expand_index(args)
+
+    case Enum.at(results, n - 1) do
+      nil ->
+        Owl.IO.puts(
+          Owl.Data.tag(
+            "No tool result at position #{n} (total: #{total}).",
+            :yellow
+          )
+        )
+
+      %ToolResult{} = result ->
+        print_expanded(n, total, result)
+    end
+
+    session
+  end
+
   defp handle_command(session, :tools, _) do
     Owl.IO.puts(Owl.Data.tag("Tools available:", :light_black))
 
@@ -314,6 +336,25 @@ defmodule ExAthena.Chat.Repl do
     if candidate in @modes, do: {:ok, candidate}, else: :error
   rescue
     ArgumentError -> :error
+  end
+
+  defp parse_expand_index([]), do: 1
+
+  defp parse_expand_index([arg | _]) when is_binary(arg) do
+    case Integer.parse(arg) do
+      {n, ""} when n > 0 -> n
+      _ -> 1
+    end
+  end
+
+  defp print_expanded(n, total, %ToolResult{content: content, is_error: is_error}) do
+    header_color = if is_error, do: :red, else: :cyan
+    header = "▼ tool result #{n}/#{total}"
+    footer = "▲ /expand"
+
+    Owl.IO.puts(Owl.Data.tag(header, header_color))
+    IO.puts(to_string(content))
+    Owl.IO.puts(Owl.Data.tag(footer, :light_black))
   end
 
   defp read_prompt(session) do

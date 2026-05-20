@@ -28,6 +28,7 @@ defmodule ExAthena.Chat.Commands do
     "mode" => :mode,
     "tools" => :tools,
     "clear" => :clear,
+    "expand" => :expand,
     "help" => :help,
     "?" => :help
   }
@@ -66,6 +67,7 @@ defmodule ExAthena.Chat.Commands do
       /mode  [name]    switch runner mode (react, plan_and_solve, reflexion)
       /tools           list the tools currently available to the agent
       /clear           wipe the conversation history
+      /expand [N]      show the Nth-most-recent tool result in full (default 1)
       /help, /?        show this help
       /exit, /quit, /q leave the chat
     Anything else is sent to the agent as a user message.

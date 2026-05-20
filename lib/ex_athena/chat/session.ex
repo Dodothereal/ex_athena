@@ -8,7 +8,7 @@ defmodule ExAthena.Chat.Session do
   """
 
   alias ExAthena.Messages
-  alias ExAthena.Messages.Message
+  alias ExAthena.Messages.{Message, ToolResult}
   alias ExAthena.Result
 
   @default_model "llama3.1"
@@ -72,6 +72,22 @@ defmodule ExAthena.Chat.Session do
   @spec set_mode(t(), atom()) :: t()
   def set_mode(%__MODULE__{} = session, mode) when is_atom(mode) do
     %{session | mode: mode}
+  end
+
+  @doc """
+  Extract every `ToolResult` from the session's message history, ordered
+  most-recent first.
+
+  Used by `/expand` in the REPL so the user can reference recent tool
+  outputs by position (`/expand 1` for the latest, `/expand 2` for the
+  one before, etc.).
+  """
+  @spec tool_results(t()) :: [ToolResult.t()]
+  def tool_results(%__MODULE__{messages: messages}) do
+    messages
+    |> Enum.filter(&(&1.role == :tool))
+    |> Enum.flat_map(&(&1.tool_results || []))
+    |> Enum.reverse()
   end
 
   @spec apply_result(t(), Result.t()) :: t()

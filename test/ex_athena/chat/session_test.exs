@@ -2,7 +2,8 @@ defmodule ExAthena.Chat.SessionTest do
   use ExUnit.Case, async: false
 
   alias ExAthena.Chat.Session
-  alias ExAthena.Messages.Message
+  alias ExAthena.Messages
+  alias ExAthena.Messages.{Message, ToolCall, ToolResult}
   alias ExAthena.Result
 
   setup do
@@ -172,6 +173,39 @@ defmodule ExAthena.Chat.SessionTest do
 
       assert updated.usage == %{input_tokens: 0, output_tokens: 0}
       assert updated.cost_usd == 0.0
+    end
+  end
+
+  describe "tool_results/1" do
+    test "extracts ToolResult structs in most-recent-first order" do
+      first = %ToolResult{tool_call_id: "1", content: "first", is_error: false}
+      second = %ToolResult{tool_call_id: "2", content: "second", is_error: false}
+
+      session = %Session{
+        messages: [
+          Messages.user("hi"),
+          Messages.assistant("calling…", [
+            %ToolCall{id: "1", name: "bash", arguments: %{}}
+          ]),
+          %Message{role: :tool, tool_results: [first]},
+          Messages.assistant("again…", [
+            %ToolCall{id: "2", name: "read", arguments: %{}}
+          ]),
+          %Message{role: :tool, tool_results: [second]}
+        ]
+      }
+
+      assert Session.tool_results(session) == [second, first]
+    end
+
+    test "returns an empty list when no tool messages exist" do
+      session = %Session{messages: [Messages.user("hi"), Messages.assistant("hello")]}
+      assert Session.tool_results(session) == []
+    end
+
+    test "skips tool messages whose tool_results field is nil" do
+      session = %Session{messages: [%Message{role: :tool, tool_results: nil}]}
+      assert Session.tool_results(session) == []
     end
   end
 end

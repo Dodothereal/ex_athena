@@ -54,6 +54,14 @@ defmodule ExAthena.Chat.CommandsTest do
       assert Commands.parse("/clear") == {:command, :clear, []}
     end
 
+    test "parses /expand with no args (latest tool result)" do
+      assert Commands.parse("/expand") == {:command, :expand, []}
+    end
+
+    test "parses /expand N with a numeric position" do
+      assert Commands.parse("/expand 3") == {:command, :expand, ["3"]}
+    end
+
     test "parses /help and /?" do
       assert Commands.parse("/help") == {:command, :help, []}
       assert Commands.parse("/?") == {:command, :help, []}
@@ -74,7 +82,7 @@ defmodule ExAthena.Chat.CommandsTest do
     test "lists every slash command with a one-line description" do
       text = Commands.help_text()
 
-      for verb <- ~w(/model /mode /tools /clear /help /exit) do
+      for verb <- ~w(/model /mode /tools /clear /expand /help /exit) do
         assert text =~ verb, "expected help text to mention #{verb}"
       end
     end
