@@ -436,18 +436,29 @@ defmodule ExAthena.Providers.ReqLLM do
 
     text = final.text |> Enum.reverse() |> IO.iodata_to_binary()
 
-    # Diagnostics: log when tool calls arrive with empty arguments so we can
-    # see the buffer state and text content to understand the streaming format.
+    # Log the resolved tool calls. Warn when args are still empty after patching
+    # (means neither fragments nor raw_arguments provided usable JSON).
     if Enum.any?(tool_calls, fn tc ->
          args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
          args == %{} or is_nil(args)
        end) do
       Logger.warning(
-        "#{@log_prefix} [diag] tool_call with empty args — " <>
+        "#{@log_prefix} [diag] tool_call with empty args after patching — " <>
           "buffer=#{inspect(final.tool_call_args_buffer)} " <>
           "text_snippet=#{preview(text, 200)} " <>
           "calls=#{inspect(Enum.map(tool_calls, fn tc -> {Map.get(tc, :name) || (is_struct(tc) && tc.name), Map.get(tc, :arguments) || (is_struct(tc) && tc.arguments)} end))}"
       )
+    else
+      Logger.debug(fn ->
+        calls_preview =
+          Enum.map_join(tool_calls, ", ", fn tc ->
+            name = if is_struct(tc), do: tc.name, else: Map.get(tc, :name)
+            args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
+            "#{name}(#{inspect(args, limit: 5, printable_limit: 200)})"
+          end)
+
+        "#{@log_prefix} ←tool_calls_resolved #{calls_preview}"
+      end)
     end
 
     %Response{
@@ -585,8 +596,10 @@ defmodule ExAthena.Providers.ReqLLM do
     Logger.debug(fn ->
       name = Map.get(tc, :name) || Map.get(tc, "name") || "<unknown>"
       args = Map.get(tc, :arguments) || Map.get(tc, "arguments") || %{}
+      index = tc.metadata && (Map.get(tc.metadata, :index) || Map.get(tc.metadata, "index"))
+      suffix = if args == %{}, do: " (args pending fragments; index=#{inspect(index)})", else: ""
 
-      "#{@log_prefix} ←tool_call name=#{inspect(name)} args=#{inspect(args, limit: 3, printable_limit: 200)}"
+      "#{@log_prefix} ←tool_call name=#{inspect(name)} args=#{inspect(args, limit: 3, printable_limit: 200)}#{suffix}"
     end)
 
     %{acc | tool_calls: acc.tool_calls ++ [tc]}
@@ -600,6 +613,12 @@ defmodule ExAthena.Providers.ReqLLM do
          acc
        ) do
     updated = Map.update(acc.tool_call_args_buffer, index, frag, &(&1 <> frag))
+
+    Logger.debug(fn ->
+      total = byte_size(Map.get(updated, index, ""))
+      "#{@log_prefix} ←tool_call_args_frag index=#{index} +#{byte_size(frag)}B (buf total #{total}B)"
+    end)
+
     %{acc | tool_call_args_buffer: updated}
   end
 
