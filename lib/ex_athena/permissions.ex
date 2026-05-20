@@ -107,6 +107,7 @@ defmodule ExAthena.Permissions do
   @type result ::
           :allow
           | {:deny, Denial.t()}
+          | {:halt, term()}
 
   @type opts :: %{
           optional(:phase) => ToolContext.phase(),
@@ -117,8 +118,9 @@ defmodule ExAthena.Permissions do
         }
 
   @doc """
-  Check whether `tool_call` is allowed under `opts`. Returns `:allow` or
-  `{:deny, %ExAthena.Permissions.Denial{}}`.
+  Check whether `tool_call` is allowed under `opts`. Returns `:allow`,
+  `{:deny, %ExAthena.Permissions.Denial{}}`, or `{:halt, reason}` when the
+  `can_use_tool` callback requests a hard stop.
   """
   @spec check(ToolCall.t(), ToolContext.t(), opts()) :: result()
   def check(%ToolCall{name: name, arguments: args}, %ToolContext{} = ctx, opts) do
@@ -239,6 +241,9 @@ defmodule ExAthena.Permissions do
 
   defp normalize({:deny, reason}),
     do: {:deny, %Denial{code: :user_denied, reason: inspect(reason), metadata: %{raw: reason}}}
+
+  defp normalize(:halt), do: {:halt, :halt}
+  defp normalize({:halt, _} = halt), do: halt
 
   defp normalize(other),
     do:
