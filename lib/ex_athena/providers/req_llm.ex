@@ -461,9 +461,13 @@ defmodule ExAthena.Providers.ReqLLM do
   end
 
   # Merge accumulated argument fragments back into each tool call.
-  # Only runs when llama.cpp (or another strict OpenAI client) actually
-  # streamed argument deltas — buffer is empty for Ollama.
-  defp patch_tool_call_args(tool_calls, buffer) when map_size(buffer) == 0, do: tool_calls
+  # Handles two llama.cpp streaming quirks:
+  # 1. Args split across the initial chunk (raw_arguments in metadata) and later
+  #    fragment deltas (accumulated in the buffer) — combine before decoding.
+  # 2. Args streamed without the opening `{` — reconstruct by prepending it.
+  defp patch_tool_call_args(tool_calls, buffer) when map_size(buffer) == 0 do
+    Enum.map(tool_calls, &patch_from_raw_arguments/1)
+  end
 
   defp patch_tool_call_args(tool_calls, buffer) do
     Enum.map(tool_calls, fn tc ->
@@ -471,24 +475,36 @@ defmodule ExAthena.Providers.ReqLLM do
 
       case index && Map.get(buffer, index) do
         nil ->
-          tc
+          patch_from_raw_arguments(tc)
 
         accumulated ->
-          case Jason.decode(accumulated) do
-            {:ok, decoded} ->
-              %{tc | arguments: decoded}
-
-            {:error, _reason} ->
-              case try_wrap_accumulated(accumulated) do
-                {:ok, decoded} ->
-                  %{tc | arguments: decoded}
-
-                :error ->
-                  tc
-              end
-          end
+          # Prepend any partial prefix sent in the initial chunk before the fragments.
+          raw_prefix = (tc.metadata && Map.get(tc.metadata, :raw_arguments)) || ""
+          try_decode_accumulated(raw_prefix <> accumulated, tc)
       end
     end)
+  end
+
+  # When there's no buffer entry, try the raw_arguments from the initial chunk
+  # (covers cases where llama.cpp sends complete-but-malformed JSON in one shot).
+  defp patch_from_raw_arguments(tc) do
+    case tc.metadata && Map.get(tc.metadata, :raw_arguments) do
+      raw when is_binary(raw) and raw != "" -> try_decode_accumulated(raw, tc)
+      _ -> tc
+    end
+  end
+
+  defp try_decode_accumulated(accumulated, tc) do
+    case Jason.decode(accumulated) do
+      {:ok, decoded} when is_map(decoded) ->
+        %{tc | arguments: decoded}
+
+      _ ->
+        case try_wrap_accumulated(accumulated) do
+          {:ok, decoded} -> %{tc | arguments: decoded}
+          :error -> tc
+        end
+    end
   end
 
   defp try_wrap_accumulated(accumulated) do
@@ -496,15 +512,10 @@ defmodule ExAthena.Providers.ReqLLM do
       String.starts_with?(accumulated, "{") ->
         Jason.decode(accumulated)
 
-      String.starts_with?(accumulated, "\"") and String.ends_with?(accumulated, "\"}") ->
-        # llama.cpp streams arguments without opening `{` and with extra leading `"`
-        # accumulated: "\"path\":\"/home/...\"}" → content: "path":"/home/...\"}"
-        # strip leading `"` and trailing `}` → path":"/home/..."
-        # prepend `{"` and append `}` → {"path":"/home/..."}
-        stripped = String.slice(accumulated, 1..-2//1)
-        candidate = "{\"#{stripped}}"
-
-        case Jason.decode(candidate) do
+      String.starts_with?(accumulated, "\"") ->
+        # llama.cpp streams the JSON body without the opening `{` — just prepend it.
+        # Works for any value type (string, number, bool), not just string-terminated.
+        case Jason.decode("{" <> accumulated) do
           {:ok, decoded} -> {:ok, decoded}
           {:error, _} -> :error
         end
