@@ -89,6 +89,25 @@ defmodule ExAthena.Chat.Renderer do
   end
 
   @doc """
+  Returns whether `render_event/1` will produce visible terminal output for
+  the given event.
+
+  Used by the REPL to decide when to clear the "thinking…" placeholder.
+  Silent events like `:iteration`, `:usage`, `:tool_ui`, and `:done` (whose
+  only effect is a trailing newline) return `false` so the placeholder
+  stays put until something real arrives.
+  """
+  @spec visible?(term()) :: boolean()
+  def visible?({:content, _}), do: true
+  def visible?({:tool_call, _}), do: true
+  def visible?({:tool_result, _}), do: true
+  def visible?({:compaction, _}), do: true
+  def visible?({:subagent_spawn, _}), do: true
+  def visible?({:subagent_result, _}), do: true
+  def visible?({:error, _}), do: true
+  def visible?(_), do: false
+
+  @doc """
   Build iodata for the per-turn assistant prefix line.
 
   Printed just before the model's streamed output, so it's clear which side

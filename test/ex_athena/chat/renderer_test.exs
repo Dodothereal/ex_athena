@@ -115,6 +115,30 @@ defmodule ExAthena.Chat.RendererTest do
     end
   end
 
+  describe "visible?/1" do
+    test "returns true for events that produce terminal output" do
+      assert Renderer.visible?({:content, "x"})
+      assert Renderer.visible?({:tool_call, %ToolCall{id: "1", name: "Read", arguments: %{}}})
+
+      assert Renderer.visible?(
+               {:tool_result, %ToolResult{tool_call_id: "1", content: "x", is_error: false}}
+             )
+
+      assert Renderer.visible?({:compaction, %{before: 1, after: 1}})
+      assert Renderer.visible?({:subagent_spawn, %{prompt: "p"}})
+      assert Renderer.visible?({:subagent_result, %{text: "t"}})
+      assert Renderer.visible?({:error, :boom})
+    end
+
+    test "returns false for events that don't print anything" do
+      refute Renderer.visible?({:iteration, 1})
+      refute Renderer.visible?({:usage, %{input_tokens: 1, output_tokens: 1}})
+      refute Renderer.visible?({:tool_ui, %{}})
+      refute Renderer.visible?({:done, :anything})
+      refute Renderer.visible?({:totally_unknown, "thing"})
+    end
+  end
+
   describe "assistant_prefix/1" do
     test "returns a styled prefix containing the model name and a ▸ arrow" do
       text =

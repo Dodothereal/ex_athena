@@ -136,20 +136,50 @@ defmodule ExAthena.Chat.Repl do
 
   defp handle_message(session, text) do
     session = Session.append_user(session, text)
-    IO.write(Owl.Data.to_chardata(Renderer.assistant_prefix(session.model)))
+    show_thinking(session.model)
 
-    callback = build_event_callback()
+    callback = build_event_callback(session.model)
     run_opts = build_run_opts(session, callback)
 
     case ExAthena.run(nil, run_opts) do
       {:ok, result} ->
+        # If no visible event ever fired (e.g. an immediate empty :done),
+        # we still need to drop the placeholder before rendering the footer.
+        clear_thinking_if_pending(session.model)
         new_session = Session.apply_result(session, result)
         print_status(new_session)
         new_session
 
       {:error, reason} ->
+        clear_thinking_if_pending(session.model)
         Owl.IO.puts(Owl.Data.tag("\nrun error: #{inspect(reason)}", :red))
         session
+    end
+  end
+
+  @thinking_flag :athena_thinking
+
+  defp show_thinking(model) do
+    IO.write([
+      Owl.Data.to_chardata(Renderer.assistant_prefix(model)),
+      Owl.Data.to_chardata(Owl.Data.tag("thinking…", :light_black))
+    ])
+
+    Process.put(@thinking_flag, true)
+  end
+
+  defp clear_thinking_if_pending(model) do
+    if Process.get(@thinking_flag) do
+      # \r returns cursor to start of line; \e[K clears to end of line;
+      # then we reprint the assistant prefix so the model's response starts
+      # right after it.
+      IO.write([
+        "\r",
+        IO.ANSI.clear_line(),
+        Owl.Data.to_chardata(Renderer.assistant_prefix(model))
+      ])
+
+      Process.delete(@thinking_flag)
     end
   end
 
@@ -180,8 +210,11 @@ defmodule ExAthena.Chat.Repl do
     end
   end
 
-  defp build_event_callback do
-    &Renderer.render_event/1
+  defp build_event_callback(model) do
+    fn event ->
+      if Renderer.visible?(event), do: clear_thinking_if_pending(model)
+      Renderer.render_event(event)
+    end
   end
 
   defp handle_command(session, :help, _) do
