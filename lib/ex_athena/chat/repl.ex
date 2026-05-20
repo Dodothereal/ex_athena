@@ -206,11 +206,11 @@ defmodule ExAthena.Chat.Repl do
       # Local Ollama models can spend minutes thinking before the first
       # chunk arrives; the default 60s request timeout fires mid-thought
       # and aborts a healthy stream. The chat REPL is interactive — the
-      # user can Ctrl-C if something truly hangs — so we disable the
-      # request-level timeout entirely. Stream cleanup (HTTP connection
-      # close, server cancel) still runs via Stream.resource's after hook
-      # if the user aborts.
-      timeout_ms: :infinity
+      # user can Ctrl-C if something truly hangs — so we set the timeout
+      # high enough that no legitimate LLM call hits it. Must be a finite
+      # integer: req_llm's StreamServer feeds the value to
+      # `Process.send_after/3` which raises on `:infinity`.
+      timeout_ms: 24 * 60 * 60 * 1000
     ]
 
     case Application.get_env(:ex_athena, :ollama, [])[:base_url] do

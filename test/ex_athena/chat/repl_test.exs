@@ -55,13 +55,16 @@ defmodule ExAthena.Chat.ReplTest do
       assert is_function(opts[:on_event], 1)
     end
 
-    test "sets timeout_ms: :infinity so a thinking model never trips the default 60s timeout" do
+    test "sets a 24h request timeout so a thinking model never trips the default 60s timeout" do
       Application.delete_env(:ex_athena, :ollama)
 
       session = Session.new(model: "any")
       opts = Repl.build_run_opts(session, fn _ -> :ok end)
 
-      assert opts[:timeout_ms] == :infinity
+      # 24h. Long enough no legitimate LLM call exceeds it; finite so
+      # req_llm's StreamServer (Process.send_after) accepts the value —
+      # :infinity raises ArgumentError there.
+      assert opts[:timeout_ms] == 24 * 60 * 60 * 1000
     end
 
     test "omits :base_url when the user has configured one in app env" do
