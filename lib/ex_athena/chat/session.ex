@@ -37,10 +37,15 @@ defmodule ExAthena.Chat.Session do
 
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    ollama_config = Application.get_env(:ex_athena, :ollama, [])
-    configured_model = Keyword.get(ollama_config, :model, @default_model)
+    provider =
+      Keyword.get(opts, :provider) ||
+        Application.get_env(:ex_athena, :default_provider, :ollama)
+
+    provider_config = Application.get_env(:ex_athena, provider, [])
+    configured_model = Keyword.get(provider_config, :model, @default_model)
 
     %__MODULE__{
+      provider: provider,
       model: Keyword.get(opts, :model, configured_model),
       mode: Keyword.get(opts, :mode, :react),
       tools: Keyword.get(opts, :tools, :all),
