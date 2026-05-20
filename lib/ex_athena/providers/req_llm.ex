@@ -614,10 +614,10 @@ defmodule ExAthena.Providers.ReqLLM do
        ) do
     updated = Map.update(acc.tool_call_args_buffer, index, frag, &(&1 <> frag))
 
-    Logger.debug(fn ->
-      total = byte_size(Map.get(updated, index, ""))
-      "#{@log_prefix} ←tool_call_args_frag index=#{index} +#{byte_size(frag)}B (buf total #{total}B)"
-    end)
+    # Logger.debug(fn ->
+    #   total = byte_size(Map.get(updated, index, ""))
+    #   "#{@log_prefix} ←tool_call_args_frag index=#{index} +#{byte_size(frag)}B (buf total #{total}B)"
+    # end)
 
     %{acc | tool_call_args_buffer: updated}
   end
