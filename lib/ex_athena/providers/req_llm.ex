@@ -406,6 +406,11 @@ defmodule ExAthena.Providers.ReqLLM do
     state = %{
       text: [],
       tool_calls: [],
+      # Collects OpenAI-style streaming tool-call argument fragments keyed by
+      # the tool-call index. llama.cpp (and strict OpenAI clients) stream
+      # argument JSON in separate delta chunks; Ollama sends them complete in
+      # the first chunk. The buffer is empty for Ollama so it is a no-op there.
+      tool_call_args_buffer: %{},
       model: request.model,
       finish_reason: nil,
       usage: nil,
@@ -427,14 +432,86 @@ defmodule ExAthena.Providers.ReqLLM do
 
     ExAthena.Streaming.stop(callback, final.finish_reason || :stop)
 
+    tool_calls = patch_tool_call_args(final.tool_calls, final.tool_call_args_buffer)
+
+    text = final.text |> Enum.reverse() |> IO.iodata_to_binary()
+
+    # Diagnostics: log when tool calls arrive with empty arguments so we can
+    # see the buffer state and text content to understand the streaming format.
+    if Enum.any?(tool_calls, fn tc ->
+         args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
+         args == %{} or is_nil(args)
+       end) do
+      Logger.warning(
+        "#{@log_prefix} [diag] tool_call with empty args — " <>
+          "buffer=#{inspect(final.tool_call_args_buffer)} " <>
+          "text_snippet=#{preview(text, 200)} " <>
+          "calls=#{inspect(Enum.map(tool_calls, fn tc -> {Map.get(tc, :name) || (is_struct(tc) && tc.name), Map.get(tc, :arguments) || (is_struct(tc) && tc.arguments)} end))}"
+      )
+    end
+
     %Response{
-      text: final.text |> Enum.reverse() |> IO.iodata_to_binary(),
-      tool_calls: final.tool_calls,
+      text: text,
+      tool_calls: tool_calls,
       finish_reason: final.finish_reason || :stop,
       model: final.model,
       provider: :req_llm,
       usage: final.usage
     }
+  end
+
+  # Merge accumulated argument fragments back into each tool call.
+  # Only runs when llama.cpp (or another strict OpenAI client) actually
+  # streamed argument deltas — buffer is empty for Ollama.
+  defp patch_tool_call_args(tool_calls, buffer) when map_size(buffer) == 0, do: tool_calls
+
+  defp patch_tool_call_args(tool_calls, buffer) do
+    Enum.map(tool_calls, fn tc ->
+      index = tc.metadata && (Map.get(tc.metadata, :index) || Map.get(tc.metadata, "index"))
+
+      case index && Map.get(buffer, index) do
+        nil ->
+          tc
+
+        accumulated ->
+          case Jason.decode(accumulated) do
+            {:ok, decoded} ->
+              %{tc | arguments: decoded}
+
+            {:error, _reason} ->
+              case try_wrap_accumulated(accumulated) do
+                {:ok, decoded} ->
+                  %{tc | arguments: decoded}
+
+                :error ->
+                  tc
+              end
+          end
+      end
+    end)
+  end
+
+  defp try_wrap_accumulated(accumulated) do
+    cond do
+      String.starts_with?(accumulated, "{") ->
+        Jason.decode(accumulated)
+
+      String.starts_with?(accumulated, "\"") and String.ends_with?(accumulated, "\"}") ->
+        # llama.cpp streams arguments without opening `{` and with extra leading `"`
+        # accumulated: "\"path\":\"/home/...\"}" → content: "path":"/home/...\"}"
+        # strip leading `"` and trailing `}` → path":"/home/..."
+        # prepend `{"` and append `}` → {"path":"/home/..."}
+        stripped = String.slice(accumulated, 1..-2//1)
+        candidate = "{\"#{stripped}}"
+
+        case Jason.decode(candidate) do
+          {:ok, decoded} -> {:ok, decoded}
+          {:error, _} -> :error
+        end
+
+      true ->
+        :error
+    end
   end
 
   # ── Heartbeat / TTFT (visibility while Ollama is processing) ──────────
@@ -504,15 +581,43 @@ defmodule ExAthena.Providers.ReqLLM do
     %{acc | tool_calls: acc.tool_calls ++ [tc]}
   end
 
-  defp handle_chunk(%{type: :usage, usage: usage}, _callback, acc) do
-    Logger.debug(fn -> "#{@log_prefix} ←usage #{inspect(usage)}" end)
-    %{acc | usage: usage}
+  # Accumulate tool-call argument fragments emitted by OpenAI-style streaming
+  # (each delta carries a JSON substring; we reassemble them in the buffer).
+  defp handle_chunk(
+         %{type: :meta, metadata: %{tool_call_args: %{index: index, fragment: frag}}},
+         _callback,
+         acc
+       ) do
+    updated = Map.update(acc.tool_call_args_buffer, index, frag, &(&1 <> frag))
+    %{acc | tool_call_args_buffer: updated}
   end
 
-  defp handle_chunk(%{type: :meta, finish_reason: reason}, _callback, acc)
-       when not is_nil(reason) do
-    Logger.debug(fn -> "#{@log_prefix} ←meta finish_reason=#{inspect(reason)}" end)
-    %{acc | finish_reason: reason}
+  # `StreamChunk` carries usage and finish_reason inside `metadata`, not as
+  # top-level fields. The old patterns (`%{type: :usage, usage: …}` and
+  # `%{type: :meta, finish_reason: …}`) never matched the actual struct shape.
+  defp handle_chunk(%{type: :meta, metadata: metadata}, _callback, acc)
+       when is_map(metadata) do
+    acc
+    |> then(fn a ->
+      case Map.get(metadata, :finish_reason) do
+        nil ->
+          a
+
+        reason ->
+          Logger.debug(fn -> "#{@log_prefix} ←meta finish_reason=#{inspect(reason)}" end)
+          %{a | finish_reason: reason}
+      end
+    end)
+    |> then(fn a ->
+      case Map.get(metadata, :usage) do
+        nil ->
+          a
+
+        usage ->
+          Logger.debug(fn -> "#{@log_prefix} ←usage #{inspect(usage)}" end)
+          %{a | usage: usage}
+      end
+    end)
   end
 
   defp handle_chunk(_chunk, _callback, acc), do: acc
