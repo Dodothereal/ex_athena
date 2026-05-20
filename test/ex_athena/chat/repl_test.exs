@@ -55,6 +55,15 @@ defmodule ExAthena.Chat.ReplTest do
       assert is_function(opts[:on_event], 1)
     end
 
+    test "sets timeout_ms: :infinity so a thinking model never trips the default 60s timeout" do
+      Application.delete_env(:ex_athena, :ollama)
+
+      session = Session.new(model: "any")
+      opts = Repl.build_run_opts(session, fn _ -> :ok end)
+
+      assert opts[:timeout_ms] == :infinity
+    end
+
     test "omits :base_url when the user has configured one in app env" do
       Application.put_env(:ex_athena, :ollama,
         base_url: "http://my-ollama.lan:11434",

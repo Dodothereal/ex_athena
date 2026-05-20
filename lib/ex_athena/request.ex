@@ -35,7 +35,7 @@ defmodule ExAthena.Request do
           temperature: float() | nil,
           top_p: float() | nil,
           stop: [String.t()] | String.t() | nil,
-          timeout_ms: pos_integer() | nil,
+          timeout_ms: pos_integer() | :infinity | nil,
           tools: [map()] | nil,
           tool_choice: :auto | :any | :none | map() | nil,
           response_format: :text | :json | map() | nil,
