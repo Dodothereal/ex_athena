@@ -32,7 +32,7 @@ defmodule ExAthena.MixProject do
 
   defp deps do
     [
-      {:owl, "~> 0.13"},
+      {:ex_ratatui, "~> 0.10"},
       {:req, "~> 0.5"},
       {:req_llm, "~> 1.10"},
       {:jason, "~> 1.4"},

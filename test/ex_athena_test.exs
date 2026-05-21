@@ -27,7 +27,15 @@ defmodule ExAthenaTest do
     end
 
     test "raises when no provider is configured" do
+      prior = Application.get_env(:ex_athena, :default_provider)
       Application.put_env(:ex_athena, :default_provider, nil)
+
+      on_exit(fn ->
+        case prior do
+          nil -> Application.delete_env(:ex_athena, :default_provider)
+          v -> Application.put_env(:ex_athena, :default_provider, v)
+        end
+      end)
 
       assert_raise ArgumentError, ~r/no :provider passed/, fn ->
         ExAthena.query("hi")
