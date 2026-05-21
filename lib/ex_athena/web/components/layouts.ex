@@ -136,9 +136,26 @@ defmodule ExAthena.Web.Layouts do
                     this.el.closest("form").dispatchEvent(
                       new Event("submit", {bubbles: true, cancelable: true})
                     )
-                    // Clear the textarea after submit
                     setTimeout(() => { this.el.value = "" }, 0)
                   }
+                })
+              }
+            },
+
+            PathInput: {
+              mounted() {
+                this.el.focus()
+                this.el.setSelectionRange(this.el.value.length, this.el.value.length)
+                this.el.addEventListener("keydown", e => {
+                  if (e.key === "Tab") {
+                    e.preventDefault()
+                    this.pushEvent("tab_complete", {path: this.el.value})
+                  }
+                })
+                this.handleEvent("tab_fill", ({value}) => {
+                  this.el.value = value
+                  // tell the server the new value so validation updates
+                  this.pushEvent("modal_path_change", {path: value})
                 })
               }
             }

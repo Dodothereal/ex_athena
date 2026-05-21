@@ -37,13 +37,20 @@ defmodule ExAthena.Web.Live.ChatLive do
         session_id: session_id,
         session_title: nil,
         session_created_at: DateTime.utc_now(),
+        cwd: nil,
         sessions: [],
+        recent_cwds: [],
         show_sessions: false,
+        # New-session modal
+        show_modal: false,
+        modal_path: "",
+        modal_path_valid: false,
         # Model settings
         provider: provider,
         model: model,
         mode: "react",
         available_models: [],
+        models_loading: false,
         providers: @providers,
         modes: @modes,
         # Conversation
@@ -57,15 +64,20 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Stored tool UI payloads (diff/process/file) keyed by tool_call_id
         tool_uis: %{},
         expanded_uis: MapSet.new(),
-        # Status / errors
+        # Loading / status / errors
+        page_loading: !connected?(socket),
         status: nil,
         error: nil
       )
 
-    if connected?(socket) do
-      send(self(), {:load_models, provider})
-      send(self(), :load_sessions)
-    end
+    socket =
+      if connected?(socket) do
+        send(self(), {:load_models, provider})
+        send(self(), :load_sessions)
+        assign(socket, models_loading: true)
+      else
+        socket
+      end
 
     {:ok, socket}
   end
@@ -81,16 +93,101 @@ defmodule ExAthena.Web.Live.ChatLive do
     cond do
       text == "" -> {:noreply, socket}
       socket.assigns.streaming -> {:noreply, socket}
+      is_nil(socket.assigns.cwd) -> {:noreply, socket}
       true -> start_agent_run(socket, text)
     end
   end
 
-  def handle_event("clear", _params, socket) do
-    session_id = unique_id()
+  # --- New-session modal ---
 
+  def handle_event("show_modal", _params, socket) do
+    {:noreply, assign(socket, show_modal: true, modal_path: "", modal_path_valid: false)}
+  end
+
+  def handle_event("cancel_modal", _params, socket) do
+    {:noreply, assign(socket, show_modal: false)}
+  end
+
+  def handle_event("modal_path_change", %{"path" => path}, socket) do
+    path = String.trim(path)
+    {:noreply, assign(socket, modal_path: path, modal_path_valid: path != "" and File.dir?(path))}
+  end
+
+  def handle_event("tab_complete", %{"path" => path}, socket) do
+    completed = complete_path(path)
+    valid = completed != "" and File.dir?(completed)
+
+    socket =
+      socket
+      |> assign(modal_path: completed, modal_path_valid: valid)
+      |> push_event("tab_fill", %{value: completed})
+
+    {:noreply, socket}
+  end
+
+  def handle_event("create_session", %{"path" => path}, socket) do
+    path = String.trim(path)
+
+    if File.dir?(path) do
+      Sessions.touch_recent(path)
+
+      {:noreply,
+       assign(socket,
+         cwd: path,
+         session_id: unique_id(),
+         session_title: nil,
+         session_created_at: DateTime.utc_now(),
+         messages: [],
+         ex_messages: [],
+         tool_uis: %{},
+         expanded_uis: MapSet.new(),
+         status: nil,
+         error: nil,
+         show_modal: false,
+         modal_path: "",
+         modal_path_valid: false,
+         recent_cwds: Sessions.list_recent()
+       )}
+    else
+      {:noreply, assign(socket, modal_path_valid: false)}
+    end
+  end
+
+  def handle_event("open_recent", %{"cwd" => cwd}, socket) do
+    if File.dir?(cwd) do
+      Sessions.touch_recent(cwd)
+      sessions = Sessions.list_for_cwd(cwd)
+
+      {:noreply,
+       assign(socket,
+         cwd: cwd,
+         session_id: unique_id(),
+         session_title: nil,
+         session_created_at: DateTime.utc_now(),
+         messages: [],
+         ex_messages: [],
+         tool_uis: %{},
+         expanded_uis: MapSet.new(),
+         status: nil,
+         error: nil,
+         sessions: sessions,
+         show_sessions: sessions != [],
+         recent_cwds: Sessions.list_recent()
+       )}
+    else
+      {:noreply, assign(socket, error: "Directory no longer exists: #{cwd}")}
+    end
+  end
+
+  def handle_event("remove_recent", %{"cwd" => cwd}, socket) do
+    Sessions.remove_recent(cwd)
+    {:noreply, assign(socket, recent_cwds: Sessions.list_recent())}
+  end
+
+  def handle_event("clear", _params, socket) do
     {:noreply,
      assign(socket,
-       session_id: session_id,
+       session_id: unique_id(),
        session_title: nil,
        session_created_at: DateTime.utc_now(),
        messages: [],
@@ -122,22 +219,51 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def handle_event("toggle_sessions", _params, socket) do
     show = !socket.assigns.show_sessions
-    socket = if show, do: assign(socket, sessions: Sessions.list()), else: socket
+
+    socket =
+      if show do
+        sessions =
+          case socket.assigns.cwd do
+            nil -> Sessions.list()
+            cwd -> Sessions.list_for_cwd(cwd)
+          end
+
+        assign(socket, sessions: sessions)
+      else
+        socket
+      end
+
     {:noreply, assign(socket, show_sessions: show)}
   end
 
   def handle_event("new_session", _params, socket) do
-    handle_event("clear", %{}, socket)
+    # Start a new conversation in the same working directory
+    {:noreply,
+     assign(socket,
+       session_id: unique_id(),
+       session_title: nil,
+       session_created_at: DateTime.utc_now(),
+       messages: [],
+       ex_messages: [],
+       tool_uis: %{},
+       expanded_uis: MapSet.new(),
+       status: nil,
+       error: nil
+     )}
   end
 
   def handle_event("load_session", %{"id" => id}, socket) do
     case Sessions.load(id) do
       {:ok, data} ->
+        cwd = Map.get(data, :cwd, socket.assigns.cwd)
+        if cwd, do: Sessions.touch_recent(cwd)
+
         {:noreply,
          assign(socket,
            session_id: data.id,
            session_title: data.title,
            session_created_at: Map.get(data, :created_at, DateTime.utc_now()),
+           cwd: cwd,
            provider: data.provider,
            model: data.model,
            mode: data.mode,
@@ -217,11 +343,17 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   @impl true
   def handle_info(:load_sessions, socket) do
-    {:noreply, assign(socket, sessions: Sessions.list())}
+    {:noreply, assign(socket, recent_cwds: Sessions.list_recent())}
   end
 
   def handle_info({:load_models, provider}, socket) do
-    {:noreply, assign(socket, available_models: fetch_models(provider))}
+    pid = self()
+    Task.start(fn -> send(pid, {:models_loaded, fetch_models(provider)}) end)
+    {:noreply, socket}
+  end
+
+  def handle_info({:models_loaded, models}, socket) do
+    {:noreply, assign(socket, available_models: models, models_loading: false)}
   end
 
   def handle_info({:athena, {:content, text}}, socket) do
@@ -325,13 +457,74 @@ defmodule ExAthena.Web.Live.ChatLive do
     assigns = assign(assigns, max_diff_lines: @max_diff_lines)
 
     ~H"""
+    <%= if @page_loading do %>
+      <div class="page-loading">
+        <div class="page-loading-spinner"></div>
+        <div class="page-loading-text">Connecting…</div>
+      </div>
+    <% else %>
     <div class="app">
+      <%!-- New-session modal --%>
+      <%= if @show_modal do %>
+        <div class="modal-overlay" phx-window-keydown="cancel_modal" phx-key="Escape">
+          <div class="modal">
+            <div class="modal-header">
+              <span class="modal-title">New session</span>
+              <button type="button" class="modal-close" phx-click="cancel_modal">×</button>
+            </div>
+            <form phx-change="modal_path_change" phx-submit="create_session">
+              <div class="modal-body">
+                <label class="field-label">Working directory</label>
+                <input
+                  id="modal-path-input"
+                  class={"field-input#{if @modal_path != "" and not @modal_path_valid, do: " field-input--error", else: ""}"}
+                  type="text"
+                  name="path"
+                  value={@modal_path}
+                  placeholder="/home/you/my-project  (Tab to complete)"
+                  phx-hook="PathInput"
+                />
+                <div class="field-hint">
+                  <%= cond do %>
+                    <% @modal_path == "" -> %>
+                      Enter a path, or press Tab to autocomplete.
+                    <% @modal_path_valid -> %>
+                      <span class="hint-ok">✓ Directory found</span>
+                    <% true -> %>
+                      <span class="hint-err">Directory not found</span>
+                  <% end %>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn-secondary" phx-click="cancel_modal">Cancel</button>
+                <button
+                  type="submit"
+                  class={"btn-create#{if not @modal_path_valid, do: " btn-create--disabled", else: ""}"}
+                  disabled={not @modal_path_valid}
+                >
+                  Open →
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      <% end %>
+
       <%!-- Sidebar --%>
       <aside class="sidebar">
         <div class="sidebar-logo">
           <span class="logo-text">ExAthena</span>
-          <span class="logo-sub">agent loop</span>
+          <button class="btn-plus" phx-click="show_modal" title="New session">+</button>
         </div>
+
+        <%!-- Active project --%>
+        <%= if @cwd do %>
+          <div class="cwd-bar">
+            <span class="cwd-icon">⊡</span>
+            <span class="cwd-name" title={@cwd}>{Path.basename(@cwd)}</span>
+            <span class="cwd-path">{@cwd}</span>
+          </div>
+        <% end %>
 
         <div class="sidebar-section">
           <label class="field-label">Provider</label>
@@ -343,20 +536,29 @@ defmodule ExAthena.Web.Live.ChatLive do
         </div>
 
         <div class="sidebar-section">
-          <label class="field-label">Model</label>
-          <%= if @available_models != [] do %>
-            <select class="field-select" phx-change="set_model" name="value">
-              <option :for={m <- @available_models} value={m} selected={@model == m}>{m}</option>
-            </select>
+          <label class="field-label">
+            Model
+            <%= if @models_loading do %>
+              <span class="field-loading-dot"></span>
+            <% end %>
+          </label>
+          <%= if @models_loading do %>
+            <div class="field-loading">fetching models…</div>
           <% else %>
-            <input
-              class="field-input"
-              type="text"
-              value={@model}
-              placeholder="model name"
-              phx-blur="set_model"
-              name="value"
-            />
+            <%= if @available_models != [] do %>
+              <select class="field-select" phx-change="set_model" name="value">
+                <option :for={m <- @available_models} value={m} selected={@model == m}>{m}</option>
+              </select>
+            <% else %>
+              <input
+                class="field-input"
+                type="text"
+                value={@model}
+                placeholder="model name"
+                phx-blur="set_model"
+                name="value"
+              />
+            <% end %>
           <% end %>
         </div>
 
@@ -396,6 +598,35 @@ defmodule ExAthena.Web.Live.ChatLive do
           </div>
         <% end %>
 
+        <%!-- Recent projects --%>
+        <%= if @recent_cwds != [] do %>
+          <div class="sidebar-section">
+            <label class="field-label">Recent</label>
+            <div class="sidebar-recents">
+              <div
+                :for={r <- @recent_cwds}
+                class={"sidebar-recent#{if r.cwd == @cwd, do: " sidebar-recent--active", else: ""}"}
+              >
+                <button
+                  class="sidebar-recent-btn"
+                  phx-click="open_recent"
+                  phx-value-cwd={r.cwd}
+                  title={r.cwd}
+                >
+                  <span class="sidebar-recent-name">{r.name}</span>
+                  <span class="sidebar-recent-path">{r.cwd}</span>
+                </button>
+                <button
+                  class="sidebar-recent-rm"
+                  phx-click="remove_recent"
+                  phx-value-cwd={r.cwd}
+                  title="Remove"
+                >×</button>
+              </div>
+            </div>
+          </div>
+        <% end %>
+
         <%= if @status do %>
           <div class="status-block">
             <div class="status-row">
@@ -425,7 +656,25 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="empty-state">
               <div class="empty-icon">◈</div>
               <div class="empty-title">ExAthena</div>
-              <div class="empty-sub">{@provider} · {@mode}</div>
+              <%= if is_nil(@cwd) do %>
+                <div class="empty-sub">Open a project folder to start a session</div>
+                <%= if @recent_cwds != [] do %>
+                  <div class="recent-projects">
+                    <div class="recent-header">Recent projects</div>
+                    <div :for={r <- @recent_cwds} class="recent-item">
+                      <button class="recent-open" phx-click="open_recent" phx-value-cwd={r.cwd}>
+                        <span class="recent-name">{r.name}</span>
+                        <span class="recent-path">{r.cwd}</span>
+                      </button>
+                      <button class="recent-remove" phx-click="remove_recent" phx-value-cwd={r.cwd} title="Remove from list">×</button>
+                    </div>
+                  </div>
+                <% else %>
+                  <div class="empty-hint">Click + to open a folder</div>
+                <% end %>
+              <% else %>
+                <div class="empty-sub">{@provider} · {@mode}</div>
+              <% end %>
             </div>
           <% end %>
 
@@ -458,14 +707,14 @@ defmodule ExAthena.Web.Live.ChatLive do
               id="chat-input"
               class="input-textarea"
               name="text"
-              placeholder="Message ExAthena… (Enter to send, Shift+Enter for newline)"
-              disabled={@streaming}
+              placeholder={if is_nil(@cwd), do: "Open a project folder first (+ button)", else: "Message ExAthena… (Enter to send, Shift+Enter for newline)"}
+              disabled={@streaming or is_nil(@cwd)}
               phx-hook="SubmitOnEnter"
             ></textarea>
             <button
-              class={"btn-send#{if @streaming, do: " btn-send--disabled", else: ""}"}
+              class={"btn-send#{if @streaming or is_nil(@cwd), do: " btn-send--disabled", else: ""}"}
               type="submit"
-              disabled={@streaming}
+              disabled={@streaming or is_nil(@cwd)}
             >
               <%= if @streaming do %>
                 <span class="spinner"></span>
@@ -477,6 +726,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         </div>
       </main>
     </div>
+    <% end %>
     """
   end
 
@@ -650,6 +900,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         ]
         |> maybe_put_model(model)
         |> apply_base_url(provider)
+        |> maybe_put_cwd(socket.assigns.cwd)
 
       case ExAthena.run(nil, opts) do
         {:ok, result} -> send(pid, {:athena_done, result})
@@ -676,6 +927,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     Sessions.save(%{
       id: a.session_id,
       title: a.session_title,
+      cwd: a.cwd,
       provider: a.provider,
       model: a.model,
       mode: a.mode,
@@ -833,6 +1085,9 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp maybe_put_model(opts, m) when is_binary(m) and m != "", do: Keyword.put(opts, :model, m)
   defp maybe_put_model(opts, _), do: opts
 
+  defp maybe_put_cwd(opts, cwd) when is_binary(cwd), do: Keyword.put(opts, :cwd, cwd)
+  defp maybe_put_cwd(opts, _), do: opts
+
   defp safe_atom(str, default) when is_binary(str) do
     String.to_existing_atom(str)
   rescue
@@ -872,4 +1127,47 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp truncate(other, limit), do: truncate(to_string(other), limit)
+
+  defp complete_path(""), do: ""
+
+  defp complete_path(path) do
+    {dir, prefix} =
+      if String.ends_with?(path, "/") do
+        {path, ""}
+      else
+        {Path.dirname(path), Path.basename(path)}
+      end
+
+    case File.ls(dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&String.starts_with?(&1, prefix))
+        |> Enum.filter(&File.dir?(Path.join(dir, &1)))
+        |> Enum.sort()
+        |> case do
+          [] -> path
+          [single] -> Path.join(dir, single) <> "/"
+          many ->
+            cp = common_prefix(many)
+            filled = if cp == "" or cp == prefix, do: hd(many), else: cp
+            Path.join(dir, filled)
+        end
+
+      _ ->
+        path
+    end
+  end
+
+  defp common_prefix([]), do: ""
+  defp common_prefix([s]), do: s
+
+  defp common_prefix([h | t]) do
+    Enum.reduce(t, h, fn s, acc ->
+      acc
+      |> String.graphemes()
+      |> Enum.zip(String.graphemes(s))
+      |> Enum.take_while(fn {a, b} -> a == b end)
+      |> Enum.map_join(&elem(&1, 0))
+    end)
+  end
 end
