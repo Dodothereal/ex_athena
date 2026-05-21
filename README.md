@@ -129,6 +129,27 @@ commands switch state without restarting:
 Defaults: `:ollama` provider, the model in `config :ex_athena, :ollama, :model`,
 `:react` runner, every builtin tool, `permission_mode: :default`.
 
+## Try it: `mix athena.web`
+
+A browser-based chat UI with the same agent loop, accessible from any device on your network:
+
+```bash
+mix athena.web                  # http://0.0.0.0:4000
+mix athena.web --port 8080      # custom port
+```
+
+The sidebar lets you switch provider, model, and mode without restarting. Features:
+
+| Feature | Description |
+|---|---|
+| **Session recall** | Every completed turn is auto-saved to `~/.ex_athena/web/sessions/`. Click "▼ Sessions" in the sidebar to load or delete past conversations. |
+| **Fork** | Each assistant message has a `⑂ fork` button. It snapshots the conversation history at that point and opens a new branch — the original session is untouched. |
+| **Diff viewer** | File edits show a "▼ view" button next to the tool result. Click it for a color-coded line diff (`+` green / `−` red) computed server-side. Bash tool calls show exit code, runtime, and stdout. File reads show the content. |
+| **Action indicator** | While the model is running, a `⚡ Reading · foo.ex` pill in the message header tracks the current tool call in real time. |
+| **Markdown** | Completed responses are rendered with headings, fenced code blocks (with language label), inline code, bold/italic, lists, links, and horizontal rules — no CDN or build step required. |
+
+The web UI is a Phoenix LiveView application that requires no separate server process — `mix athena.web` starts everything in one command. Sessions are serialized with `:erlang.term_to_binary` and survive restarts. The JS bundle is served directly from the installed `phoenix` and `phoenix_live_view` hex packages, so there is no npm or esbuild step.
+
 ## Providers
 
 | Provider | Module | Notes |
