@@ -30,8 +30,8 @@ defmodule Mix.Tasks.Athena.Web do
       url: [host: "0.0.0.0", port: port],
       check_origin: false,
       server: true,
-      live_view: [signing_salt: random_salt()],
-      secret_key_base: random_key_base(),
+      live_view: [signing_salt: "ex_athena_lv_salt_1"],
+      secret_key_base: stable_key_base(),
       render_errors: [formats: [html: ExAthena.Web.ErrorHTML], layout: false],
       pubsub_server: ExAthena.PubSub
     )
@@ -47,11 +47,21 @@ defmodule Mix.Tasks.Athena.Web do
     Process.sleep(:infinity)
   end
 
-  defp random_salt do
-    :crypto.strong_rand_bytes(8) |> Base.encode64()
-  end
+  # Persist the secret_key_base so session cookies survive restarts.
+  # A fresh random key on every start causes the old session cookie to fail
+  # CSRF validation, which triggers LiveView's reloadWithJitter (5–10 s delay).
+  defp stable_key_base do
+    key_file = Path.expand("~/.ex_athena/web/secret.key")
+    File.mkdir_p!(Path.dirname(key_file))
 
-  defp random_key_base do
-    :crypto.strong_rand_bytes(64) |> Base.encode64()
+    case File.read(key_file) do
+      {:ok, key} when byte_size(key) >= 64 ->
+        String.trim(key)
+
+      _ ->
+        key = :crypto.strong_rand_bytes(64) |> Base.encode64()
+        File.write!(key_file, key)
+        key
+    end
   end
 end
