@@ -29,7 +29,7 @@ defmodule Mix.Tasks.Athena.Chat do
 
   use Mix.Task
 
-  alias ExAthena.Chat.Repl
+  alias ExAthena.Chat.Tui
 
   @valid_modes ~w(react plan_and_solve reflexion)a
 
@@ -46,7 +46,7 @@ defmodule Mix.Tasks.Athena.Chat do
       |> maybe_put(:model, parsed[:model])
       |> maybe_put_mode(parsed[:mode])
 
-    Repl.start(opts)
+    Tui.start(opts)
   end
 
   defp maybe_put(opts, _key, nil), do: opts
