@@ -13,7 +13,7 @@ defmodule ExAthena.Chat.Repl do
   Thin glue around the pure modules; manual smoke-test only.
   """
 
-  alias ExAthena.Chat.{Commands, Ollama, Renderer, Session}
+  alias ExAthena.Chat.{Commands, LlamaCpp, Ollama, Renderer, Session}
   alias ExAthena.Messages.ToolResult
   alias ExAthena.Tools
 
@@ -29,7 +29,7 @@ defmodule ExAthena.Chat.Repl do
     Logger.configure(level: :warning)
 
     try do
-      session = opts |> Session.new() |> reconcile_model_with_ollama()
+      session = opts |> Session.new() |> reconcile_model()
       print_banner(session)
 
       loop(session)
@@ -38,7 +38,54 @@ defmodule ExAthena.Chat.Repl do
     end
   end
 
-  defp reconcile_model_with_ollama(session) do
+  defp reconcile_model(%{provider: :llamacpp} = session) do
+    case select_initial_model(session.model, LlamaCpp.list_models([])) do
+      {:ok, _} ->
+        session
+
+      {:fallback, model} ->
+        Owl.IO.puts(
+          Owl.Data.tag(
+            "note: configured model #{inspect(session.model)} is not available on llama.cpp server; using #{inspect(model)} instead.",
+            :yellow
+          )
+        )
+
+        Session.set_model(session, model)
+
+      {:error, :no_models} ->
+        Owl.IO.puts(
+          Owl.Data.tag(
+            "warning: llama.cpp server has no loaded models. Start one with `llama-server --model <path>`, then `/model`.",
+            :yellow
+          )
+        )
+
+        session
+
+      {:error, :llamacpp_unreachable} ->
+        Owl.IO.puts(
+          Owl.Data.tag(
+            "warning: llama.cpp server is not running at the configured base_url. Start it with `llama-server`.",
+            :yellow
+          )
+        )
+
+        session
+
+      {:error, reason} ->
+        Owl.IO.puts(
+          Owl.Data.tag(
+            "warning: could not verify model against llama.cpp server: #{inspect(reason)}",
+            :yellow
+          )
+        )
+
+        session
+    end
+  end
+
+  defp reconcile_model(%{provider: :ollama} = session) do
     case select_initial_model(session.model, Ollama.list_models([])) do
       {:ok, _} ->
         session
@@ -84,6 +131,8 @@ defmodule ExAthena.Chat.Repl do
         session
     end
   end
+
+  defp reconcile_model(session), do: session
 
   @doc """
   Reconcile a desired Ollama model against the installed list.
@@ -203,21 +252,32 @@ defmodule ExAthena.Chat.Repl do
       messages: session.messages,
       permission_mode: session.permission_mode,
       on_event: callback,
-      # Local Ollama models can spend minutes thinking before the first
-      # chunk arrives; the default 60s request timeout fires mid-thought
-      # and aborts a healthy stream. The chat REPL is interactive — the
-      # user can Ctrl-C if something truly hangs — so we set the timeout
+      # Local models (Ollama, llama.cpp) can spend minutes thinking before
+      # the first chunk arrives; the default 60s request timeout fires
+      # mid-thought and aborts a healthy stream. The REPL is interactive —
+      # the user can Ctrl-C if something truly hangs — so we set the timeout
       # high enough that no legitimate LLM call hits it. Must be a finite
       # integer: req_llm's StreamServer feeds the value to
       # `Process.send_after/3` which raises on `:infinity`.
       timeout_ms: 24 * 60 * 60 * 1000
     ]
 
-    case Application.get_env(:ex_athena, :ollama, [])[:base_url] do
-      nil -> Keyword.put(base, :base_url, "http://localhost:11434")
-      _configured -> base
+    apply_default_base_url(base, session.provider)
+  end
+
+  # When the user hasn't configured a base_url for their local provider,
+  # inject the well-known default so req_llm doesn't fall back to api.openai.com.
+  defp apply_default_base_url(opts, provider) do
+    {provider_key, default_url} = provider_base_url_defaults(provider)
+
+    case Application.get_env(:ex_athena, provider_key, [])[:base_url] do
+      nil -> Keyword.put(opts, :base_url, default_url)
+      _configured -> opts
     end
   end
+
+  defp provider_base_url_defaults(:llamacpp), do: {:llamacpp, "http://localhost:8080"}
+  defp provider_base_url_defaults(_), do: {:ollama, "http://localhost:11434"}
 
   defp build_event_callback(model) do
     fn event ->
@@ -301,15 +361,9 @@ defmodule ExAthena.Chat.Repl do
   end
 
   defp handle_command(session, :model, []) do
-    case Ollama.list_models([]) do
+    case list_models_for(session) do
       {:ok, []} ->
-        Owl.IO.puts(
-          Owl.Data.tag(
-            "No models installed. Pull one with: ollama pull llama3.1",
-            :yellow
-          )
-        )
-
+        Owl.IO.puts(Owl.Data.tag(no_models_message(session.provider), :yellow))
         session
 
       {:ok, models} ->
@@ -323,14 +377,8 @@ defmodule ExAthena.Chat.Repl do
             new
         end
 
-      {:error, :ollama_unreachable} ->
-        Owl.IO.puts(
-          Owl.Data.tag(
-            "Ollama not running. Start it with: ollama serve",
-            :red
-          )
-        )
-
+      {:error, reason} when reason in [:ollama_unreachable, :llamacpp_unreachable] ->
+        Owl.IO.puts(Owl.Data.tag(unreachable_message(session.provider), :red))
         session
 
       {:error, reason} ->
@@ -338,6 +386,21 @@ defmodule ExAthena.Chat.Repl do
         session
     end
   end
+
+  defp list_models_for(%{provider: :llamacpp}), do: LlamaCpp.list_models([])
+  defp list_models_for(_session), do: Ollama.list_models([])
+
+  defp no_models_message(:llamacpp),
+    do: "No models loaded. Start one with: llama-server --model path/to/model.gguf"
+
+  defp no_models_message(_),
+    do: "No models installed. Pull one with: ollama pull llama3.1"
+
+  defp unreachable_message(:llamacpp),
+    do: "llama.cpp server not running. Start it with: llama-server --model path/to/model.gguf"
+
+  defp unreachable_message(_),
+    do: "Ollama not running. Start it with: ollama serve"
 
   defp parse_mode_atom(arg) when is_binary(arg) do
     candidate = String.to_existing_atom(arg)

@@ -63,7 +63,7 @@ defmodule ExAthena.Chat.Commands do
   def help_text do
     """
     Slash commands:
-      /model [name]    pick or switch the Ollama model
+      /model [name]    pick or switch the current model
       /mode  [name]    switch runner mode (react, plan_and_solve, reflexion)
       /tools           list the tools currently available to the agent
       /clear           wipe the conversation history

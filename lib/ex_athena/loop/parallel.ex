@@ -188,6 +188,9 @@ defmodule ExAthena.Loop.Parallel do
       {:deny, reason} = deny ->
         fire_permission_denied(state, name, args, id, reason)
         deny
+
+      {:halt, _} = halt ->
+        halt
     end
   end
 
