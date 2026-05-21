@@ -255,11 +255,16 @@ defmodule ExAthena.Providers.ReqLLM do
     base_url = normalize_base_url(Keyword.get(opts, :base_url), backend)
     api_key = resolve_api_key(Keyword.get(opts, :api_key), backend)
 
+    # req_llm's OpenAI provider only accepts :ollama / "ollama" as
+    # openai_compatible_backend. For llamacpp we handle auth via a synthetic
+    # api_key, so we must not forward the backend marker to req_llm.
+    req_llm_backend = if backend in [:ollama, "ollama"], do: backend, else: nil
+
     base_opts =
       [
         api_key: api_key,
         base_url: base_url,
-        openai_compatible_backend: backend,
+        openai_compatible_backend: req_llm_backend,
         max_tokens: request.max_tokens,
         temperature: request.temperature,
         top_p: request.top_p,

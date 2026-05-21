@@ -17,6 +17,9 @@ defmodule ExAthena.Tools.SpawnAgent do
       to whatever the parent had (minus PlanMode + SpawnAgent to avoid loops).
     * `max_iterations` (optional, default 10) — cap on agent-loop iterations.
     * `system_prompt` (optional) — system prompt override for the sub-agent.
+    * `cwd` (optional) — working directory for the sub-agent. Defaults to the
+      parent's cwd. Useful when delegating work on a different project so the
+      sub-agent loads the correct `AGENTS.md` and operates in the right tree.
 
   Inherits the parent's provider / model / permissions unless overridden in
   `ctx.assigns[:spawn_agent_opts]`.
@@ -57,7 +60,12 @@ defmodule ExAthena.Tools.SpawnAgent do
         },
         tools: %{type: "array", items: %{type: "string"}},
         max_iterations: %{type: "integer"},
-        system_prompt: %{type: "string"}
+        system_prompt: %{type: "string"},
+        cwd: %{
+          type: "string",
+          description:
+            "Working directory for the sub-agent. Defaults to the parent's cwd. Use this to point the sub-agent at a different project directory."
+        }
       },
       required: ["prompt"]
     }
@@ -122,7 +130,7 @@ defmodule ExAthena.Tools.SpawnAgent do
     # Persist the sidechain transcript (best-effort; never fails the spawn).
     _ =
       Sidechain.write(%{
-        cwd: ctx.cwd,
+        cwd: Keyword.get(sub_opts, :cwd, ctx.cwd),
         parent_session_id: ctx.session_id || "unknown",
         subagent_id: sub_id,
         prompt: prompt,
@@ -218,9 +226,11 @@ defmodule ExAthena.Tools.SpawnAgent do
   # ── Agent + isolation resolution ──────────────────────────────────
 
   defp resolve_agent(args, ctx) do
+    effective_cwd = Map.get(args, "cwd") || ctx.cwd
+
     base_opts =
       (ctx.assigns[:spawn_agent_opts] || [])
-      |> Keyword.put_new(:cwd, ctx.cwd)
+      |> Keyword.put_new(:cwd, effective_cwd)
 
     case Map.get(args, "agent") do
       nil ->

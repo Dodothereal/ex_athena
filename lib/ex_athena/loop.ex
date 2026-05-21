@@ -491,6 +491,13 @@ defmodule ExAthena.Loop do
   # ── Initial state assembly ────────────────────────────────────────
 
   defp build_initial_state(prompt, opts) do
+    # Capture the provider atom before pop_provider! converts it to a module,
+    # so we can pass it (along with base_url / model / api_key) down to any
+    # subagents this loop spawns via spawn_agent_opts in assigns.
+    raw_provider =
+      Keyword.get(opts, :provider) ||
+        Application.get_env(:ex_athena, :default_provider)
+
     {provider_mod, opts} = Config.pop_provider!(opts)
 
     cwd = Keyword.get(opts, :cwd, File.cwd!())
@@ -527,6 +534,13 @@ defmodule ExAthena.Loop do
       # Tools that fire hooks (e.g. SpawnAgent for SubagentStart/Stop) read
       # them from ctx.assigns[:hooks]. Carrying them through the context
       # avoids tools needing direct access to Loop.State.
+      #
+      # spawn_agent_opts carries the parent's connection config so subagents
+      # inherit provider / base_url / model without needing explicit opts.
+      # Map.put_new keeps a grandparent's config when this loop is itself a
+      # subagent and the parent already set spawn_agent_opts.
+      inherited_provider_opts = inherit_provider_opts(raw_provider, opts)
+
       assigns =
         assigns
         |> Map.put_new(:hooks, hooks_table)
@@ -534,6 +548,7 @@ defmodule ExAthena.Loop do
           :tool_timeout_ms,
           Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
         )
+        |> Map.put(:spawn_agent_opts, inherited_provider_opts)
 
       ctx =
         ExAthena.ToolContext.new(
@@ -648,6 +663,23 @@ defmodule ExAthena.Loop do
     16
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  # Build the keyword list stored in assigns[:spawn_agent_opts] so subagents
+  # launched by spawn_agent inherit the parent's connection settings.
+  defp inherit_provider_opts(provider, opts) do
+    [provider: provider]
+    |> put_inherited(:base_url, opts)
+    |> put_inherited(:model, opts)
+    |> put_inherited(:api_key, opts)
+    |> put_inherited(:permission_mode, opts)
+  end
+
+  defp put_inherited(acc, key, opts) do
+    case Keyword.fetch(opts, key) do
+      {:ok, val} -> Keyword.put(acc, key, val)
+      :error -> acc
+    end
   end
 
   # ── Memory + skills resolution ────────────────────────────────────
