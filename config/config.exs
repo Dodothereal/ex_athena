@@ -8,11 +8,11 @@ import_config "#{config_env()}.exs"
 
 config :ex_athena, :ollama,
         base_url: "http://localhost:11434",
-        model: "qwen3.6:35b-a3b"
+        model: "qwen3.6:35b-a3b" #Change as needed
         
 config :ex_athena, :llamacpp,
         base_url: "http://localhost:8181",
-        model: "qwen3.6:35b-a3b"
+        model: "qwen3.6:35b-a3b" # Change as needed
 
 # To use a local llama.cpp server instead:
 #
