@@ -84,7 +84,7 @@ defmodule ExAthena.Loop do
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
 
-  @default_max_iterations 250
+  @default_max_iterations 25
   @default_max_mistakes 3
   @default_max_unproductive_iterations 3
   @default_max_concurrency 4
