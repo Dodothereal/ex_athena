@@ -31,6 +31,9 @@ defmodule ExAthena.Chat.Tui do
 
   @modes [:react, :plan_and_solve, :reflexion]
   @tick_interval_ms 60
+  # Rows per PgUp/PgDn press. Roughly a half-page on a typical terminal —
+  # comfortable for skimming without overshooting.
+  @page_step 10
 
   @doc """
   Start the chat App and block until the user quits.
@@ -134,6 +137,33 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp handle_key(%Event.Key{code: "tab"}, state), do: {:noreply, state}
+
+  # ── Pane scrolling ────────────────────────────────────────────────────
+  # PgUp/PgDn scroll the messages pane (left). Add Shift to target the
+  # details pane (right). Home jumps to the very top; End returns to
+  # auto-bottom so new content follows again.
+
+  defp handle_key(%Event.Key{code: "pageup", modifiers: mods}, state) do
+    if "shift" in mods,
+      do: {:noreply, State.scroll_details(state, -@page_step)},
+      else: {:noreply, State.scroll_messages(state, -@page_step)}
+  end
+
+  defp handle_key(%Event.Key{code: "pagedown", modifiers: mods}, state) do
+    if "shift" in mods,
+      do: {:noreply, State.scroll_details(state, +@page_step)},
+      else: {:noreply, State.scroll_messages(state, +@page_step)}
+  end
+
+  defp handle_key(%Event.Key{code: "home", modifiers: mods}, state) do
+    if "shift" in mods,
+      do: {:noreply, State.scroll_details_top(state)},
+      else: {:noreply, State.scroll_messages_top(state)}
+  end
+
+  defp handle_key(%Event.Key{code: "end"}, state) do
+    {:noreply, State.reset_pane_scroll(state)}
+  end
 
   defp handle_key(%Event.Key{code: "enter", modifiers: mods}, state) do
     cond do
@@ -320,6 +350,7 @@ defmodule ExAthena.Chat.Tui do
       |> State.append_event({:user, text})
       |> State.set_loading(true)
       |> State.reset_stream_state()
+      |> State.reset_pane_scroll()
       |> update_in_session(&Session.append_user(&1, text))
 
     task_pid = Runner.start(state.session, self())

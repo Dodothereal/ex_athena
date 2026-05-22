@@ -217,7 +217,8 @@ defmodule ExAthena.Chat.Tui.View do
          %State{
            events: events,
            loading?: loading?,
-           session: session
+           session: session,
+           messages_scroll: above_bottom
          },
          width,
          height
@@ -227,7 +228,7 @@ defmodule ExAthena.Chat.Tui.View do
       |> Enum.map(&row_widget(&1, session.model, width))
       |> append_throbber(loading?)
 
-    %WidgetList{items: items, scroll_offset: auto_scroll(items, height)}
+    %WidgetList{items: items, scroll_offset: scroll_offset(items, height, above_bottom)}
   end
 
   @details_block %Block{
@@ -237,9 +238,14 @@ defmodule ExAthena.Chat.Tui.View do
     border_style: %Style{fg: :dark_gray}
   }
 
-  defp details(%State{details: details}, width, height) do
+  defp details(%State{details: details, details_scroll: above_bottom}, width, height) do
     items = Enum.map(details, &detail_row_widget(&1, width))
-    %WidgetList{items: items, scroll_offset: auto_scroll(items, height), block: @details_block}
+
+    %WidgetList{
+      items: items,
+      scroll_offset: scroll_offset(items, height, above_bottom),
+      block: @details_block
+    }
   end
 
   @changes_block %Block{
@@ -261,9 +267,14 @@ defmodule ExAthena.Chat.Tui.View do
     }
   end
 
-  defp changes(%State{git_diff_lines: lines}, width, height) do
+  defp changes(%State{git_diff_lines: lines, details_scroll: above_bottom}, width, height) do
     items = Enum.map(lines, &diff_row_widget(&1, width))
-    %WidgetList{items: items, scroll_offset: auto_scroll(items, height), block: @changes_block}
+
+    %WidgetList{
+      items: items,
+      scroll_offset: scroll_offset(items, height, above_bottom),
+      block: @changes_block
+    }
   end
 
   # Color each diff line by its first character: `+` green, `-` red,
@@ -288,17 +299,23 @@ defmodule ExAthena.Chat.Tui.View do
   defp diff_line_style("cwd: " <> _), do: %Style{fg: :dark_gray, modifiers: [:italic]}
   defp diff_line_style(_), do: %Style{fg: :dark_gray}
 
-  # Compute a scroll_offset that pins the WidgetList to the bottom: sum
-  # the item heights, subtract the viewport height, clamp at 0. Once the
-  # content fits in the viewport this is 0 (top of list); as content
-  # grows past `height`, the offset advances so the latest items stay
-  # visible.
-  defp auto_scroll(items, height) when is_integer(height) and height > 0 do
+  # Compute a scroll_offset for a WidgetList. `above_bottom` is the user's
+  # manual scroll position (in rows above the natural bottom); nil = "at
+  # the bottom" (auto-pin to newest content). When the user has scrolled
+  # up, we step back from the auto-bottom by `above_bottom` rows, clamped
+  # to [0, max_offset] so it never escapes the content.
+  defp scroll_offset(items, height, above_bottom)
+       when is_integer(height) and height > 0 do
     total = items |> Enum.map(fn {_w, h} -> h end) |> Enum.sum()
-    max(total - height, 0)
+    auto = max(total - height, 0)
+
+    case above_bottom do
+      nil -> auto
+      n when is_integer(n) -> auto |> Kernel.-(n) |> max(0)
+    end
   end
 
-  defp auto_scroll(_items, _height), do: 0
+  defp scroll_offset(_items, _height, _above_bottom), do: 0
 
   # Estimate the number of rows a string occupies once it's wrapped at
   # `width` columns. Counts each explicit `\n` as a line break and uses
