@@ -43,6 +43,64 @@ defmodule ExAthena.PermissionsTest do
     assert :allow = Permissions.check(call("glob"), ctx(:plan), %{})
   end
 
+  describe "plan phase — bash gating" do
+    test "allows read-only bash commands (cat, ls, grep, gh, git log/diff/status)" do
+      for cmd <- [
+            "cat lib/foo.ex",
+            "ls -la",
+            "grep -r Foo lib/",
+            "find . -name *.ex",
+            "gh issue view 58",
+            "git log --oneline -10",
+            "git diff",
+            "git status",
+            "head -50 README.md",
+            "tail -30 mix.exs",
+            "wc -l lib/foo.ex",
+            "mix help"
+          ] do
+        assert :allow = Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected read-only `#{cmd}` to be allowed in plan phase"
+      end
+    end
+
+    test "denies write/destructive bash commands" do
+      for cmd <- [
+            "rm -rf foo",
+            "mkdir new_dir",
+            "touch new.ex",
+            "mv a b",
+            "cp a b",
+            "echo hi > out.txt",
+            "echo hi >> out.txt",
+            "git add lib/foo.ex",
+            "git commit -m wip",
+            "git push",
+            "mix ecto.migrate",
+            "mix ash.codegen something",
+            "npm install foo",
+            "sed -i s/foo/bar/ file.ex"
+          ] do
+        assert {:deny,
+                %Denial{
+                  code: :phase_gated,
+                  metadata: %{phase: :plan, requested_tool: "bash"}
+                }} = Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected write/destructive `#{cmd}` to be denied in plan phase"
+      end
+    end
+
+    test "denies bash with missing command (defensive — treat as not read-only)" do
+      assert {:deny, %Denial{code: :phase_gated}} =
+               Permissions.check(call("bash", %{}), ctx(:plan), %{})
+    end
+
+    test "bash is unrestricted in :default phase" do
+      assert :allow =
+               Permissions.check(call("bash", %{"command" => "rm -rf foo"}), ctx(), %{})
+    end
+  end
+
   test "bypass_permissions allows everything" do
     assert :allow = Permissions.check(call("bash"), ctx(:bypass_permissions), %{})
     assert :allow = Permissions.check(call("write"), ctx(:bypass_permissions), %{})

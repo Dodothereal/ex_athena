@@ -126,7 +126,7 @@ defmodule ExAthena.Permissions do
   def check(%ToolCall{name: name, arguments: args}, %ToolContext{} = ctx, opts) do
     with :allow <- check_disallowed(name, ctx.phase, opts),
          :allow <- check_allowed(name, opts),
-         :allow <- check_phase(name, ctx.phase),
+         :allow <- check_phase(name, args, ctx.phase),
          :allow <- check_callback(name, args, ctx, ctx.phase, opts) do
       :allow
     end
@@ -185,10 +185,26 @@ defmodule ExAthena.Permissions do
     end
   end
 
-  defp check_phase(name, :plan) do
+  defp check_phase(name, args, :plan) do
     cond do
       name in @readonly_tools ->
         :allow
+
+      name == "bash" ->
+        if ExAthena.Tools.Bash.read_only_command?(args) do
+          :allow
+        else
+          {:deny,
+           %Denial{
+             code: :phase_gated,
+             reason: "bash command is not read-only and is not allowed in plan phase",
+             metadata: %{
+               phase: :plan,
+               requested_tool: "bash",
+               allowed_tools: @readonly_tools ++ ["bash (read-only commands only)"]
+             }
+           }}
+        end
 
       name in @mutating_tools ->
         {:deny,
@@ -203,10 +219,10 @@ defmodule ExAthena.Permissions do
     end
   end
 
-  defp check_phase(_name, :bypass_permissions), do: :allow
-  defp check_phase(_name, :trusted), do: :allow
-  defp check_phase(_name, :accept_edits), do: :allow
-  defp check_phase(_name, _), do: :allow
+  defp check_phase(_name, _args, :bypass_permissions), do: :allow
+  defp check_phase(_name, _args, :trusted), do: :allow
+  defp check_phase(_name, _args, :accept_edits), do: :allow
+  defp check_phase(_name, _args, _), do: :allow
 
   # `:trusted`, `:bypass_permissions`, and the auto-allow set of
   # `:accept_edits` skip the callback. Everything else (default mode +

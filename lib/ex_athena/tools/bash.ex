@@ -18,12 +18,49 @@ defmodule ExAthena.Tools.Bash do
   @default_timeout 120_000
   @max_timeout 600_000
 
+  # Patterns that mark a command as a write/destructive operation. Anything
+  # NOT matching is treated as read-only. Used by `Permissions.check_phase/3`
+  # to allow read-only bash invocations in :plan phase while still blocking
+  # mutations.
+  @write_patterns [
+    ~r/\b(mkdir|touch|rm|mv|cp|chmod|chown)\b/,
+    ~r/\bgit\s+(add|commit|push|merge|rebase|checkout|reset|clean|stash|branch\s+-[dD])\b/,
+    ~r/\b(npm|yarn|pnpm|mix|bundle|pip|cargo)\s+(install|add|remove|update|new|init)\b/,
+    ~r/\bmix\s+(ecto\.migrate|ecto\.create|ecto\.rollback|ecto\.gen\.migration|ash\.codegen|phx\.gen)\b/,
+    ~r/[>|]\s*tee\b/,
+    ~r/>>?\s/,
+    ~r/\bsed\s+-i\b/,
+    ~r/\bdd\b/,
+    ~r/\btruncate\b/,
+    ~r/\bcurl\b.*-[oO]\b/,
+    ~r/\bwget\b/
+  ]
+
   @impl true
   def name, do: "bash"
 
   @impl true
   def description,
     do: "Run a shell command in the working directory. Captures stdout+stderr and the exit code."
+
+  @doc """
+  Classify a bash invocation's `args` as read-only or not. Used by the
+  permissions layer to allow read-only bash calls (cat, ls, grep, git log,
+  gh issue view, …) during `:plan` phase while still denying mutations
+  (rm, mkdir, redirects, git add/commit, mix ecto.migrate, …).
+
+  Returns `true` when `args["command"]` does not match any known
+  write/destructive pattern. Missing/empty command → `false` (treat as
+  not read-only so the model gets a clear phase-gated denial rather than
+  a silent allow).
+  """
+  @spec read_only_command?(map()) :: boolean()
+  def read_only_command?(%{"command" => cmd}) when is_binary(cmd) and cmd != "" do
+    trimmed = String.trim(cmd)
+    not Enum.any?(@write_patterns, fn pattern -> Regex.match?(pattern, trimmed) end)
+  end
+
+  def read_only_command?(_), do: false
 
   @impl true
   def schema do
