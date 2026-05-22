@@ -34,6 +34,8 @@ defmodule ExAthena.Chat.Tui do
   # Rows per PgUp/PgDn press. Roughly a half-page on a typical terminal —
   # comfortable for skimming without overshooting.
   @page_step 10
+  # Rows per mouse-wheel click.
+  @wheel_step 3
 
   @doc """
   Start the chat App and block until the user quits.
@@ -45,10 +47,19 @@ defmodule ExAthena.Chat.Tui do
     suspend_beam_stdin_reader()
 
     {:ok, pid} = start_link(opts)
+
+    # ex_ratatui's NIF enables crossterm raw mode + alternate screen but
+    # does NOT toggle mouse capture, so wheel/click events never reach us.
+    # Enable X10 mouse reporting + SGR-extended mode (unlimited coords)
+    # ourselves via ANSI. Disabled in the {:DOWN, ...} cleanup below.
+    IO.write("\e[?1000h\e[?1006h")
+
     ref = Process.monitor(pid)
 
     receive do
-      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+      {:DOWN, ^ref, :process, ^pid, _reason} ->
+        IO.write("\e[?1006l\e[?1000l")
+        :ok
     end
   end
 
@@ -103,7 +114,62 @@ defmodule ExAthena.Chat.Tui do
     handle_popup_key(key, state)
   end
 
+  # Mouse wheel: scroll the pane under the cursor by @wheel_step rows.
+  def handle_event(%ExRatatui.Event.Mouse{kind: "scroll_up", x: x, y: y}, state) do
+    {:noreply, scroll_pane_at(state, x, y, -@wheel_step)}
+  end
+
+  def handle_event(%ExRatatui.Event.Mouse{kind: "scroll_down", x: x, y: y}, state) do
+    {:noreply, scroll_pane_at(state, x, y, +@wheel_step)}
+  end
+
+  # Left-click on a details tab title → switch tabs.
+  def handle_event(
+        %ExRatatui.Event.Mouse{kind: "down", button: "left", x: x, y: y},
+        state
+      ) do
+    {:noreply, maybe_click_tab(state, x, y)}
+  end
+
   def handle_event(_event, state), do: {:noreply, state}
+
+  # ── Mouse helpers ────────────────────────────────────────────────────
+
+  defp scroll_pane_at(state, x, y, delta) do
+    layout = Process.get(:tui_layout, %{})
+
+    cond do
+      in_rect?(layout[:messages], x, y) -> State.scroll_messages(state, delta)
+      in_rect?(layout[:details], x, y) -> State.scroll_details(state, delta)
+      true -> state
+    end
+  end
+
+  defp maybe_click_tab(state, x, y) do
+    layout = Process.get(:tui_layout, %{})
+
+    if in_rect?(layout[:tabs], x, y) and is_list(layout[:tab_titles]) do
+      tabs = State.details_tabs()
+      # Approximate tab width: split available width evenly. ratatui's
+      # Tabs widget aligns left and uses a divider; this is a "good
+      # enough" hit-test that picks the closer tab.
+      tabs_rect = layout[:tabs]
+      offset = x - tabs_rect.x
+      slot_width = max(div(tabs_rect.width, length(tabs)), 1)
+      idx = min(div(offset, slot_width), length(tabs) - 1)
+      target = Enum.at(tabs, max(idx, 0))
+
+      State.set_details_tab(state, target)
+    else
+      state
+    end
+  end
+
+  defp in_rect?(nil, _x, _y), do: false
+
+  defp in_rect?(%{x: rx, y: ry, width: rw, height: rh}, x, y) do
+    x >= rx and x < rx + rw and y >= ry and y < ry + rh
+  end
 
   defp handle_key(%Event.Key{code: "c", modifiers: mods} = key, state) do
     if "ctrl" in mods do

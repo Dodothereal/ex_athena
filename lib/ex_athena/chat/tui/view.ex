@@ -54,6 +54,19 @@ defmodule ExAthena.Chat.Tui.View do
 
     {messages_rect, details_rect} = split_body(body_rect, state)
 
+    # Stash the layout rects so the App's mouse-event handler can route
+    # clicks and wheel scrolls without recomputing the layout. Process
+    # dict is per-process and is the same process the App callbacks run
+    # in, so this is safe and cheap.
+    tabs_rect = details_rect && %Rect{details_rect | height: 1}
+
+    Process.put(:tui_layout, %{
+      messages: messages_rect,
+      details: details_rect,
+      tabs: tabs_rect,
+      tab_titles: details_tab_titles(state)
+    })
+
     widgets =
       [
         {header(state), header_rect},
@@ -66,6 +79,11 @@ defmodule ExAthena.Chat.Tui.View do
       nil -> widgets
       popup_tuple -> widgets ++ [popup_tuple]
     end
+  end
+
+  defp details_tab_titles(state) do
+    tabs = State.details_tabs()
+    Enum.map(tabs, &{&1, tab_title(&1, state)})
   end
 
   defp split_body(body_rect, %State{show_details: false}), do: {body_rect, nil}
