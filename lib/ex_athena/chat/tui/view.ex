@@ -86,6 +86,12 @@ defmodule ExAthena.Chat.Tui.View do
   @doc "Build the header status string from a session."
   @spec status_line(Session.t()) :: String.t()
   def status_line(%Session{} = s) do
+    cwd_suffix =
+      case s.cwd do
+        nil -> ""
+        path -> " · cwd=" <> Path.basename(path)
+      end
+
     IO.iodata_to_binary([
       to_string(s.model),
       " · ",
@@ -97,7 +103,8 @@ defmodule ExAthena.Chat.Tui.View do
       "/",
       Integer.to_string(Map.get(s.usage, :output_tokens, 0)),
       " tok · $",
-      :erlang.float_to_binary(s.cost_usd / 1.0, decimals: 4)
+      :erlang.float_to_binary(s.cost_usd / 1.0, decimals: 4),
+      cwd_suffix
     ])
   end
 

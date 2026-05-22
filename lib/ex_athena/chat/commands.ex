@@ -30,6 +30,8 @@ defmodule ExAthena.Chat.Commands do
     "clear" => :clear,
     "expand" => :expand,
     "details" => :details,
+    "cd" => :cd,
+    "pwd" => :pwd,
     "help" => :help,
     "?" => :help
   }
@@ -75,6 +77,9 @@ defmodule ExAthena.Chat.Commands do
                          (default 1 = most recent)
       /details [on|off]  show or hide the right "details" pane
                          (no args = toggle)
+      /cd PATH           set the working directory for tools
+                         (`~` is expanded; the chat process does not chdir)
+      /pwd               print the current working directory
       /help, /?          show this help
       /exit, /quit, /q   leave the chat
 
