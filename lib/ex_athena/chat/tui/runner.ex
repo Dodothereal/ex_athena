@@ -69,8 +69,15 @@ defmodule ExAthena.Chat.Tui.Runner do
       timeout_ms: @run_timeout_ms
     ]
 
-    apply_default_base_url(base, session.provider)
+    base
+    |> maybe_put_cwd(session.cwd)
+    |> apply_default_base_url(session.provider)
   end
+
+  defp maybe_put_cwd(opts, cwd) when is_binary(cwd) and cwd != "",
+    do: Keyword.put(opts, :cwd, cwd)
+
+  defp maybe_put_cwd(opts, _), do: opts
 
   @spec select_initial_model(String.t(), {:ok, [String.t()]} | {:error, term()}) ::
           {:ok, String.t()}

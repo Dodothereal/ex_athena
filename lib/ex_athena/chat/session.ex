@@ -21,7 +21,8 @@ defmodule ExAthena.Chat.Session do
             messages: [],
             iteration: 0,
             usage: %{input_tokens: 0, output_tokens: 0},
-            cost_usd: 0.0
+            cost_usd: 0.0,
+            cwd: nil
 
   @type t :: %__MODULE__{
           provider: atom(),
@@ -32,7 +33,8 @@ defmodule ExAthena.Chat.Session do
           messages: [Message.t()],
           iteration: non_neg_integer(),
           usage: %{input_tokens: non_neg_integer(), output_tokens: non_neg_integer()},
-          cost_usd: float()
+          cost_usd: float(),
+          cwd: String.t() | nil
         }
 
   @spec new(keyword()) :: t()
@@ -49,8 +51,14 @@ defmodule ExAthena.Chat.Session do
       model: Keyword.get(opts, :model, configured_model),
       mode: Keyword.get(opts, :mode, :react),
       tools: Keyword.get(opts, :tools, :all),
-      permission_mode: Keyword.get(opts, :permission_mode, :default)
+      permission_mode: Keyword.get(opts, :permission_mode, :default),
+      cwd: Keyword.get(opts, :cwd)
     }
+  end
+
+  @spec set_cwd(t(), String.t() | nil) :: t()
+  def set_cwd(%__MODULE__{} = session, cwd) when is_binary(cwd) or is_nil(cwd) do
+    %{session | cwd: cwd}
   end
 
   @spec append_user(t(), String.t()) :: t()

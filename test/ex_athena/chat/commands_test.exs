@@ -82,9 +82,20 @@ defmodule ExAthena.Chat.CommandsTest do
     test "lists every slash command with a one-line description" do
       text = Commands.help_text()
 
-      for verb <- ~w(/model /mode /tools /clear /expand /details /help /exit) do
+      for verb <- ~w(/model /mode /tools /clear /expand /details /cd /pwd /help /exit) do
         assert text =~ verb, "expected help text to mention #{verb}"
       end
+    end
+  end
+
+  describe "parse/1 /cd and /pwd" do
+    test "parses /cd PATH" do
+      assert Commands.parse("/cd ~/test") == {:command, :cd, ["~/test"]}
+      assert Commands.parse("/cd") == {:command, :cd, []}
+    end
+
+    test "parses /pwd" do
+      assert Commands.parse("/pwd") == {:command, :pwd, []}
     end
   end
 

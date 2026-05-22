@@ -14,12 +14,16 @@ defmodule Mix.Tasks.Athena.Chat do
       mix athena.chat --provider llamacpp
       mix athena.chat --provider ollama --model qwen2.5-coder:14b
       mix athena.chat --mode plan_and_solve
+      mix athena.chat -p ~/projects/my_app
 
   ## Flags
 
     * `--provider NAME` — `:ollama`, `:llamacpp`, `:openai`, etc. (overrides config).
     * `--model NAME`    — initial model (overrides config).
     * `--mode NAME`     — `react`, `plan_and_solve`, or `reflexion`.
+    * `--path PATH` (`-p`) — working directory for tools that touch the
+      filesystem. `~` is expanded. The chat process does NOT `cd` into
+      this path; tools just receive it as their `cwd`.
 
   ## Provider-specific requirements
 
@@ -38,13 +42,17 @@ defmodule Mix.Tasks.Athena.Chat do
     Mix.Task.run("app.start", [])
 
     {parsed, _rest, _invalid} =
-      OptionParser.parse(argv, strict: [model: :string, mode: :string, provider: :string])
+      OptionParser.parse(argv,
+        strict: [model: :string, mode: :string, provider: :string, path: :string],
+        aliases: [p: :path]
+      )
 
     opts =
       []
       |> maybe_put_provider(parsed[:provider])
       |> maybe_put(:model, parsed[:model])
       |> maybe_put_mode(parsed[:mode])
+      |> maybe_put_path(parsed[:path])
 
     Tui.start(opts)
   end
@@ -76,6 +84,19 @@ defmodule Mix.Tasks.Athena.Chat do
         "Unknown --mode #{raw}. Valid: " <> Enum.map_join(@valid_modes, ", ", &Atom.to_string/1)
       )
 
+      opts
+    end
+  end
+
+  defp maybe_put_path(opts, nil), do: opts
+
+  defp maybe_put_path(opts, raw) when is_binary(raw) do
+    expanded = Path.expand(raw)
+
+    if File.dir?(expanded) do
+      Keyword.put(opts, :cwd, expanded)
+    else
+      Mix.shell().error("--path #{raw} (expanded to #{expanded}) is not an existing directory.")
       opts
     end
   end

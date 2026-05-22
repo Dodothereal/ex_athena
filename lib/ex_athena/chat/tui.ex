@@ -325,6 +325,41 @@ defmodule ExAthena.Chat.Tui do
     |> noreply()
   end
 
+  defp dispatch_command(:cd, [], state) do
+    append_and_noreply(
+      state,
+      {:warning, "Usage: /cd PATH  (use /pwd to see the current directory)"}
+    )
+  end
+
+  defp dispatch_command(:cd, [path_arg | _], state) do
+    expanded = Path.expand(path_arg)
+
+    cond do
+      not File.exists?(expanded) ->
+        append_and_noreply(state, {:warning, "Path does not exist: " <> expanded})
+
+      not File.dir?(expanded) ->
+        append_and_noreply(state, {:warning, "Not a directory: " <> expanded})
+
+      true ->
+        state
+        |> update_in_session(&Session.set_cwd(&1, expanded))
+        |> State.append_event({:info, "cwd → " <> expanded})
+        |> noreply()
+    end
+  end
+
+  defp dispatch_command(:pwd, _args, state) do
+    label =
+      case state.session.cwd do
+        nil -> "cwd: (none — using the process's own directory)"
+        path -> "cwd: " <> path
+      end
+
+    append_and_noreply(state, {:info, label})
+  end
+
   defp dispatch_command(:details, args, state) do
     new_value =
       case Enum.map(args, &String.downcase/1) do
@@ -378,12 +413,18 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp banner_events(%State{session: session} = state) do
-    state
-    |> State.append_event({:info, "ExAthena chat  (/help for commands, /exit to quit)"})
-    |> State.append_event(
-      {:info,
-       "provider=#{session.provider}  model=#{session.model}  mode=#{inspect(session.mode)}"}
-    )
+    state =
+      state
+      |> State.append_event({:info, "ExAthena chat  (/help for commands, /exit to quit)"})
+      |> State.append_event(
+        {:info,
+         "provider=#{session.provider}  model=#{session.model}  mode=#{inspect(session.mode)}"}
+      )
+
+    case session.cwd do
+      nil -> state
+      cwd -> State.append_event(state, {:info, "cwd=" <> cwd})
+    end
   end
 
   defp restore_logger(%State{prior_log_level: level} = state) do
