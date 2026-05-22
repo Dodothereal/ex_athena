@@ -256,7 +256,15 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp dispatch_command(:help, _args, state) do
-    append_and_noreply(state, {:info, Commands.help_text()})
+    # Each event row renders as one line, so split the help text and append
+    # one :info row per line (otherwise only the first line is visible).
+    state =
+      Commands.help_text()
+      |> String.trim_trailing("\n")
+      |> String.split("\n")
+      |> Enum.reduce(state, fn line, s -> State.append_event(s, {:info, line}) end)
+
+    {:noreply, state}
   end
 
   defp dispatch_command(:clear, _args, state) do

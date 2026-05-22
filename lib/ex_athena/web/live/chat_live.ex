@@ -64,6 +64,14 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Stored tool UI payloads (diff/process/file) keyed by tool_call_id
         tool_uis: %{},
         expanded_uis: MapSet.new(),
+        # Right-pane details stream: a chronological, append-only log of every
+        # event in the session. Stored in REVERSE order (head = newest) for
+        # O(1) prepends and O(1) "extend the last entry" merging during
+        # streaming. `Enum.reverse/1` once at render time.
+        details_stream: [],
+        # The assistant message id that streaming events are currently
+        # attributed to. Set in start_agent_run; cleared in :athena_done.
+        pending_assistant_msg_id: nil,
         # Loading / status / errors
         page_loading: !connected?(socket),
         status: nil,
@@ -141,6 +149,8 @@ defmodule ExAthena.Web.Live.ChatLive do
          ex_messages: [],
          tool_uis: %{},
          expanded_uis: MapSet.new(),
+         details_stream: [],
+         pending_assistant_msg_id: nil,
          status: nil,
          error: nil,
          show_modal: false,
@@ -168,6 +178,8 @@ defmodule ExAthena.Web.Live.ChatLive do
          ex_messages: [],
          tool_uis: %{},
          expanded_uis: MapSet.new(),
+         details_stream: [],
+         pending_assistant_msg_id: nil,
          status: nil,
          error: nil,
          sessions: sessions,
@@ -194,6 +206,8 @@ defmodule ExAthena.Web.Live.ChatLive do
        ex_messages: [],
        tool_uis: %{},
        expanded_uis: MapSet.new(),
+       details_stream: [],
+       pending_assistant_msg_id: nil,
        status: nil,
        error: nil,
        stream_text: "",
@@ -247,6 +261,8 @@ defmodule ExAthena.Web.Live.ChatLive do
        ex_messages: [],
        tool_uis: %{},
        expanded_uis: MapSet.new(),
+       details_stream: [],
+       pending_assistant_msg_id: nil,
        status: nil,
        error: nil
      )}
@@ -257,6 +273,14 @@ defmodule ExAthena.Web.Live.ChatLive do
       {:ok, data} ->
         cwd = Map.get(data, :cwd, socket.assigns.cwd)
         if cwd, do: Sessions.touch_recent(cwd)
+
+        tool_uis = Map.get(data, :tool_uis, %{})
+
+        details_stream =
+          case Map.get(data, :details_stream) do
+            nil -> hydrate_details_stream(data.display_messages, tool_uis)
+            existing -> existing
+          end
 
         {:noreply,
          assign(socket,
@@ -269,8 +293,10 @@ defmodule ExAthena.Web.Live.ChatLive do
            mode: data.mode,
            messages: data.display_messages,
            ex_messages: data.ex_messages,
-           tool_uis: Map.get(data, :tool_uis, %{}),
+           tool_uis: tool_uis,
            expanded_uis: MapSet.new(),
+           details_stream: details_stream,
+           pending_assistant_msg_id: nil,
            status: nil,
            error: nil,
            show_sessions: false
@@ -307,6 +333,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
         new_id = unique_id()
         title = derive_title(forked_messages)
+        details_stream = hydrate_details_stream(forked_messages, socket.assigns.tool_uis)
 
         {:noreply,
          assign(socket,
@@ -315,6 +342,8 @@ defmodule ExAthena.Web.Live.ChatLive do
            session_created_at: DateTime.utc_now(),
            messages: forked_messages,
            ex_messages: ex_messages,
+           details_stream: details_stream,
+           pending_assistant_msg_id: nil,
            status: nil,
            error: nil,
            stream_text: "",
@@ -337,6 +366,10 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, expanded_uis: expanded)}
   end
 
+  def handle_event("focus_detail", %{"id" => tool_call_id}, socket) do
+    {:noreply, push_event(socket, "focus-detail", %{tool_call_id: tool_call_id})}
+  end
+
   # ---------------------------------------------------------------------------
   # Internal messages
   # ---------------------------------------------------------------------------
@@ -357,40 +390,119 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_info({:athena, {:content, text}}, socket) do
-    {:noreply, update(socket, :stream_text, &(&1 <> text))}
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    {:noreply,
+     socket
+     |> update(:stream_text, &(&1 <> text))
+     |> update(:details_stream, &extend_or_prepend_text(&1, :assistant_text, msg_id, text))}
+  end
+
+  def handle_info({:athena, {:thinking, text}}, socket) do
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    {:noreply,
+     update(socket, :details_stream, &extend_or_prepend_text(&1, :thinking, msg_id, text))}
   end
 
   def handle_info({:athena, {:tool_call, tc}}, socket) do
     event = %{type: :call, id: tc.id, name: tc.name, arguments: tc.arguments}
     action = action_label(tc.name, tc.arguments)
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    detail =
+      new_detail(:tool_call, msg_id, %{
+        tool_call_id: tc.id,
+        name: tc.name,
+        arguments: tc.arguments
+      })
 
     {:noreply,
      socket
      |> update(:stream_events, &(&1 ++ [event]))
+     |> update(:details_stream, &[detail | &1])
      |> assign(current_action: action)}
   end
 
   def handle_info({:athena, {:tool_result, tr}}, socket) do
+    content = to_string(tr.content)
+    is_error = tr.is_error || false
+
     event = %{
       type: :result,
       tool_call_id: tr.tool_call_id,
-      content: to_string(tr.content),
-      is_error: tr.is_error || false
+      content: content,
+      is_error: is_error
     }
+
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    detail =
+      new_detail(:tool_result, msg_id, %{
+        tool_call_id: tr.tool_call_id,
+        content: content,
+        is_error: is_error
+      })
 
     {:noreply,
      socket
      |> update(:stream_events, &(&1 ++ [event]))
+     |> update(:details_stream, &[detail | &1])
      |> assign(current_action: nil)}
   end
 
-  def handle_info({:athena, {:tool_ui, %{tool_call_id: id, kind: kind, payload: payload}}}, socket) do
+  def handle_info(
+        {:athena, {:tool_ui, %{tool_call_id: id, kind: kind, payload: payload}}},
+        socket
+      ) do
     ui_entry = build_ui_entry(kind, payload)
-    {:noreply, update(socket, :stream_tool_ui, &Map.put(&1, id, ui_entry))}
+    msg_id = socket.assigns.pending_assistant_msg_id
+    detail = new_detail(:tool_ui, msg_id, %{tool_call_id: id, ui: ui_entry})
+
+    {:noreply,
+     socket
+     |> update(:stream_tool_ui, &Map.put(&1, id, ui_entry))
+     |> update(:details_stream, &[detail | &1])}
+  end
+
+  def handle_info({:athena, {:iteration, n}}, socket) do
+    detail = new_detail(:iteration, socket.assigns.pending_assistant_msg_id, %{n: n})
+    {:noreply, update(socket, :details_stream, &[detail | &1])}
+  end
+
+  def handle_info({:athena, {:compaction, data}}, socket) do
+    detail = new_detail(:compaction, socket.assigns.pending_assistant_msg_id, data)
+    {:noreply, update(socket, :details_stream, &[detail | &1])}
+  end
+
+  def handle_info({:athena, {:subagent_spawn, data}}, socket) do
+    detail = new_detail(:subagent_spawn, socket.assigns.pending_assistant_msg_id, data)
+    {:noreply, update(socket, :details_stream, &[detail | &1])}
+  end
+
+  def handle_info({:athena, {:subagent_result, data}}, socket) do
+    detail = new_detail(:subagent_result, socket.assigns.pending_assistant_msg_id, data)
+    {:noreply, update(socket, :details_stream, &[detail | &1])}
+  end
+
+  def handle_info({:athena, {:structured_retry, data}}, socket) do
+    detail = new_detail(:structured_retry, socket.assigns.pending_assistant_msg_id, data)
+    {:noreply, update(socket, :details_stream, &[detail | &1])}
+  end
+
+  def handle_info({:athena, {:usage, usage}}, socket) do
+    detail = new_detail(:usage, socket.assigns.pending_assistant_msg_id, %{usage: usage})
+    {:noreply, update(socket, :details_stream, &[detail | &1])}
   end
 
   def handle_info({:athena, {:error, reason}}, socket) do
-    {:noreply, assign(socket, error: inspect(reason))}
+    detail =
+      new_detail(:error, socket.assigns.pending_assistant_msg_id, %{reason: inspect(reason)})
+
+    {:noreply,
+     socket
+     |> assign(error: inspect(reason))
+     |> update(:details_stream, &[detail | &1])}
   end
 
   def handle_info({:athena, _other}, socket), do: {:noreply, socket}
@@ -413,8 +525,10 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     new_tool_uis = Map.merge(socket.assigns.tool_uis, socket.assigns.stream_tool_ui)
 
+    assistant_msg_id = socket.assigns.pending_assistant_msg_id || unique_id()
+
     assistant_msg = %{
-      id: unique_id(),
+      id: assistant_msg_id,
       role: :assistant,
       text: socket.assigns.stream_text,
       tool_events: socket.assigns.stream_events,
@@ -435,6 +549,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         stream_events: [],
         stream_tool_ui: %{},
         current_action: nil,
+        pending_assistant_msg_id: nil,
         status: status,
         error: nil,
         session_title: title
@@ -650,7 +765,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       </aside>
 
       <%!-- Main chat --%>
-      <main class="chat-main">
+      <main class="chat-main" id="chat-main" phx-hook="SplitResize">
         <div class="messages" id="messages" phx-hook="ScrollToBottom">
           <%= if @messages == [] and not @streaming do %>
             <div class="empty-state">
@@ -699,6 +814,12 @@ defmodule ExAthena.Web.Live.ChatLive do
           <%= if @error do %>
             <div class="msg-error">⚠ {@error}</div>
           <% end %>
+        </div>
+
+        <div class="chat-divider" id="chat-divider" aria-label="Resize panes" role="separator"></div>
+
+        <div class="details-pane" id="details-pane" phx-hook="ScrollToBottom">
+          <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
         </div>
 
         <div class="input-bar">
@@ -796,33 +917,32 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp tool_events(assigns) do
     calls = Enum.filter(assigns.events, &(&1.type == :call))
-    results_by_id = assigns.events |> Enum.filter(&(&1.type == :result)) |> Map.new(&{&1.tool_call_id, &1})
+
+    results_by_id =
+      assigns.events |> Enum.filter(&(&1.type == :result)) |> Map.new(&{&1.tool_call_id, &1})
+
     assigns = assign(assigns, calls: calls, results_by_id: results_by_id)
 
     ~H"""
-    <div class="tool-events">
-      <div :for={call <- @calls} class="tool-call">
-        <div class="tool-call-header">
-          <span class="tool-arrow">→</span>
-          <span class="tool-name">{call.name}</span>
-          <span class="tool-args">{preview_args(call.arguments)}</span>
-        </div>
-
+    <div class="tool-events tool-events--compact">
+      <button
+        :for={call <- @calls}
+        type="button"
+        class="tool-one-liner"
+        phx-click="focus_detail"
+        phx-value-id={call.id}
+        title="Show details on the right"
+      >
+        <span class="tool-arrow">→</span>
+        <span class="tool-name">{call.name}</span>
+        <span class="tool-args">{preview_args(call.arguments)}</span>
         <%= if result = Map.get(@results_by_id, call.id) do %>
-          <div class={"tool-result#{if result.is_error, do: " tool-result--error", else: ""}"}>
+          <span class={"tool-result-inline#{if result.is_error, do: " tool-result-inline--error", else: ""}"}>
             <span class="tool-arrow">{if result.is_error, do: "✗", else: "←"}</span>
             <span class="tool-result-content">{summarize(result.content)}</span>
-            <%= if Map.has_key?(@tool_uis, call.id) do %>
-              <button class="btn-view-ui" phx-click="toggle_ui" phx-value-id={call.id}>
-                {if MapSet.member?(@expanded_uis, call.id), do: "▲ hide", else: "▼ view"}
-              </button>
-            <% end %>
-          </div>
-          <%= if MapSet.member?(@expanded_uis, call.id) and Map.has_key?(@tool_uis, call.id) do %>
-            <.tool_ui_panel ui={Map.get(@tool_uis, call.id)} />
-          <% end %>
+          </span>
         <% end %>
-      </div>
+      </button>
     </div>
     """
   end
@@ -872,6 +992,209 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp tool_ui_panel(assigns), do: ~H""
 
   # ---------------------------------------------------------------------------
+  # Right-pane: details_stream renderer
+  # ---------------------------------------------------------------------------
+
+  defp details_pane(%{stream: []} = assigns) do
+    ~H"""
+    <div class="details-empty">
+      <div class="details-empty-title">Activity</div>
+      <div class="details-empty-sub">Tool calls, results, and thinking will stream here.</div>
+    </div>
+    """
+  end
+
+  defp details_pane(assigns) do
+    assigns = assign(assigns, :entries, Enum.reverse(assigns.stream))
+
+    ~H"""
+    <div class="details-list" id="details-list">
+      <.detail_entry :for={e <- @entries} entry={e} />
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :user_text} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--user" id={"detail-#{@e.id}"}>
+      <div class="detail-label">you</div>
+      <div class="detail-text">{@e.payload.text}</div>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :assistant_text} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--assistant" id={"detail-#{@e.id}"}>
+      <div class="detail-label">assistant</div>
+      <div class="detail-text" style="white-space: pre-wrap">{@e.payload.text}</div>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :thinking} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--thinking" id={"detail-#{@e.id}"}>
+      <div class="detail-label">thinking</div>
+      <div class="detail-text" style="white-space: pre-wrap">{@e.payload.text}</div>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :tool_call} = e} = assigns) do
+    assigns =
+      assign(assigns,
+        e: e,
+        args_pretty: format_args(e.payload.arguments)
+      )
+
+    ~H"""
+    <div
+      class="detail-entry detail-entry--tool-call"
+      id={"detail-#{@e.id}"}
+      data-tool-call-id={@e.payload.tool_call_id}
+    >
+      <div class="detail-label">
+        <span class="tool-arrow">→</span> {@e.payload.name}
+      </div>
+      <pre class="detail-pre">{@args_pretty}</pre>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :tool_result} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div
+      class={"detail-entry detail-entry--tool-result#{if @e.payload.is_error, do: " detail-entry--error", else: ""}"}
+      id={"detail-#{@e.id}"}
+      data-tool-call-id={@e.payload.tool_call_id}
+    >
+      <div class="detail-label">
+        <span class="tool-arrow">{if @e.payload.is_error, do: "✗", else: "←"}</span>
+        {if @e.payload.is_error, do: "error", else: "result"}
+      </div>
+      <pre class="detail-pre">{@e.payload.content}</pre>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :tool_ui} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div
+      class="detail-entry detail-entry--tool-ui"
+      id={"detail-#{@e.id}"}
+      data-tool-call-id={@e.payload.tool_call_id}
+    >
+      <.tool_ui_panel ui={@e.payload.ui} />
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :iteration} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--iteration" id={"detail-#{@e.id}"}>
+      <span class="detail-divider-line"></span>
+      <span class="detail-divider-label">iteration {@e.payload.n}</span>
+      <span class="detail-divider-line"></span>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :compaction} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--meta" id={"detail-#{@e.id}"}>
+      <div class="detail-label">compaction</div>
+      <div class="detail-text">
+        {Map.get(@e.payload, :before)} → {Map.get(@e.payload, :after)} tokens
+        <%= if reason = Map.get(@e.payload, :reason) do %>
+          · {inspect(reason)}
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :subagent_spawn} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--subagent" id={"detail-#{@e.id}"}>
+      <div class="detail-label">subagent spawn · {inspect(Map.get(@e.payload, :id))}</div>
+      <pre class="detail-pre">{Map.get(@e.payload, :prompt, "")}</pre>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :subagent_result} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--subagent" id={"detail-#{@e.id}"}>
+      <div class="detail-label">subagent result · {inspect(Map.get(@e.payload, :id))}</div>
+      <pre class="detail-pre">{Map.get(@e.payload, :text, "")}</pre>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :structured_retry} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--meta" id={"detail-#{@e.id}"}>
+      <div class="detail-label">structured-retry attempt {Map.get(@e.payload, :attempt)}</div>
+      <pre class="detail-pre">{inspect(Map.get(@e.payload, :error))}</pre>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :usage} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--meta" id={"detail-#{@e.id}"}>
+      <div class="detail-label">usage</div>
+      <pre class="detail-pre">{inspect(Map.get(@e.payload, :usage))}</pre>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :error} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--error" id={"detail-#{@e.id}"}>
+      <div class="detail-label">⚠ error</div>
+      <div class="detail-text">{Map.get(@e.payload, :reason)}</div>
+    </div>
+    """
+  end
+
+  defp detail_entry(assigns), do: ~H""
+
+  defp format_args(args) when is_map(args) do
+    case Jason.encode(args, pretty: true) do
+      {:ok, json} -> json
+      _ -> inspect(args, pretty: true, limit: :infinity)
+    end
+  end
+
+  defp format_args(other), do: inspect(other, pretty: true)
+
+  # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
 
@@ -882,6 +1205,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     mode = socket.assigns.mode
 
     user_msg = %{id: unique_id(), role: :user, text: text, tool_events: [], status: nil}
+    assistant_msg_id = unique_id()
     new_ex_msg = Messages.user(text)
     ex_messages = socket.assigns.ex_messages ++ [new_ex_msg]
 
@@ -908,6 +1232,8 @@ defmodule ExAthena.Web.Live.ChatLive do
       end
     end)
 
+    user_detail = new_detail(:user_text, user_msg.id, %{text: text})
+
     {:noreply,
      assign(socket,
        messages: socket.assigns.messages ++ [user_msg],
@@ -917,6 +1243,8 @@ defmodule ExAthena.Web.Live.ChatLive do
        stream_events: [],
        stream_tool_ui: %{},
        current_action: nil,
+       pending_assistant_msg_id: assistant_msg_id,
+       details_stream: [user_detail | socket.assigns.details_stream],
        error: nil
      )}
   end
@@ -935,9 +1263,105 @@ defmodule ExAthena.Web.Live.ChatLive do
       updated_at: DateTime.utc_now(),
       display_messages: a.messages,
       ex_messages: a.ex_messages,
-      tool_uis: a.tool_uis
+      tool_uis: a.tool_uis,
+      details_stream: a.details_stream
     })
   end
+
+  # ---------------------------------------------------------------------------
+  # Details-stream helpers
+  # ---------------------------------------------------------------------------
+
+  defp new_detail(type, message_id, payload) do
+    %{
+      id: unique_id(),
+      type: type,
+      message_id: message_id,
+      payload: payload
+    }
+  end
+
+  # Stream is stored newest-first. If the head matches the same type and
+  # message_id (e.g. successive :content deltas during one turn), extend the
+  # existing entry's text instead of creating a new one.
+  defp extend_or_prepend_text(stream, _type, _msg_id, ""), do: stream
+
+  defp extend_or_prepend_text(
+         [%{type: t, message_id: m, payload: %{text: existing} = pl} = head | rest],
+         t,
+         m,
+         text
+       ) do
+    [%{head | payload: %{pl | text: existing <> text}} | rest]
+  end
+
+  defp extend_or_prepend_text(stream, type, msg_id, text) do
+    [new_detail(type, msg_id, %{text: text}) | stream]
+  end
+
+  # Rebuild details_stream from legacy persisted state (display messages +
+  # tool_uis). Used when loading a session that pre-dates details_stream
+  # persistence. Returns newest-first.
+  defp hydrate_details_stream(messages, tool_uis) when is_list(messages) do
+    messages
+    |> Enum.flat_map(&message_to_details(&1, tool_uis))
+    |> Enum.reverse()
+  end
+
+  defp hydrate_details_stream(_, _), do: []
+
+  defp message_to_details(%{role: :user, id: id, text: text}, _tool_uis) do
+    [new_detail(:user_text, id, %{text: text})]
+  end
+
+  defp message_to_details(%{role: :assistant, id: id, text: text, tool_events: events}, tool_uis) do
+    calls = Enum.filter(events, &(&1.type == :call))
+
+    results_by_id =
+      events |> Enum.filter(&(&1.type == :result)) |> Map.new(&{&1.tool_call_id, &1})
+
+    tool_details =
+      Enum.flat_map(calls, fn call ->
+        call_detail =
+          new_detail(:tool_call, id, %{
+            tool_call_id: call.id,
+            name: call.name,
+            arguments: call.arguments
+          })
+
+        result_detail =
+          case Map.get(results_by_id, call.id) do
+            nil ->
+              []
+
+            r ->
+              [
+                new_detail(:tool_result, id, %{
+                  tool_call_id: call.id,
+                  content: r.content,
+                  is_error: r.is_error
+                })
+              ]
+          end
+
+        ui_detail =
+          case Map.get(tool_uis, call.id) do
+            nil -> []
+            ui -> [new_detail(:tool_ui, id, %{tool_call_id: call.id, ui: ui})]
+          end
+
+        [call_detail] ++ result_detail ++ ui_detail
+      end)
+
+    text_detail =
+      if text && text != "",
+        do: [new_detail(:assistant_text, id, %{text: text})],
+        else: []
+
+    tool_details ++ text_detail
+  end
+
+  defp message_to_details(_, _), do: []
 
   defp build_ui_entry(:diff, %{path: path, before: before, after: after_text} = _payload) do
     before_lines = String.split(before, "\n")
@@ -1044,6 +1468,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp fetch_models("llamacpp") do
     base_url = Application.get_env(:ex_athena, :llamacpp, [])[:base_url]
     opts = if base_url, do: [base_url: base_url], else: []
+
     case LlamaCpp.list_models(opts) do
       {:ok, models} -> models
       _ -> []
@@ -1053,6 +1478,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp fetch_models("ollama") do
     base_url = Application.get_env(:ex_athena, :ollama, [])[:base_url]
     opts = if base_url, do: [base_url: base_url], else: []
+
     case Ollama.list_models(opts) do
       {:ok, models} -> models
       _ -> []
@@ -1145,8 +1571,12 @@ defmodule ExAthena.Web.Live.ChatLive do
         |> Enum.filter(&File.dir?(Path.join(dir, &1)))
         |> Enum.sort()
         |> case do
-          [] -> path
-          [single] -> Path.join(dir, single) <> "/"
+          [] ->
+            path
+
+          [single] ->
+            Path.join(dir, single) <> "/"
+
           many ->
             cp = common_prefix(many)
             filled = if cp == "" or cp == prefix, do: hd(many), else: cp

@@ -333,4 +333,78 @@ defmodule ExAthena.Chat.Tui.StateTest do
       assert state.events == []
     end
   end
+
+  describe "details pane" do
+    test ":tool_call appends a header + full pretty-printed args to details" do
+      tc = %ToolCall{id: "1", name: "Read", arguments: %{"path" => "lib/foo.ex"}}
+
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:tool_call, tc})
+
+      assert [{:detail_header, header} | rows] = state.details
+      assert header =~ "Read"
+      # The pretty-printed JSON spans multiple rows; each row is one entry.
+      assert Enum.any?(rows, fn {kind, line} -> kind == :tool_call and line =~ "path" end)
+    end
+
+    test ":tool_result appends the FULL content (not summarized) to details" do
+      tr = %ToolResult{
+        tool_call_id: "1",
+        content: "line one\nline two\nline three",
+        is_error: false
+      }
+
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:tool_result, tr})
+
+      texts = for {_, text} <- state.details, do: text
+      assert "line one" in texts
+      assert "line two" in texts
+      assert "line three" in texts
+    end
+
+    test ":iteration adds a header row to details but no row to events" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:iteration, 7})
+
+      assert state.events == []
+      assert [{:detail_header, "iteration 7"}] = state.details
+    end
+
+    test ":thinking deltas accumulate and flush into a thinking row in details" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:thinking, "let me "})
+        |> State.append_loop_event({:thinking, "think…"})
+
+      # Until flush_stream/1, the buffer holds the text.
+      assert state.details_thinking_buffer == "let me think…"
+      assert state.details == []
+
+      state = State.flush_stream(state)
+      assert state.details_thinking_buffer == ""
+      assert [{:thinking, "let me think…"}] = state.details
+    end
+
+    test "clear_session/1 also resets details state" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:iteration, 1})
+        |> State.append_loop_event({:thinking, "hmm"})
+        |> State.clear_session()
+
+      assert state.details == []
+      assert state.details_stream_buffer == ""
+      assert state.details_thinking_buffer == ""
+      assert state.details_scroll_offset == 0
+    end
+  end
 end

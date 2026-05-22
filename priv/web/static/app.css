@@ -202,10 +202,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 /* ── Chat main ────────────────────────────────────────────────────────────── */
 
+/* Two-pane layout: messages | divider | details. Input bar spans all three.
+   Column widths are driven by CSS custom properties set by the SplitResize
+   hook (clamped 20%–80%); defaults split the available space 1:1. */
 .chat-main {
   flex: 1;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  grid-template-columns: var(--left-w, 1fr) 6px var(--right-w, 1fr);
   overflow: hidden;
   min-width: 0;
 }
@@ -213,13 +217,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 /* ── Messages ─────────────────────────────────────────────────────────────── */
 
 .messages {
-  flex: 1;
+  grid-column: 1;
+  grid-row: 1;
   overflow-y: auto;
   padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 0;
   scroll-behavior: smooth;
+  min-width: 0;
 }
 
 /* Empty state */
@@ -379,6 +385,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 /* ── Input bar ────────────────────────────────────────────────────────────── */
 
 .input-bar {
+  grid-column: 1 / span 3;
+  grid-row: 2;
   border-top: 1px solid var(--border);
   padding: 16px 24px;
   background: var(--bg);
@@ -1134,3 +1142,199 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   font-family: var(--font-mono);
   margin-top: 8px;
 }
+
+/* ── Split-pane divider ───────────────────────────────────────────────────── */
+
+.chat-divider {
+  grid-column: 2;
+  grid-row: 1;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  transition: background 0.15s;
+}
+
+.chat-divider:hover,
+.chat-divider.dragging { background: var(--accent); }
+
+.chat-divider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+/* ── Details pane ─────────────────────────────────────────────────────────── */
+
+.details-pane {
+  grid-column: 3;
+  grid-row: 1;
+  overflow-y: auto;
+  background: var(--bg);
+  scroll-behavior: smooth;
+  min-width: 0;
+}
+
+.details-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+  user-select: none;
+}
+
+.details-empty-title { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+.details-empty-sub   { font-family: var(--font-mono); font-size: 11px; }
+
+.details-list {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px;
+  gap: 12px;
+}
+
+.detail-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.detail-entry:last-child { border-bottom: none; }
+
+.detail-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-text {
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.6;
+  word-wrap: break-word;
+}
+
+.detail-pre {
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.detail-entry--user .detail-label { color: var(--user-accent); }
+
+.detail-entry--assistant .detail-label { color: var(--accent); }
+
+.detail-entry--thinking .detail-label { color: #c084fc; }
+.detail-entry--thinking .detail-text { color: var(--muted); font-style: italic; }
+
+.detail-entry--tool-call .detail-label,
+.detail-entry--tool-result .detail-label { color: var(--accent); }
+
+.detail-entry--error .detail-label,
+.detail-entry--error .detail-text { color: var(--error-text); }
+
+.detail-entry--iteration {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  border-bottom: none;
+  padding: 14px 0 4px;
+}
+
+.detail-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.detail-divider-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.detail-entry--meta .detail-label,
+.detail-entry--subagent .detail-label { color: var(--muted); }
+
+.detail-entry--focused {
+  background: var(--accent-dim);
+  outline: 1px solid var(--accent);
+}
+
+/* ── Compact tool-events (left pane one-liners) ───────────────────────────── */
+
+.tool-events--compact { gap: 4px; }
+
+.tool-one-liner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: var(--tool-bg);
+  border: 1px solid var(--tool-border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  overflow: hidden;
+}
+
+.tool-one-liner:hover {
+  border-color: var(--accent);
+  background: rgba(52, 211, 153, 0.06);
+}
+
+.tool-one-liner .tool-args,
+.tool-one-liner .tool-result-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tool-result-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  margin-left: auto;
+  padding-left: 12px;
+  border-left: 1px solid var(--tool-border);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tool-result-inline--error { color: var(--error-text); }
+.tool-result-inline--error .tool-arrow { color: var(--error-text); }
