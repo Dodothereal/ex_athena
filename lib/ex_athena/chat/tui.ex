@@ -555,13 +555,30 @@ defmodule ExAthena.Chat.Tui do
   defp fetch_git_diff(cwd) do
     case System.cmd("git", ["diff", "HEAD"], cd: cwd, stderr_to_stdout: true) do
       {output, 0} ->
-        output |> String.trim_trailing("\n") |> String.split("\n")
+        case String.trim(output) do
+          "" -> ["(no changes vs HEAD)", "cwd: #{cwd}"]
+          trimmed -> String.split(trimmed, "\n")
+        end
 
-      _ ->
-        []
+      {output, exit_code} ->
+        # Common case: not a git repo, returns "fatal: not a git repository".
+        [
+          "git diff failed (exit #{exit_code}) in #{cwd}:"
+          | String.split(String.trim(output), "\n")
+        ]
     end
   rescue
-    _ -> []
+    e in ErlangError ->
+      case e.original do
+        :enoent ->
+          ["`git` executable not found on PATH"]
+
+        other ->
+          ["git diff crashed: " <> inspect(other)]
+      end
+
+    e ->
+      ["git diff crashed: " <> Exception.message(e)]
   end
 
   defp restore_logger(%State{prior_log_level: level} = state) do

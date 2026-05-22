@@ -97,9 +97,9 @@ defmodule ExAthena.Chat.Tui.View do
     ]
   end
 
-  defp details_tabs_widget(%State{details_tab: tab}) do
+  defp details_tabs_widget(%State{details_tab: tab} = state) do
     tabs = State.details_tabs()
-    titles = Enum.map(tabs, &tab_title/1)
+    titles = Enum.map(tabs, &tab_title(&1, state))
     selected = Enum.find_index(tabs, &(&1 == tab)) || 0
 
     %ExRatatui.Widgets.Tabs{
@@ -111,9 +111,21 @@ defmodule ExAthena.Chat.Tui.View do
     }
   end
 
-  defp tab_title(:timeline), do: " Timeline "
-  defp tab_title(:changes), do: " Changes (git diff) "
-  defp tab_title(other), do: " #{other} "
+  defp tab_title(:timeline, _state), do: " Timeline "
+
+  defp tab_title(:changes, %State{git_diff_lines: lines}) do
+    case changed_files_count(lines) do
+      0 -> " Changes "
+      n -> " Changes (#{n} file#{if n == 1, do: "", else: "s"}) "
+    end
+  end
+
+  defp tab_title(other, _state), do: " #{other} "
+
+  # Quick count of `diff --git` headers — one per modified file.
+  defp changed_files_count(lines) do
+    Enum.count(lines, &String.starts_with?(&1, "diff --git "))
+  end
 
   # ─ Autocomplete (slash command suggestions) ───────────────────────────────
 
@@ -240,7 +252,10 @@ defmodule ExAthena.Chat.Tui.View do
   defp changes(%State{git_diff_lines: []}, _width, _height) do
     %WidgetList{
       items: [
-        {%Paragraph{text: "No changes vs HEAD", style: %Style{fg: :dark_gray}}, 1}
+        {%Paragraph{
+           text: "Fetching `git diff` … (run /diff to refresh)",
+           style: %Style{fg: :dark_gray}
+         }, 1}
       ],
       block: @changes_block
     }
@@ -266,6 +281,11 @@ defmodule ExAthena.Chat.Tui.View do
   defp diff_line_style("@@" <> _), do: %Style{fg: :cyan}
   defp diff_line_style("+" <> _), do: %Style{fg: :green}
   defp diff_line_style("-" <> _), do: %Style{fg: :red}
+  defp diff_line_style("(no changes vs HEAD)"), do: %Style{fg: :dark_gray, modifiers: [:italic]}
+  defp diff_line_style("git diff failed" <> _), do: %Style{fg: :red, modifiers: [:bold]}
+  defp diff_line_style("git diff crashed" <> _), do: %Style{fg: :red, modifiers: [:bold]}
+  defp diff_line_style("`git` executable" <> _), do: %Style{fg: :red, modifiers: [:bold]}
+  defp diff_line_style("cwd: " <> _), do: %Style{fg: :dark_gray, modifiers: [:italic]}
   defp diff_line_style(_), do: %Style{fg: :dark_gray}
 
   # Compute a scroll_offset that pins the WidgetList to the bottom: sum
