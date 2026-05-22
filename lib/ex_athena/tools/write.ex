@@ -41,8 +41,32 @@ defmodule ExAthena.Tools.Write do
          {:ok, content} <- fetch_content(args),
          :ok <- File.mkdir_p(Path.dirname(path)),
          _ <- maybe_snapshot(ctx, path),
+         before = read_existing(path),
          :ok <- File.write(path, content) do
-      {:ok, "wrote #{byte_size(content)} bytes to #{Path.relative_to(path, ctx.cwd)}"}
+      llm = "wrote #{byte_size(content)} bytes to #{Path.relative_to(path, ctx.cwd)}"
+
+      ui = %{
+        kind: :diff,
+        payload: %{
+          path: path,
+          before: before,
+          after: content,
+          replacements: nil
+        }
+      }
+
+      {:ok, llm, ui}
+    end
+  end
+
+  # `""` for new files so the TUI's diff renderer treats the entire new
+  # content as added lines (Myers diff over [""] vs split(content) yields
+  # all `:ins`). Errors (permission denied, etc.) also map to `""` — the
+  # write itself either succeeded with that prior state or hasn't run yet.
+  defp read_existing(path) do
+    case File.read(path) do
+      {:ok, content} -> content
+      _ -> ""
     end
   end
 
