@@ -539,7 +539,10 @@ defmodule ExAthena.Loop do
       # inherit provider / base_url / model without needing explicit opts.
       # Map.put_new keeps a grandparent's config when this loop is itself a
       # subagent and the parent already set spawn_agent_opts.
-      inherited_provider_opts = inherit_provider_opts(raw_provider, opts)
+      inherited_provider_opts =
+        raw_provider
+        |> inherit_provider_opts(opts)
+        |> inherit_tool_ui_forwarder(opts)
 
       assigns =
         assigns
@@ -673,6 +676,25 @@ defmodule ExAthena.Loop do
     |> put_inherited(:model, opts)
     |> put_inherited(:api_key, opts)
     |> put_inherited(:permission_mode, opts)
+  end
+
+  # Forward :tool_ui events from subagents up to the parent's on_event so the
+  # diff panel sees edits made inside spawn_agent. All other event kinds are
+  # filtered out to avoid polluting the parent's chat stream with subagent
+  # content/tool_call/tool_result events.
+  defp inherit_tool_ui_forwarder(acc, opts) do
+    case Keyword.fetch(opts, :on_event) do
+      {:ok, parent_on_event} when is_function(parent_on_event, 1) ->
+        forwarder = fn
+          {:tool_ui, _} = event -> parent_on_event.(event)
+          _ -> :ok
+        end
+
+        Keyword.put(acc, :on_event, forwarder)
+
+      _ ->
+        acc
+    end
   end
 
   defp put_inherited(acc, key, opts) do
