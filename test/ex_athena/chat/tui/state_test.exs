@@ -334,6 +334,38 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
+  describe "details tabs" do
+    test "default details_tab is :timeline" do
+      state = Session.new() |> State.new()
+      assert state.details_tab == :timeline
+    end
+
+    test "cycle_details_tab/1 walks the tab list and wraps" do
+      state = Session.new() |> State.new()
+      assert State.cycle_details_tab(state).details_tab == :changes
+
+      assert state
+             |> State.cycle_details_tab()
+             |> State.cycle_details_tab()
+             |> Map.get(:details_tab) == :timeline
+    end
+
+    test "set_details_tab/2 jumps to a specific tab" do
+      state = Session.new() |> State.new()
+      assert State.set_details_tab(state, :changes).details_tab == :changes
+      assert State.set_details_tab(state, :timeline).details_tab == :timeline
+    end
+
+    test "set_git_diff/2 stores the line list" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.set_git_diff(["diff --git a/foo b/foo", "+added"])
+
+      assert state.git_diff_lines == ["diff --git a/foo b/foo", "+added"]
+    end
+  end
+
   describe "autocomplete_for/2" do
     test "is nil for an empty / non-slash input" do
       assert State.autocomplete_for("") == nil
