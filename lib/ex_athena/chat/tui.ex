@@ -560,33 +560,116 @@ defmodule ExAthena.Chat.Tui do
     state
   end
 
+  # Per-file caps when synthesizing diffs for untracked files. Untracked
+  # files don't show up in `git diff HEAD`, so we generate a synthetic
+  # "new file" diff for each — but cap so a generated/binary blob doesn't
+  # flood the pane.
+  @max_untracked_lines 500
+  @max_untracked_bytes 100_000
+
   defp fetch_git_diff(cwd) do
-    case System.cmd("git", ["diff", "HEAD"], cd: cwd, stderr_to_stdout: true) do
-      {output, 0} ->
-        case String.trim(output) do
-          "" -> ["(no changes vs HEAD)", "cwd: #{cwd}"]
-          trimmed -> String.split(trimmed, "\n")
+    case System.cmd("git", ["rev-parse", "--show-toplevel"],
+           cd: cwd,
+           stderr_to_stdout: true
+         ) do
+      {_root, 0} ->
+        tracked = run_git_diff(cwd)
+        untracked = render_untracked_files(cwd)
+
+        case {tracked, untracked} do
+          {[], []} -> ["(no changes vs HEAD)", "cwd: #{cwd}"]
+          _ -> tracked ++ untracked
         end
 
-      {output, exit_code} ->
-        # Common case: not a git repo, returns "fatal: not a git repository".
-        [
-          "git diff failed (exit #{exit_code}) in #{cwd}:"
-          | String.split(String.trim(output), "\n")
-        ]
+      {output, _exit} ->
+        ["not a git repository (cwd: #{cwd})" | String.split(String.trim(output), "\n")]
     end
   rescue
     e in ErlangError ->
       case e.original do
-        :enoent ->
-          ["`git` executable not found on PATH"]
-
-        other ->
-          ["git diff crashed: " <> inspect(other)]
+        :enoent -> ["`git` executable not found on PATH"]
+        other -> ["git crashed: " <> inspect(other)]
       end
 
     e ->
-      ["git diff crashed: " <> Exception.message(e)]
+      ["git crashed: " <> Exception.message(e)]
+  end
+
+  defp run_git_diff(cwd) do
+    case System.cmd("git", ["diff", "HEAD", "--color=never"], cd: cwd, stderr_to_stdout: true) do
+      {output, 0} -> output |> String.trim_trailing("\n") |> String.split("\n", trim: true)
+      _ -> []
+    end
+  end
+
+  # `git ls-files --others --exclude-standard` lists files not tracked
+  # and not gitignored. For each, synthesize a `--- /dev/null` /
+  # `+++ b/<path>` diff so new files appear in the same Changes view.
+  defp render_untracked_files(cwd) do
+    case System.cmd("git", ["ls-files", "--others", "--exclude-standard"],
+           cd: cwd,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        output
+        |> String.trim()
+        |> String.split("\n", trim: true)
+        |> Enum.flat_map(&render_untracked_file(&1, cwd))
+
+      _ ->
+        []
+    end
+  end
+
+  defp render_untracked_file(rel, cwd) do
+    header = [
+      "diff --git a/#{rel} b/#{rel}",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/#{rel}"
+    ]
+
+    path = Path.join(cwd, rel)
+
+    case File.stat(path) do
+      {:ok, %{type: :regular, size: size}} when size > @max_untracked_bytes ->
+        header ++ ["+(file too large to show: #{size} bytes)"]
+
+      {:ok, %{type: :regular}} ->
+        case File.read(path) do
+          {:ok, content} ->
+            if binary_content?(content) do
+              header ++ ["+(binary file)"]
+            else
+              lines = String.split(content, "\n")
+              total = length(lines)
+              visible = Enum.take(lines, @max_untracked_lines)
+              shown = length(visible)
+              diff_lines = Enum.map(visible, &("+" <> &1))
+
+              footer =
+                if total > shown,
+                  do: ["+… (#{total - shown} more lines)"],
+                  else: []
+
+              header ++ diff_lines ++ footer
+            end
+
+          _ ->
+            []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  # Cheap binary heuristic: NUL byte in the first 1KB.
+  defp binary_content?(""), do: false
+
+  defp binary_content?(content) do
+    head_size = min(byte_size(content), 1024)
+    :binary.match(binary_part(content, 0, head_size), <<0>>) != :nomatch
   end
 
   defp restore_logger(%State{prior_log_level: level} = state) do
