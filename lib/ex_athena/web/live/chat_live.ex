@@ -113,6 +113,23 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
+  def handle_event("stop", _params, socket) do
+    if pid = socket.assigns.streaming_task_pid do
+      Process.exit(pid, :kill)
+    end
+
+    {:noreply,
+     assign(socket,
+       streaming: false,
+       streaming_task_pid: nil,
+       stream_text: "",
+       stream_events: [],
+       stream_tool_ui: %{},
+       current_action: nil,
+       pending_assistant_msg_id: nil
+     )}
+  end
+
   # --- New-session modal ---
 
   def handle_event("show_modal", _params, socket) do
@@ -561,6 +578,9 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def handle_info({:athena, _other}, socket), do: {:noreply, socket}
 
+  def handle_info({:athena_done, _result}, %{assigns: %{streaming: false}} = socket),
+    do: {:noreply, socket}
+
   def handle_info({:athena_done, result}, socket) do
     usage = result.usage || %{}
 
@@ -599,6 +619,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         ex_messages: ex_messages,
         tool_uis: new_tool_uis,
         streaming: false,
+        streaming_task_pid: nil,
         stream_text: "",
         stream_events: [],
         stream_tool_ui: %{},
@@ -620,8 +641,17 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, socket}
   end
 
+  def handle_info({:athena_error, _reason}, %{assigns: %{streaming: false}} = socket),
+    do: {:noreply, socket}
+
   def handle_info({:athena_error, reason}, socket) do
-    {:noreply, assign(socket, streaming: false, current_action: nil, error: inspect(reason))}
+    {:noreply,
+     assign(socket,
+       streaming: false,
+       streaming_task_pid: nil,
+       current_action: nil,
+       error: inspect(reason)
+     )}
   end
 
   # ---------------------------------------------------------------------------
@@ -910,12 +940,13 @@ defmodule ExAthena.Web.Live.ChatLive do
               phx-hook="SubmitOnEnter"
             ></textarea>
             <button
-              class={"btn-send#{if @streaming or is_nil(@cwd), do: " btn-send--disabled", else: ""}"}
-              type="submit"
-              disabled={@streaming or is_nil(@cwd)}
+              class={if @streaming, do: "btn-stop", else: "btn-send#{if is_nil(@cwd), do: " btn-send--disabled", else: ""}"}
+              type={if @streaming, do: "button", else: "submit"}
+              phx-click={if @streaming, do: "stop"}
+              disabled={not @streaming and is_nil(@cwd)}
             >
               <%= if @streaming do %>
-                <span class="spinner"></span>
+                ■
               <% else %>
                 ↑
               <% end %>
@@ -1363,28 +1394,29 @@ defmodule ExAthena.Web.Live.ChatLive do
     new_ex_msg = Messages.user(text)
     ex_messages = socket.assigns.ex_messages ++ [new_ex_msg]
 
-    Task.start(fn ->
-      on_event = fn event -> send(pid, {:athena, event}) end
+    {:ok, task_pid} =
+      Task.start(fn ->
+        on_event = fn event -> send(pid, {:athena, event}) end
 
-      opts =
-        [
-          provider: safe_atom(provider, :llamacpp),
-          mode: safe_mode(mode),
-          messages: ex_messages,
-          tools: :all,
-          permission_mode: :accept_edits,
-          on_event: on_event,
-          timeout_ms: 24 * 60 * 60 * 1000
-        ]
-        |> maybe_put_model(model)
-        |> apply_base_url(provider)
-        |> maybe_put_cwd(socket.assigns.cwd)
+        opts =
+          [
+            provider: safe_atom(provider, :llamacpp),
+            mode: safe_mode(mode),
+            messages: ex_messages,
+            tools: :all,
+            permission_mode: :accept_edits,
+            on_event: on_event,
+            timeout_ms: 24 * 60 * 60 * 1000
+          ]
+          |> maybe_put_model(model)
+          |> apply_base_url(provider)
+          |> maybe_put_cwd(socket.assigns.cwd)
 
-      case ExAthena.run(nil, opts) do
-        {:ok, result} -> send(pid, {:athena_done, result})
-        {:error, reason} -> send(pid, {:athena_error, reason})
-      end
-    end)
+        case ExAthena.run(nil, opts) do
+          {:ok, result} -> send(pid, {:athena_done, result})
+          {:error, reason} -> send(pid, {:athena_error, reason})
+        end
+      end)
 
     user_detail = new_detail(:user_text, user_msg.id, %{text: text})
 
@@ -1393,6 +1425,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        messages: socket.assigns.messages ++ [user_msg],
        ex_messages: ex_messages,
        streaming: true,
+       streaming_task_pid: task_pid,
        stream_text: "",
        stream_events: [],
        stream_tool_ui: %{},
