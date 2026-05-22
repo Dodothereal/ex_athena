@@ -88,6 +88,7 @@ defmodule ExAthena.Modes.ReAct do
              ) do
           {:ok, []} ->
             # Terminal: model returned plain text with no tool calls.
+            maybe_emit_thinking(state.on_event, response)
             Events.emit(state.on_event, {:content, response.text || ""})
 
             state =
@@ -100,6 +101,7 @@ defmodule ExAthena.Modes.ReAct do
             {:halt, state}
 
           {:ok, tool_calls} ->
+            maybe_emit_thinking(state.on_event, response)
             Events.emit(state.on_event, {:content, response.text || ""})
 
             assistant_msg = Messages.assistant(response.text, tool_calls)
@@ -433,6 +435,16 @@ defmodule ExAthena.Modes.ReAct do
         end
     end
   end
+
+  # Emit a {:thinking, text} loop event when the provider surfaced any
+  # reasoning content. Skipped silently when the response has no thinking
+  # (most providers, simple models, or when thinking was disabled).
+  defp maybe_emit_thinking(on_event, %{thinking: text})
+       when is_binary(text) and text != "" do
+    Events.emit(on_event, {:thinking, text})
+  end
+
+  defp maybe_emit_thinking(_on_event, _response), do: :ok
 
   defp extract_cost(nil), do: nil
 

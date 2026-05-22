@@ -120,6 +120,10 @@ defmodule ExAthena.Modes.Reflexion do
               Messages.assistant(critique)
             ]
 
+        if is_binary(response.thinking) and response.thinking != "" do
+          ExAthena.Loop.Events.emit(state.on_event, {:thinking, response.thinking})
+        end
+
         ExAthena.Loop.Events.emit(state.on_event, {:content, critique})
 
         {:ok, %{state | messages: new_messages, budget: new_budget}}

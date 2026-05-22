@@ -346,8 +346,16 @@ defmodule ExAthena.Providers.ReqLLM do
   # ── Response mapping ──────────────────────────────────────────────
 
   defp to_response(%ReqLLM.Response{} = resp, %Request{} = request) do
+    thinking =
+      case ReqLLM.Response.thinking(resp) do
+        nil -> nil
+        "" -> nil
+        text -> text
+      end
+
     %Response{
       text: extract_text(resp),
+      thinking: thinking,
       tool_calls: extract_tool_calls(resp),
       finish_reason: resp.finish_reason,
       model: resp.model || request.model,
@@ -410,6 +418,7 @@ defmodule ExAthena.Providers.ReqLLM do
   defp consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request) do
     state = %{
       text: [],
+      thinking: [],
       tool_calls: [],
       # Collects OpenAI-style streaming tool-call argument fragments keyed by
       # the tool-call index. llama.cpp (and strict OpenAI clients) stream
@@ -440,6 +449,7 @@ defmodule ExAthena.Providers.ReqLLM do
     tool_calls = patch_tool_call_args(final.tool_calls, final.tool_call_args_buffer)
 
     text = final.text |> Enum.reverse() |> IO.iodata_to_binary()
+    thinking = final.thinking |> Enum.reverse() |> IO.iodata_to_binary()
 
     # Log the resolved tool calls. Warn when args are still empty after patching
     # (means neither fragments nor raw_arguments provided usable JSON).
@@ -468,6 +478,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
     %Response{
       text: text,
+      thinking: if(thinking == "", do: nil, else: thinking),
       tool_calls: tool_calls,
       finish_reason: final.finish_reason || :stop,
       model: final.model,
@@ -595,6 +606,15 @@ defmodule ExAthena.Providers.ReqLLM do
 
     ExAthena.Streaming.text_delta(callback, text)
     %{acc | text: [text | acc.text]}
+  end
+
+  defp handle_chunk(%{type: :thinking, text: text}, callback, acc) when is_binary(text) do
+    Logger.debug(fn ->
+      "#{@log_prefix} ←thinking_delta #{byte_size(text)}B: #{preview(text, 80)}"
+    end)
+
+    ExAthena.Streaming.thinking_delta(callback, text)
+    %{acc | thinking: [text | acc.thinking]}
   end
 
   defp handle_chunk(%{type: :tool_call} = tc, _callback, acc) do
