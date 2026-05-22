@@ -16,6 +16,7 @@ defmodule ExAthena.Streaming do
     @type type ::
             :start
             | :text_delta
+            | :thinking_delta
             | :tool_call_start
             | :tool_call_delta
             | :tool_call_end
@@ -33,6 +34,10 @@ defmodule ExAthena.Streaming do
   @doc "Emit a text-delta event."
   def text_delta(callback, text) when is_binary(text),
     do: emit(callback, %Event{type: :text_delta, data: text})
+
+  @doc "Emit a thinking/reasoning delta event (Claude `<thinking>` blocks, etc.)."
+  def thinking_delta(callback, text) when is_binary(text),
+    do: emit(callback, %Event{type: :thinking_delta, data: text})
 
   @doc "Emit a start-of-tool-call event with a partial ToolCall."
   def tool_call_start(callback, index, partial),

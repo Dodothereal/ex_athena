@@ -64,6 +64,10 @@ defmodule ExAthena.Modes.PlanAndSolve do
 
     case state.provider_mod.query(request, state.provider_opts) do
       {:ok, response} ->
+        if is_binary(response.thinking) and response.thinking != "" do
+          ExAthena.Loop.Events.emit(state.on_event, {:thinking, response.thinking})
+        end
+
         ExAthena.Loop.Events.emit(state.on_event, {:content, response.text || ""})
 
         state = fold_usage(state, response)

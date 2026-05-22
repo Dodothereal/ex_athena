@@ -12,6 +12,7 @@ defmodule ExAthena.Response do
 
   defstruct [
     :text,
+    :thinking,
     :tool_calls,
     :finish_reason,
     :usage,
@@ -28,6 +29,7 @@ defmodule ExAthena.Response do
 
   @type t :: %__MODULE__{
           text: String.t() | nil,
+          thinking: String.t() | nil,
           tool_calls: [ToolCall.t()],
           finish_reason: :stop | :length | :tool_calls | :content_filter | :error | nil,
           usage: usage() | nil,
