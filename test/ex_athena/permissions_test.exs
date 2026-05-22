@@ -137,4 +137,20 @@ defmodule ExAthena.PermissionsTest do
     {:deny, denial} = Permissions.check(call("write"), ctx(:plan), %{})
     assert is_binary(to_string(denial))
   end
+
+  describe "plan_mode_tools/0" do
+    test "is readonly_tools/0 plus bash" do
+      assert Permissions.plan_mode_tools() == Permissions.readonly_tools() ++ ["bash"]
+    end
+
+    test "includes bash" do
+      assert "bash" in Permissions.plan_mode_tools()
+    end
+
+    test "includes the existing readonly set" do
+      for tool <- Permissions.readonly_tools() do
+        assert tool in Permissions.plan_mode_tools()
+      end
+    end
+  end
 end

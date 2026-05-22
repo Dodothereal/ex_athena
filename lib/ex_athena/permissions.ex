@@ -274,6 +274,18 @@ defmodule ExAthena.Permissions do
   @spec readonly_tools() :: [String.t()]
   def readonly_tools, do: @readonly_tools
 
+  @doc """
+  Tools to advertise to the model during read-only planning/scope phases.
+  Same as `readonly_tools/0` plus `"bash"`, which is conditionally allowed
+  in `:plan` (read-only commands only — see `check_phase/3`).
+
+  Hosts that build their plan-mode tool list from this stay in sync with
+  the permissions layer automatically when ex_athena widens or narrows
+  what's safe in plan phase.
+  """
+  @spec plan_mode_tools() :: [String.t()]
+  def plan_mode_tools, do: @readonly_tools ++ ["bash"]
+
   @artifact_dirs ~w(_build/ deps/ node_modules/ .git/ priv/static/ tmp/)
 
   @doc """
