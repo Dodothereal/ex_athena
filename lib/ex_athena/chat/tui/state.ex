@@ -14,6 +14,7 @@ defmodule ExAthena.Chat.Tui.State do
   alias ExAthena.Chat.Session
   alias ExAthena.Messages.{ToolCall, ToolResult}
   alias ExAthena.Result
+  alias ExAthena.Streaming.Event, as: StreamEvent
 
   @preview_chars 200
   @default_footer "Enter: send  Ctrl+C: quit  /help"
@@ -51,6 +52,16 @@ defmodule ExAthena.Chat.Tui.State do
             details_thinking_buffer: "",
             thinking_open?: false,
             show_details: true,
+            # Streaming-tag parser state. Tracks whether we're currently
+            # inside a `<think>` block and holds the longest suffix of the
+            # latest delta that could be the start of an open/close tag
+            # (so partial tags spanning deltas still parse correctly).
+            stream_parser: %{mode: :outside, pending: "", close_tag: nil},
+            # True once any per-token streaming delta has arrived this turn.
+            # When true we suppress the redundant end-of-turn
+            # `{:content,...}` / `{:thinking,...}` loop events that the
+            # mode emits with the full accumulated text.
+            streamed_this_turn?: false,
             footer: @default_footer,
             prior_log_level: :info,
             run_task: nil
@@ -69,6 +80,8 @@ defmodule ExAthena.Chat.Tui.State do
           details_thinking_buffer: String.t(),
           thinking_open?: boolean(),
           show_details: boolean(),
+          stream_parser: %{mode: atom(), pending: String.t(), close_tag: String.t() | nil},
+          streamed_this_turn?: boolean(),
           footer: String.t(),
           prior_log_level: atom(),
           run_task: pid() | nil
@@ -94,6 +107,51 @@ defmodule ExAthena.Chat.Tui.State do
   left pane and a full-detail block in the right pane.
   """
   @spec append_loop_event(t(), term()) :: t()
+  # Per-token streaming text delta (arrives via the provider during
+  # inference, before the loop emits its final {:content, ...} event).
+  # Run it through the inline <think>...</think> parser so thinking is
+  # routed to the right pane in real time.
+  def append_loop_event(%__MODULE__{} = state, %StreamEvent{type: :text_delta, data: text})
+      when is_binary(text) do
+    {new_parser, content_chunk, thinking_chunk} = parse_stream_chunk(state.stream_parser, text)
+
+    %{
+      state
+      | stream_parser: new_parser,
+        streamed_this_turn?: true,
+        stream_buffer: state.stream_buffer <> content_chunk,
+        details_stream_buffer: state.details_stream_buffer <> content_chunk,
+        details_thinking_buffer: state.details_thinking_buffer <> thinking_chunk
+    }
+  end
+
+  # Per-token native thinking delta (Claude `<thinking>` blocks via
+  # req_llm). Routes straight to the thinking buffer.
+  def append_loop_event(%__MODULE__{} = state, %StreamEvent{type: :thinking_delta, data: text})
+      when is_binary(text) do
+    %{
+      state
+      | streamed_this_turn?: true,
+        details_thinking_buffer: state.details_thinking_buffer <> text
+    }
+  end
+
+  # Ignore other Streaming.Event kinds (start, tool_call_*, usage, stop,
+  # error). The agent loop translates the relevant ones into loop event
+  # tuples that we handle below.
+  def append_loop_event(%__MODULE__{} = state, %StreamEvent{}), do: state
+
+  # When per-token streaming already populated the buffers this turn,
+  # the mode's end-of-turn {:content, full_text} would duplicate it.
+  # Drop it (the streamed content is the source of truth).
+  def append_loop_event(%__MODULE__{streamed_this_turn?: true} = state, {:content, _text}) do
+    state
+  end
+
+  def append_loop_event(%__MODULE__{streamed_this_turn?: true} = state, {:thinking, _text}) do
+    state
+  end
+
   def append_loop_event(%__MODULE__{} = state, {:content, text}) when is_binary(text) do
     {thinking, content} = split_thinking_blocks(text)
 
@@ -276,7 +334,9 @@ defmodule ExAthena.Chat.Tui.State do
         details: [],
         details_scroll_offset: 0,
         details_stream_buffer: "",
-        details_thinking_buffer: ""
+        details_thinking_buffer: "",
+        stream_parser: %{mode: :outside, pending: "", close_tag: nil},
+        streamed_this_turn?: false
     }
   end
 
@@ -307,14 +367,104 @@ defmodule ExAthena.Chat.Tui.State do
   def current_popup_selection(%__MODULE__{popup: {_, [], _}}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, items, idx}}), do: Enum.at(items, idx)
 
-  # ─ Thinking-tag extraction ───────────────────────────────────────────────
+  # ─ Streaming-tag parser ──────────────────────────────────────────────────
 
-  # Many open-weights reasoning models (qwen3, deepseek-r1, …) prepend
-  # `<think>…</think>` blocks to their answer. The provider stream doesn't
-  # split them out, so the agent loop emits everything as `{:content, text}`.
-  # Here we extract those blocks into `thinking` and return the rest as
-  # the visible content. Matches `<think>` AND `<thinking>` to cover the
-  # common variants; `s` flag so `.` spans newlines.
+  @open_re ~r/<think(?:ing)?>/
+  @open_candidates ["<think>", "<thinking>"]
+
+  @doc """
+  Reset the streaming parser state at the start of a new turn.
+  Called by `Tui.dispatch_message/2` before issuing the next request.
+  """
+  @spec reset_stream_state(t()) :: t()
+  def reset_stream_state(%__MODULE__{} = state) do
+    %{
+      state
+      | stream_parser: %{mode: :outside, pending: "", close_tag: nil},
+        streamed_this_turn?: false
+    }
+  end
+
+  # Run a streaming text delta through the inline-think state machine.
+  # Returns `{new_parser, content_chunk, thinking_chunk}`. The parser
+  # holds a `pending` string — the longest suffix of the previous delta
+  # that could be the start of a candidate tag — so tags split across
+  # deltas (`"…<thi"` + `"nk>foo</think>"`) still parse correctly.
+  @doc false
+  def parse_stream_chunk(parser, chunk) when is_binary(chunk) do
+    do_parse_stream(parser, chunk, "", "")
+  end
+
+  defp do_parse_stream(parser, "", content_acc, thinking_acc),
+    do: {parser, content_acc, thinking_acc}
+
+  defp do_parse_stream(%{mode: :outside, pending: pending}, chunk, content_acc, thinking_acc) do
+    text = pending <> chunk
+
+    case Regex.split(@open_re, text, parts: 2, include_captures: true) do
+      [before, tag, rest] ->
+        close_tag = if tag == "<think>", do: "</think>", else: "</thinking>"
+        next = %{mode: :inside, pending: "", close_tag: close_tag}
+        do_parse_stream(next, rest, content_acc <> before, thinking_acc)
+
+      [single] ->
+        {pending_tail, emit} = split_pending_tail(single, @open_candidates)
+        next = %{mode: :outside, pending: pending_tail, close_tag: nil}
+        {next, content_acc <> emit, thinking_acc}
+    end
+  end
+
+  defp do_parse_stream(
+         %{mode: :inside, pending: pending, close_tag: close_tag},
+         chunk,
+         content_acc,
+         thinking_acc
+       ) do
+    text = pending <> chunk
+
+    case String.split(text, close_tag, parts: 2) do
+      [before, rest] ->
+        next = %{mode: :outside, pending: "", close_tag: nil}
+        do_parse_stream(next, rest, content_acc, thinking_acc <> before)
+
+      [single] ->
+        {pending_tail, emit} = split_pending_tail(single, [close_tag])
+        next = %{mode: :inside, pending: pending_tail, close_tag: close_tag}
+        {next, content_acc, thinking_acc <> emit}
+    end
+  end
+
+  # Split `text` into `{pending_tail, emit}` where `pending_tail` is the
+  # longest suffix of `text` that is a STRICT prefix of any candidate
+  # tag (e.g. "<thi" when the candidate is "<think>"). Everything before
+  # the partial is safe to emit; the partial is held until the next
+  # delta arrives.
+  defp split_pending_tail(text, candidates) do
+    text_len = byte_size(text)
+    max_n = candidates |> Enum.map(&byte_size/1) |> Enum.max() |> Kernel.-(1) |> min(text_len)
+
+    pending =
+      Enum.reduce_while(max_n..1//-1, "", fn n, _ ->
+        suffix = binary_part(text, text_len - n, n)
+
+        if Enum.any?(candidates, &String.starts_with?(&1, suffix)),
+          do: {:halt, suffix},
+          else: {:cont, ""}
+      end)
+
+    if pending == "" do
+      {"", text}
+    else
+      {pending, binary_part(text, 0, text_len - byte_size(pending))}
+    end
+  end
+
+  # ─ Thinking-tag extraction (one-shot, end-of-turn) ───────────────────────
+
+  # Used by the existing {:content, text} handler when streaming wasn't
+  # available (provider supports only query/2, not stream/3). Matches
+  # `<think>` AND `<thinking>` to cover the common variants; `s` flag so
+  # `.` spans newlines.
   @think_re ~r/<think(?:ing)?>(.*?)<\/think(?:ing)?>/s
 
   @doc false

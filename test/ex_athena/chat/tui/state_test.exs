@@ -334,6 +334,121 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
+  describe "parse_stream_chunk/2 — streaming <think> parser" do
+    @start %{mode: :outside, pending: "", close_tag: nil}
+
+    test "passes plain text through unchanged" do
+      assert {%{mode: :outside, pending: "", close_tag: nil}, "Hello world", ""} =
+               State.parse_stream_chunk(@start, "Hello world")
+    end
+
+    test "splits a complete <think>...</think> block in one chunk" do
+      assert {parser, "Answer", "reasoning"} =
+               State.parse_stream_chunk(@start, "<think>reasoning</think>Answer")
+
+      assert parser.mode == :outside
+    end
+
+    test "handles a tag split across two deltas" do
+      {p1, c1, t1} = State.parse_stream_chunk(@start, "Hello <thi")
+      assert c1 == "Hello "
+      assert t1 == ""
+      # Partial open tag held in pending
+      assert p1.pending == "<thi"
+      assert p1.mode == :outside
+
+      {p2, c2, t2} = State.parse_stream_chunk(p1, "nk>let me think</think>foo")
+      # The full block resolves across the boundary
+      assert c2 == "foo"
+      assert t2 == "let me think"
+      assert p2.mode == :outside
+      assert p2.pending == ""
+    end
+
+    test "handles a close tag split across deltas" do
+      {p1, c1, t1} = State.parse_stream_chunk(@start, "<think>thinking part 1")
+      assert c1 == ""
+      assert t1 == "thinking part 1"
+      assert p1.mode == :inside
+
+      {p2, c2, t2} = State.parse_stream_chunk(p1, " part 2</thi")
+      assert c2 == ""
+      assert t2 == " part 2"
+      assert p2.mode == :inside
+      assert p2.pending == "</thi"
+
+      {p3, c3, t3} = State.parse_stream_chunk(p2, "nk>answer")
+      assert c3 == "answer"
+      assert t3 == ""
+      assert p3.mode == :outside
+    end
+
+    test "supports <thinking>...</thinking> as well" do
+      assert {_, "ok", "deep"} =
+               State.parse_stream_chunk(@start, "<thinking>deep</thinking>ok")
+    end
+
+    test "handles multiple blocks in one chunk" do
+      {_p, content, thinking} =
+        State.parse_stream_chunk(@start, "<think>a</think>b<think>c</think>d")
+
+      assert content == "bd"
+      assert thinking == "ac"
+    end
+  end
+
+  describe "append_loop_event/2 — streaming events" do
+    test ":text_delta routes content to stream_buffer and <think> body to thinking buffer" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event(%ExAthena.Streaming.Event{
+          type: :text_delta,
+          data: "<think>plan</think>Hello"
+        })
+
+      assert state.stream_buffer == "Hello"
+      assert state.details_stream_buffer == "Hello"
+      assert state.details_thinking_buffer == "plan"
+      assert state.streamed_this_turn? == true
+    end
+
+    test ":thinking_delta routes directly to thinking buffer" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event(%ExAthena.Streaming.Event{type: :thinking_delta, data: "abc"})
+
+      assert state.details_thinking_buffer == "abc"
+      assert state.streamed_this_turn? == true
+    end
+
+    test "end-of-turn {:content, text} is suppressed when streaming already happened" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event(%ExAthena.Streaming.Event{type: :text_delta, data: "Hi"})
+        |> State.append_loop_event({:content, "Hi"})
+
+      # Buffer wasn't doubled.
+      assert state.stream_buffer == "Hi"
+    end
+
+    test "reset_stream_state/1 clears the parser + dedup flag" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event(%ExAthena.Streaming.Event{type: :text_delta, data: "<thi"})
+
+      assert state.stream_parser.pending == "<thi"
+      assert state.streamed_this_turn? == true
+
+      state = State.reset_stream_state(state)
+      assert state.stream_parser.pending == ""
+      assert state.streamed_this_turn? == false
+    end
+  end
+
   describe "split_thinking_blocks/1" do
     test "extracts a single <think>…</think> block" do
       assert {"my reasoning", "the answer"} =
