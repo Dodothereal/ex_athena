@@ -61,4 +61,82 @@ defmodule ExAthena.Tools.GlobGrepTest do
   test "Grep requires pattern", %{ctx: ctx} do
     assert {:error, :missing_pattern} = Grep.execute(%{}, ctx)
   end
+
+  describe "build-artifact filtering" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "gg_filter_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(dir, "lib"))
+      File.mkdir_p!(Path.join(dir, "_build/dev/lib/phoenix/priv/templates/phx.gen.auth"))
+      File.mkdir_p!(Path.join(dir, "deps/phoenix/lib"))
+      File.mkdir_p!(Path.join(dir, "node_modules/foo"))
+      File.mkdir_p!(Path.join(dir, ".git"))
+      File.mkdir_p!(Path.join(dir, "priv/static/assets"))
+      File.mkdir_p!(Path.join(dir, "tmp"))
+
+      File.write!(Path.join(dir, "lib/app.ex"), "defmodule App do\n  def needle, do: :ok\nend\n")
+
+      File.write!(
+        Path.join(dir, "_build/dev/lib/phoenix/priv/templates/phx.gen.auth/auth.ex"),
+        "defmodule Phx.Auth do\n  def needle, do: :ok\nend\n"
+      )
+
+      File.write!(
+        Path.join(dir, "deps/phoenix/lib/phoenix.ex"),
+        "defmodule Phoenix do\n  def needle, do: :ok\nend\n"
+      )
+
+      File.write!(Path.join(dir, "node_modules/foo/bar.js"), "// needle\n")
+      File.write!(Path.join(dir, ".git/HEAD"), "ref: needle\n")
+      File.write!(Path.join(dir, "priv/static/assets/app.css"), "/* needle */\n")
+      File.write!(Path.join(dir, "tmp/scratch.ex"), "defmodule Scratch do\n  def needle, do: :ok\nend\n")
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, ctx: ToolContext.new(cwd: dir)}
+    end
+
+    test "Glob excludes _build, deps, node_modules, .git, priv/static, tmp by default",
+         %{ctx: ctx} do
+      {:ok, output, ui} = Glob.execute(%{"pattern" => "**/*.ex"}, ctx)
+
+      assert output =~ "lib/app.ex"
+      refute output =~ "_build/"
+      refute output =~ "deps/"
+      refute output =~ "tmp/"
+      assert ui.payload.count == 1
+    end
+
+    test "Glob honors include_artifacts: true and returns build/dep paths too",
+         %{ctx: ctx} do
+      {:ok, output, _ui} =
+        Glob.execute(%{"pattern" => "**/*.ex", "include_artifacts" => true}, ctx)
+
+      assert output =~ "lib/app.ex"
+      assert output =~ "_build/"
+      assert output =~ "deps/"
+      assert output =~ "tmp/"
+    end
+
+    test "Grep excludes the same artifact directories by default", %{ctx: ctx} do
+      {:ok, output, ui} = Grep.execute(%{"pattern" => "needle"}, ctx)
+
+      assert output =~ "lib/app.ex"
+      refute output =~ "_build/"
+      refute output =~ "deps/"
+      refute output =~ "node_modules/"
+      refute output =~ ".git/"
+      refute output =~ "priv/static/"
+      refute output =~ "tmp/"
+      assert ui.payload.count >= 1
+    end
+
+    test "Grep honors include_artifacts: true", %{ctx: ctx} do
+      {:ok, output, _ui} =
+        Grep.execute(%{"pattern" => "needle", "include_artifacts" => true}, ctx)
+
+      assert output =~ "lib/app.ex"
+      assert output =~ "_build/"
+      assert output =~ "deps/"
+    end
+  end
 end

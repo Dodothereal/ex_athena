@@ -257,4 +257,17 @@ defmodule ExAthena.Permissions do
   @doc "Static list of read-only tool names the `:plan` phase permits."
   @spec readonly_tools() :: [String.t()]
   def readonly_tools, do: @readonly_tools
+
+  @artifact_dirs ~w(_build/ deps/ node_modules/ .git/ priv/static/ tmp/)
+
+  @doc """
+  Path prefixes that `Glob`/`Grep` skip by default — build outputs and
+  dependency caches that pollute the model's context without adding signal.
+
+  Each entry ends in `/` so plain `String.starts_with?/2` matches a whole
+  directory and never a same-named file at the root. Pass
+  `include_artifacts: true` to either tool to bypass the filter.
+  """
+  @spec artifact_dirs() :: [String.t()]
+  def artifact_dirs, do: @artifact_dirs
 end
