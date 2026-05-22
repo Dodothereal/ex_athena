@@ -158,6 +158,67 @@ defmodule ExAthena.Web.Layouts do
                   this.pushEvent("modal_path_change", {path: value})
                 })
               }
+            },
+
+            // Resizable split-pane divider inside .chat-main. Mouse-drag on
+            // .chat-divider updates --left-w / --right-w CSS variables on
+            // the .chat-main element (this.el). Ratio persists in
+            // localStorage. Clamped 20%–80%.
+            SplitResize: {
+              mounted() {
+                const STORAGE_KEY = "ex_athena.split_ratio"
+                const MIN = 0.20, MAX = 0.80
+                const apply = (ratio) => {
+                  const r = Math.max(MIN, Math.min(MAX, ratio))
+                  this.el.style.setProperty("--left-w", `${r}fr`)
+                  this.el.style.setProperty("--right-w", `${1 - r}fr`)
+                  return r
+                }
+
+                const stored = parseFloat(localStorage.getItem(STORAGE_KEY))
+                if (!isNaN(stored)) apply(stored)
+
+                const divider = this.el.querySelector("#chat-divider")
+                if (!divider) return
+
+                divider.addEventListener("mousedown", (e) => {
+                  e.preventDefault()
+                  divider.classList.add("dragging")
+                  document.body.style.cursor = "col-resize"
+                  document.body.style.userSelect = "none"
+
+                  const onMove = (ev) => {
+                    const rect = this.el.getBoundingClientRect()
+                    const ratio = (ev.clientX - rect.left) / rect.width
+                    apply(ratio)
+                  }
+
+                  const onUp = () => {
+                    divider.classList.remove("dragging")
+                    document.body.style.cursor = ""
+                    document.body.style.userSelect = ""
+                    const left = parseFloat(getComputedStyle(this.el).getPropertyValue("--left-w"))
+                    if (!isNaN(left)) localStorage.setItem(STORAGE_KEY, String(left))
+                    document.removeEventListener("mousemove", onMove)
+                    document.removeEventListener("mouseup", onUp)
+                  }
+
+                  document.addEventListener("mousemove", onMove)
+                  document.addEventListener("mouseup", onUp)
+                })
+
+                // Left pane can request the right pane to scroll to a tool
+                // entry by tool_call_id (e.g. clicking a one-liner).
+                this.handleEvent("focus-detail", ({tool_call_id}) => {
+                  const node = this.el.querySelector(
+                    `.detail-entry[data-tool-call-id="${tool_call_id}"]`
+                  )
+                  if (!node) return
+                  node.scrollIntoView({behavior: "smooth", block: "center"})
+                  node.classList.add("detail-entry--focused")
+                  setTimeout(() => node.classList.remove("detail-entry--focused"), 1200)
+                })
+              }
             }
           }
 
