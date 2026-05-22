@@ -49,6 +49,8 @@ defmodule ExAthena.Chat.Tui.State do
             details_scroll_offset: 0,
             details_stream_buffer: "",
             details_thinking_buffer: "",
+            thinking_open?: false,
+            show_details: true,
             footer: @default_footer,
             prior_log_level: :info,
             run_task: nil
@@ -65,6 +67,8 @@ defmodule ExAthena.Chat.Tui.State do
           details_scroll_offset: non_neg_integer(),
           details_stream_buffer: String.t(),
           details_thinking_buffer: String.t(),
+          thinking_open?: boolean(),
+          show_details: boolean(),
           footer: String.t(),
           prior_log_level: atom(),
           run_task: pid() | nil
@@ -91,10 +95,13 @@ defmodule ExAthena.Chat.Tui.State do
   """
   @spec append_loop_event(t(), term()) :: t()
   def append_loop_event(%__MODULE__{} = state, {:content, text}) when is_binary(text) do
+    {thinking, content} = split_thinking_blocks(text)
+
     %{
       state
-      | stream_buffer: state.stream_buffer <> text,
-        details_stream_buffer: state.details_stream_buffer <> text
+      | stream_buffer: state.stream_buffer <> content,
+        details_stream_buffer: state.details_stream_buffer <> content,
+        details_thinking_buffer: state.details_thinking_buffer <> thinking
     }
   end
 
@@ -299,6 +306,29 @@ defmodule ExAthena.Chat.Tui.State do
   def current_popup_selection(%__MODULE__{popup: nil}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, [], _}}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, items, idx}}), do: Enum.at(items, idx)
+
+  # ─ Thinking-tag extraction ───────────────────────────────────────────────
+
+  # Many open-weights reasoning models (qwen3, deepseek-r1, …) prepend
+  # `<think>…</think>` blocks to their answer. The provider stream doesn't
+  # split them out, so the agent loop emits everything as `{:content, text}`.
+  # Here we extract those blocks into `thinking` and return the rest as
+  # the visible content. Matches `<think>` AND `<thinking>` to cover the
+  # common variants; `s` flag so `.` spans newlines.
+  @think_re ~r/<think(?:ing)?>(.*?)<\/think(?:ing)?>/s
+
+  @doc false
+  def split_thinking_blocks(text) when is_binary(text) do
+    case Regex.scan(@think_re, text, capture: :all_but_first) do
+      [] ->
+        {"", text}
+
+      matches ->
+        thinking = matches |> List.flatten() |> Enum.join("\n")
+        content = Regex.replace(@think_re, text, "") |> String.trim()
+        {thinking, content}
+    end
+  end
 
   # ─ Details-pane helpers ──────────────────────────────────────────────────
 

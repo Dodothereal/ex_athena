@@ -51,24 +51,36 @@ defmodule ExAthena.Chat.Tui.View do
         {:length, @footer_height}
       ])
 
-    [messages_rect, details_rect] =
-      Layout.split(body_rect, :horizontal, [
-        {:percentage, 50},
-        {:percentage, 50}
-      ])
+    {messages_rect, details_rect} = split_body(body_rect, state)
 
-    widgets = [
-      {header(state), header_rect},
-      {messages(state), messages_rect},
-      {details(state), details_rect},
-      {input(state), input_rect},
-      {footer(state), footer_rect}
-    ]
+    widgets =
+      [
+        {header(state), header_rect},
+        {messages(state, messages_rect.width), messages_rect},
+        {input(state), input_rect},
+        {footer(state), footer_rect}
+      ] ++ details_widget(state, details_rect)
 
     case popup(state, messages_rect) do
       nil -> widgets
       popup_tuple -> widgets ++ [popup_tuple]
     end
+  end
+
+  defp split_body(body_rect, %State{show_details: false}), do: {body_rect, nil}
+
+  defp split_body(body_rect, _state) do
+    [m, d] = Layout.split(body_rect, :horizontal, [{:percentage, 50}, {:percentage, 50}])
+    {m, d}
+  end
+
+  defp details_widget(_state, nil), do: []
+
+  defp details_widget(state, details_rect) do
+    # The details Block draws a left + right border, so the interior width
+    # is two cells narrower. We use the interior width for wrap calculation.
+    inner = max(details_rect.width - 2, 1)
+    [{details(state, inner), details_rect}]
   end
 
   @doc "Build the header status string from a session."
@@ -97,15 +109,18 @@ defmodule ExAthena.Chat.Tui.View do
     }
   end
 
-  defp messages(%State{
-         events: events,
-         loading?: loading?,
-         scroll_offset: scroll,
-         session: session
-       }) do
+  defp messages(
+         %State{
+           events: events,
+           loading?: loading?,
+           scroll_offset: scroll,
+           session: session
+         },
+         width
+       ) do
     items =
       events
-      |> Enum.map(&row_widget(&1, session.model))
+      |> Enum.map(&row_widget(&1, session.model, width))
       |> append_throbber(loading?)
 
     %WidgetList{items: items, scroll_offset: scroll}
@@ -118,93 +133,124 @@ defmodule ExAthena.Chat.Tui.View do
     border_style: %Style{fg: :dark_gray}
   }
 
-  defp details(%State{details: details, details_scroll_offset: scroll}) do
-    items = Enum.map(details, &detail_row_widget/1)
+  defp details(%State{details: details, details_scroll_offset: scroll}, width) do
+    items = Enum.map(details, &detail_row_widget(&1, width))
     %WidgetList{items: items, scroll_offset: scroll, block: @details_block}
   end
 
-  defp detail_row_widget({:detail_header, text}) do
+  # Estimate the number of rows a string occupies once it's wrapped at
+  # `width` columns. Counts each explicit `\n` as a line break and uses
+  # `String.length/1` to approximate display columns (good enough for
+  # ASCII / European text; emoji and CJK may be off by one). The Paragraph
+  # widget does the actual wrapping; this just sizes the row in the
+  # surrounding WidgetList so wrapped content isn't clipped.
+  defp wrapped_height(text, width) when is_binary(text) and is_integer(width) and width > 0 do
+    text
+    |> String.split("\n")
+    |> Enum.map(fn line ->
+      case String.length(line) do
+        0 -> 1
+        n -> div(n - 1, width) + 1
+      end
+    end)
+    |> Enum.sum()
+    |> max(1)
+  end
+
+  defp wrapped_height(_text, _width), do: 1
+
+  defp detail_row_widget({:detail_header, text}, width) do
     {%Paragraph{
        text: text,
-       style: %Style{fg: :light_yellow, modifiers: [:bold]}
-     }, 1}
+       style: %Style{fg: :light_yellow, modifiers: [:bold]},
+       wrap: true
+     }, wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({:thinking, text}) do
+  defp detail_row_widget({:thinking, text}, width) do
     {%Paragraph{
        text: text,
-       style: %Style{fg: :magenta, modifiers: [:italic]}
-     }, 1}
+       style: %Style{fg: :magenta, modifiers: [:italic]},
+       wrap: true
+     }, wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({:assistant, text}) do
-    {%Paragraph{text: text, style: %Style{fg: :white}}, 1}
+  defp detail_row_widget({:assistant, text}, width) do
+    {%Paragraph{text: text, style: %Style{fg: :white}, wrap: true}, wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({:tool_call, text}) do
-    {%Paragraph{text: text, style: %Style{fg: :cyan}}, 1}
+  defp detail_row_widget({:tool_call, text}, width) do
+    {%Paragraph{text: text, style: %Style{fg: :cyan}, wrap: true}, wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({:tool_result, text}) do
-    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  defp detail_row_widget({:tool_result, text}, width) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}, wrap: true},
+     wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({:tool_result_error, text}) do
-    {%Paragraph{text: text, style: %Style{fg: :red}}, 1}
+  defp detail_row_widget({:tool_result_error, text}, width) do
+    {%Paragraph{text: text, style: %Style{fg: :red}, wrap: true}, wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({:error, text}) do
-    {%Paragraph{text: text, style: %Style{fg: :red, modifiers: [:bold]}}, 1}
+  defp detail_row_widget({:error, text}, width) do
+    {%Paragraph{text: text, style: %Style{fg: :red, modifiers: [:bold]}, wrap: true},
+     wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({:info, text}) do
-    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  defp detail_row_widget({:info, text}, width) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}, wrap: true},
+     wrapped_height(text, width)}
   end
 
-  defp detail_row_widget({_kind, text}) do
-    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  defp detail_row_widget({_kind, text}, width) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}, wrap: true},
+     wrapped_height(text, width)}
   end
 
-  defp row_widget({:user, text}, _model) do
-    {%Paragraph{
-       text: "me ▸ " <> text,
-       style: %Style{fg: :green, modifiers: [:bold]}
-     }, 1}
+  defp row_widget({:user, text}, _model, width) do
+    full = "me ▸ " <> text
+
+    {%Paragraph{text: full, style: %Style{fg: :green, modifiers: [:bold]}, wrap: true},
+     wrapped_height(full, width)}
   end
 
-  defp row_widget({:assistant, text}, model) do
-    {%Paragraph{
-       text: model <> " ▸ " <> text,
-       style: %Style{fg: :cyan, modifiers: [:bold]}
-     }, 1}
+  defp row_widget({:assistant, text}, model, width) do
+    full = model <> " ▸ " <> text
+
+    {%Paragraph{text: full, style: %Style{fg: :cyan, modifiers: [:bold]}, wrap: true},
+     wrapped_height(full, width)}
   end
 
-  defp row_widget({:tool_call, text}, _model) do
-    {%Paragraph{text: text, style: %Style{fg: :cyan}}, 1}
+  defp row_widget({:tool_call, text}, _model, width) do
+    {%Paragraph{text: text, style: %Style{fg: :cyan}, wrap: true}, wrapped_height(text, width)}
   end
 
-  defp row_widget({:tool_result, text}, _model) do
-    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  defp row_widget({:tool_result, text}, _model, width) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}, wrap: true},
+     wrapped_height(text, width)}
   end
 
-  defp row_widget({:tool_result_error, text}, _model) do
-    {%Paragraph{text: text, style: %Style{fg: :red}}, 1}
+  defp row_widget({:tool_result_error, text}, _model, width) do
+    {%Paragraph{text: text, style: %Style{fg: :red}, wrap: true}, wrapped_height(text, width)}
   end
 
-  defp row_widget({:warning, text}, _model) do
-    {%Paragraph{text: text, style: %Style{fg: :yellow}}, 1}
+  defp row_widget({:warning, text}, _model, width) do
+    {%Paragraph{text: text, style: %Style{fg: :yellow}, wrap: true}, wrapped_height(text, width)}
   end
 
-  defp row_widget({:error, text}, _model) do
-    {%Paragraph{text: text, style: %Style{fg: :red, modifiers: [:bold]}}, 1}
+  defp row_widget({:error, text}, _model, width) do
+    {%Paragraph{text: text, style: %Style{fg: :red, modifiers: [:bold]}, wrap: true},
+     wrapped_height(text, width)}
   end
 
-  defp row_widget({:info, text}, _model) do
-    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  defp row_widget({:info, text}, _model, width) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}, wrap: true},
+     wrapped_height(text, width)}
   end
 
-  defp row_widget({:status, text}, _model) do
-    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  defp row_widget({:status, text}, _model, width) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}, wrap: true},
+     wrapped_height(text, width)}
   end
 
   defp append_throbber(items, false), do: items
