@@ -16,7 +16,6 @@ defmodule ExAthena.Chat.Tui.State do
   alias ExAthena.Result
   alias ExAthena.Streaming.Event, as: StreamEvent
 
-  @preview_chars 200
   @default_footer "Enter: send  Ctrl+C: quit  /help"
 
   @type event_kind ::
@@ -25,6 +24,7 @@ defmodule ExAthena.Chat.Tui.State do
           | :tool_call
           | :tool_result
           | :tool_result_error
+          | :tool_block
           | :error
           | :warning
           | :info
@@ -32,7 +32,7 @@ defmodule ExAthena.Chat.Tui.State do
           | :thinking
           | :detail_header
 
-  @type event_row :: {event_kind(), String.t()}
+  @type event_row :: {event_kind(), term()}
 
   @type popup ::
           nil
@@ -52,6 +52,11 @@ defmodule ExAthena.Chat.Tui.State do
             loading?: false,
             popup: nil,
             events: [],
+            # Structured tool-call records keyed by tool_call_id. Events
+            # carry only a `{:tool_block, id}` reference; State holds the
+            # rich data (status, output preview, todos…) so the renderer
+            # can lay out a unified "● Tool(args) / └ output" block.
+            tool_blocks: %{},
             details: [],
             details_scroll_offset: 0,
             details_stream_buffer: "",
@@ -96,6 +101,7 @@ defmodule ExAthena.Chat.Tui.State do
           loading?: boolean(),
           popup: popup(),
           events: [event_row()],
+          tool_blocks: %{String.t() => map()},
           details: [event_row()],
           details_scroll_offset: non_neg_integer(),
           details_stream_buffer: String.t(),
@@ -195,29 +201,70 @@ defmodule ExAthena.Chat.Tui.State do
 
   def append_loop_event(
         %__MODULE__{} = state,
-        {:tool_call, %ToolCall{name: name, arguments: args}}
+        {:tool_call, %ToolCall{id: id, name: name, arguments: args}}
       ) do
+    block = %{
+      id: id,
+      name: name,
+      args: args,
+      status: :pending,
+      output_preview: nil,
+      total_lines: 0,
+      total_bytes: 0,
+      todos: parse_todos_from_call(name, args)
+    }
+
     state
-    |> append_event({:tool_call, "→ #{name}(#{preview_args(args)})"})
+    |> Map.update!(:tool_blocks, &Map.put(&1, id, block))
+    |> append_event({:tool_block, id})
     |> append_detail_header("→ #{name}")
     |> append_detail_lines(:tool_call, format_args_full(args))
   end
 
   def append_loop_event(
         %__MODULE__{} = state,
-        {:tool_result, %ToolResult{content: content, is_error: is_error}}
+        {:tool_result, %ToolResult{tool_call_id: id, content: content, is_error: is_error} = tr}
       ) do
-    kind = if is_error, do: :tool_result_error, else: :tool_result
+    content_str = to_string(content)
+    status = if is_error, do: :error, else: :success
+    {preview, total_lines} = preview_lines(content_str)
     arrow = if is_error, do: "✗", else: "←"
 
+    detail_kind = if is_error, do: :tool_result_error, else: :tool_result
+
     state
-    |> append_event({kind, "← #{summarize_result(content)}"})
+    |> Map.update!(:tool_blocks, fn blocks ->
+      case Map.get(blocks, id) do
+        nil ->
+          # No matching call (shouldn't happen, but stay defensive).
+          Map.put(blocks, id, %{
+            id: id,
+            name: maybe_get_field(tr, :name) || "?",
+            args: %{},
+            status: status,
+            output_preview: preview,
+            total_lines: total_lines,
+            total_bytes: byte_size(content_str),
+            todos: nil
+          })
+
+        block ->
+          Map.put(blocks, id, %{
+            block
+            | status: status,
+              output_preview: preview,
+              total_lines: total_lines,
+              total_bytes: byte_size(content_str)
+          })
+      end
+    end)
     |> append_detail_header("#{arrow} result")
-    |> append_detail_lines(kind, to_string(content))
+    |> append_detail_lines(detail_kind, content_str)
   end
 
-  def append_loop_event(%__MODULE__{} = state, {:tool_ui, %{kind: kind, payload: payload}}) do
+  def append_loop_event(%__MODULE__{} = state, {:tool_ui, %{kind: kind, payload: payload} = ui}) do
     state
+    |> attach_tool_ui_to_block(ui)
     |> append_detail_header("ui · #{kind}")
     |> append_detail_lines(:info, format_tool_ui(kind, payload))
   end
@@ -356,6 +403,7 @@ defmodule ExAthena.Chat.Tui.State do
       state
       | session: Session.clear_messages(session),
         events: [],
+        tool_blocks: %{},
         stream_buffer: "",
         details: [],
         details_scroll_offset: 0,
@@ -662,6 +710,46 @@ defmodule ExAthena.Chat.Tui.State do
     end
   end
 
+  # ─ Tool-block helpers ────────────────────────────────────────────────────
+
+  # Detect a todo_write call and extract the todos list so the renderer
+  # can show inline checkboxes instead of a generic tool block.
+  defp parse_todos_from_call("todo_write", %{"todos" => todos}) when is_list(todos), do: todos
+  defp parse_todos_from_call("todo_write", %{todos: todos}) when is_list(todos), do: todos
+  defp parse_todos_from_call(_name, _args), do: nil
+
+  # Cap how many output lines we keep on the block for the inline preview.
+  # The full text is still routed to the details pane.
+  @preview_max_lines 4
+
+  defp preview_lines(""), do: {[], 0}
+
+  defp preview_lines(content) when is_binary(content) do
+    content
+    |> String.trim_trailing("\n")
+    |> String.split("\n")
+    |> case do
+      [""] -> {[], 0}
+      lines -> {Enum.take(lines, @preview_max_lines), length(lines)}
+    end
+  end
+
+  # Attach a :tool_ui payload to its matching block (looked up by
+  # tool_call_id). No-op if the block isn't found.
+  defp attach_tool_ui_to_block(state, %{tool_call_id: id, kind: kind, payload: payload}) do
+    Map.update!(state, :tool_blocks, fn blocks ->
+      case Map.get(blocks, id) do
+        nil -> blocks
+        block -> Map.put(blocks, id, Map.put(block, :ui, %{kind: kind, payload: payload}))
+      end
+    end)
+  end
+
+  defp attach_tool_ui_to_block(state, _), do: state
+
+  defp maybe_get_field(map, key) when is_map(map), do: Map.get(map, key)
+  defp maybe_get_field(_, _), do: nil
+
   # ─ Details-pane helpers ──────────────────────────────────────────────────
 
   @doc false
@@ -707,28 +795,6 @@ defmodule ExAthena.Chat.Tui.State do
   defp format_tool_ui(kind, payload), do: "#{kind}: #{inspect(payload, pretty: true)}"
 
   # ─ Helpers ────────────────────────────────────────────────────────────────
-
-  defp summarize_result(content) do
-    text = content |> to_string() |> String.trim_trailing("\n")
-    lines = String.split(text, "\n")
-    first_line = lines |> List.first("") |> truncate(@preview_chars)
-
-    case length(lines) do
-      1 -> first_line
-      n -> "#{first_line} · #{n} lines"
-    end
-  end
-
-  defp preview_args(args) when is_map(args) and map_size(args) == 0, do: ""
-
-  defp preview_args(args) when is_map(args) do
-    Enum.map_join(args, ", ", fn {k, v} -> "#{k}: #{truncate(inspect_value(v), 60)}" end)
-  end
-
-  defp preview_args(other), do: inspect(other)
-
-  defp inspect_value(v) when is_binary(v), do: inspect(v)
-  defp inspect_value(v), do: inspect(v, limit: 5, printable_limit: 60)
 
   defp truncate(text, limit) when is_binary(text) do
     case String.length(text) do
