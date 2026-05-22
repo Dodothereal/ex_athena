@@ -351,13 +351,19 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp dispatch_command(:pwd, _args, state) do
-    label =
+    {path, source} =
       case state.session.cwd do
-        nil -> "cwd: (none — using the process's own directory)"
-        path -> "cwd: " <> path
+        nil ->
+          case File.cwd() do
+            {:ok, p} -> {p, " (default, process cwd — use /cd or -p to override)"}
+            _ -> {"?", " (unable to read process cwd)"}
+          end
+
+        p ->
+          {p, " (set via /cd or --path)"}
       end
 
-    append_and_noreply(state, {:info, label})
+    append_and_noreply(state, {:info, "cwd: " <> path <> source})
   end
 
   defp dispatch_command(:details, args, state) do
@@ -413,18 +419,25 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp banner_events(%State{session: session} = state) do
-    state =
-      state
-      |> State.append_event({:info, "ExAthena chat  (/help for commands, /exit to quit)"})
-      |> State.append_event(
-        {:info,
-         "provider=#{session.provider}  model=#{session.model}  mode=#{inspect(session.mode)}"}
-      )
+    cwd_line =
+      case session.cwd do
+        nil ->
+          case File.cwd() do
+            {:ok, path} -> "cwd=" <> path <> "  (default — use /cd or -p to change)"
+            _ -> "cwd=(unknown)"
+          end
 
-    case session.cwd do
-      nil -> state
-      cwd -> State.append_event(state, {:info, "cwd=" <> cwd})
-    end
+        path ->
+          "cwd=" <> path
+      end
+
+    state
+    |> State.append_event({:info, "ExAthena chat  (/help for commands, /exit to quit)"})
+    |> State.append_event(
+      {:info,
+       "provider=#{session.provider}  model=#{session.model}  mode=#{inspect(session.mode)}"}
+    )
+    |> State.append_event({:info, cwd_line})
   end
 
   defp restore_logger(%State{prior_log_level: level} = state) do
