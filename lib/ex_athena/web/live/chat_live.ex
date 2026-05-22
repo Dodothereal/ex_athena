@@ -689,7 +689,10 @@ defmodule ExAthena.Web.Live.ChatLive do
       <%!-- Sidebar --%>
       <aside class="sidebar">
         <div class="sidebar-logo">
-          <span class="logo-text">ExAthena</span>
+          <div class="sidebar-logo-brand">
+            <img class="sidebar-logo-img" src="/assets/exathena-logo.png" alt="ExAthena logo" />
+            <span class="logo-text">ExAthena</span>
+          </div>
           <button class="btn-plus" phx-click="show_modal" title="New session">+</button>
         </div>
 

@@ -74,19 +74,43 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .sidebar-logo {
   display: flex;
-  flex-direction: row;
   align-items: center;
   justify-content: space-between;
   padding: 16px;
   border-bottom: 1px solid var(--border);
 }
 
+.sidebar-logo-brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-logo-img {
+  width: 154px;
+  height: 154px;
+  border-radius: var(--radius);
+}
+
 .logo-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-family: var(--font-mono);
   font-size: 15px;
   font-weight: 600;
   color: var(--accent);
   letter-spacing: 0.02em;
+  text-shadow:
+    0 1px 3px var(--bg),
+    0 0 6px var(--bg);
+  z-index: 1;
 }
 
 .logo-sub {
