@@ -249,6 +249,7 @@ defmodule ExAthena.Chat.Tui do
       state
       |> State.append_event({:user, text})
       |> State.set_loading(true)
+      |> State.reset_stream_state()
       |> update_in_session(&Session.append_user(&1, text))
 
     task_pid = Runner.start(state.session, self())
