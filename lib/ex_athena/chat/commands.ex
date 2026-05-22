@@ -29,6 +29,7 @@ defmodule ExAthena.Chat.Commands do
     "tools" => :tools,
     "clear" => :clear,
     "expand" => :expand,
+    "details" => :details,
     "help" => :help,
     "?" => :help
   }
@@ -72,6 +73,8 @@ defmodule ExAthena.Chat.Commands do
       /clear             wipe the conversation history (new session)
       /expand [N]        show the Nth-most-recent tool result in full
                          (default 1 = most recent)
+      /details [on|off]  show or hide the right "details" pane
+                         (no args = toggle)
       /help, /?          show this help
       /exit, /quit, /q   leave the chat
 

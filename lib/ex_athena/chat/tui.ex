@@ -324,6 +324,22 @@ defmodule ExAthena.Chat.Tui do
     |> noreply()
   end
 
+  defp dispatch_command(:details, args, state) do
+    new_value =
+      case Enum.map(args, &String.downcase/1) do
+        ["on"] -> true
+        ["off"] -> false
+        _ -> not state.show_details
+      end
+
+    label = if new_value, do: "on", else: "off"
+
+    state
+    |> Map.put(:show_details, new_value)
+    |> State.append_event({:info, "Details pane → " <> label})
+    |> noreply()
+  end
+
   defp dispatch_command(:expand, args, state) do
     results = Session.tool_results(state.session)
     total = length(results)

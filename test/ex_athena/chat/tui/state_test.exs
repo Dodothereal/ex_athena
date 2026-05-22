@@ -334,6 +334,45 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
+  describe "split_thinking_blocks/1" do
+    test "extracts a single <think>…</think> block" do
+      assert {"my reasoning", "the answer"} =
+               State.split_thinking_blocks("<think>my reasoning</think>the answer")
+    end
+
+    test "joins multiple blocks with newlines" do
+      assert {"a\nb", "rest"} =
+               State.split_thinking_blocks("<think>a</think> <think>b</think> rest")
+    end
+
+    test "supports <thinking> as well as <think>" do
+      assert {"reasoning", "answer"} =
+               State.split_thinking_blocks("<thinking>reasoning</thinking>answer")
+    end
+
+    test "spans newlines inside the block" do
+      input = "<think>line 1\nline 2</think>final"
+      assert {"line 1\nline 2", "final"} = State.split_thinking_blocks(input)
+    end
+
+    test "is a passthrough when no tags are present" do
+      assert {"", "plain answer"} = State.split_thinking_blocks("plain answer")
+    end
+  end
+
+  describe ":content with <think> tags" do
+    test "routes inside-tag content to thinking buffer and the rest to stream buffer" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:content, "<think>plan it</think>Hello there"})
+
+      assert state.details_thinking_buffer == "plan it"
+      assert state.stream_buffer == "Hello there"
+      assert state.details_stream_buffer == "Hello there"
+    end
+  end
+
   describe "details pane" do
     test ":tool_call appends a header + full pretty-printed args to details" do
       tc = %ToolCall{id: "1", name: "Read", arguments: %{"path" => "lib/foo.ex"}}
