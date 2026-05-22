@@ -334,6 +334,55 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
+  describe "pane scrolling" do
+    test "scroll_messages/2 records rows-above-bottom" do
+      state = Session.new() |> State.new()
+      assert state.messages_scroll == nil
+
+      # Scroll up by 10 → 10 rows above bottom.
+      state = State.scroll_messages(state, -10)
+      assert state.messages_scroll == 10
+
+      # Another PgUp → 20 above.
+      state = State.scroll_messages(state, -10)
+      assert state.messages_scroll == 20
+
+      # PgDn brings it back down.
+      state = State.scroll_messages(state, +15)
+      assert state.messages_scroll == 5
+
+      # PgDn past the bottom clamps at 0.
+      state = State.scroll_messages(state, +100)
+      assert state.messages_scroll == 0
+    end
+
+    test "scroll_details/2 maintains its own offset" do
+      state = Session.new() |> State.new() |> State.scroll_details(-7)
+      assert state.details_scroll == 7
+      assert state.messages_scroll == nil
+    end
+
+    test "reset_pane_scroll/1 clears both offsets back to nil" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.scroll_messages(-10)
+        |> State.scroll_details(-5)
+        |> State.reset_pane_scroll()
+
+      assert state.messages_scroll == nil
+      assert state.details_scroll == nil
+    end
+
+    test "scroll_*_top/1 pins to the top with a huge offset" do
+      state = Session.new() |> State.new() |> State.scroll_messages_top()
+      assert state.messages_scroll > 1_000_000
+
+      state = State.scroll_details_top(state)
+      assert state.details_scroll > 1_000_000
+    end
+  end
+
   describe "details tabs" do
     test "default details_tab is :timeline" do
       state = Session.new() |> State.new()

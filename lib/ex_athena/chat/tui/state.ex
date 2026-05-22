@@ -42,6 +42,12 @@ defmodule ExAthena.Chat.Tui.State do
   defstruct session: nil,
             input_ref: nil,
             scroll_offset: 0,
+            # Manual scroll offsets. `nil` means "auto-pin to the bottom"
+            # (the default — new content stays in view). Set to an
+            # integer row count by PgUp/PgDn. End or a new user submit
+            # resets back to nil.
+            messages_scroll: nil,
+            details_scroll: nil,
             stream_buffer: "",
             loading?: false,
             popup: nil,
@@ -84,6 +90,8 @@ defmodule ExAthena.Chat.Tui.State do
           session: Session.t(),
           input_ref: reference() | nil,
           scroll_offset: non_neg_integer(),
+          messages_scroll: non_neg_integer() | nil,
+          details_scroll: non_neg_integer() | nil,
           stream_buffer: String.t(),
           loading?: boolean(),
           popup: popup(),
@@ -412,6 +420,51 @@ defmodule ExAthena.Chat.Tui.State do
   def set_git_diff(%__MODULE__{} = state, lines) when is_list(lines) do
     %{state | git_diff_lines: lines}
   end
+
+  # ─ Pane scrolling ────────────────────────────────────────────────────────
+
+  # Scrolling model: `messages_scroll` / `details_scroll` count the number
+  # of rows the user has scrolled *above the natural bottom* of the pane.
+  #
+  #   nil / 0    → at the bottom (auto-follow new content)
+  #   N > 0      → N rows above the bottom
+  #
+  # View resolves this each frame as `effective = max(auto_bottom - N, 0)`,
+  # so we never need to know the viewport size in State.
+
+  @doc """
+  Move the messages pane. `delta < 0` scrolls up (older content),
+  `delta > 0` scrolls down. Returns to the bottom when the offset would
+  go below 0. Idempotent at the top.
+  """
+  @spec scroll_messages(t(), integer()) :: t()
+  def scroll_messages(%__MODULE__{} = state, delta) when is_integer(delta) do
+    cur = state.messages_scroll || 0
+    %{state | messages_scroll: max(cur - delta, 0)}
+  end
+
+  @doc "Like scroll_messages/2 but for the details pane."
+  @spec scroll_details(t(), integer()) :: t()
+  def scroll_details(%__MODULE__{} = state, delta) when is_integer(delta) do
+    cur = state.details_scroll || 0
+    %{state | details_scroll: max(cur - delta, 0)}
+  end
+
+  @doc "Reset both panes back to auto-bottom (e.g. after Enter or End)."
+  @spec reset_pane_scroll(t()) :: t()
+  def reset_pane_scroll(%__MODULE__{} = state) do
+    %{state | messages_scroll: nil, details_scroll: nil}
+  end
+
+  @doc "Jump the messages pane to the top (a very large offset; View clamps)."
+  @spec scroll_messages_top(t()) :: t()
+  def scroll_messages_top(%__MODULE__{} = state),
+    do: %{state | messages_scroll: 1_000_000_000}
+
+  @doc "Jump the details pane to the top."
+  @spec scroll_details_top(t()) :: t()
+  def scroll_details_top(%__MODULE__{} = state),
+    do: %{state | details_scroll: 1_000_000_000}
 
   # ─ Slash-command autocomplete ────────────────────────────────────────────
 
