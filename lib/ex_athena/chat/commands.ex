@@ -35,6 +35,7 @@ defmodule ExAthena.Chat.Commands do
     "tab" => :tab,
     "diff" => :diff,
     "timeline" => :timeline,
+    "mouse" => :mouse,
     "help" => :help,
     "?" => :help
   }
@@ -84,6 +85,7 @@ defmodule ExAthena.Chat.Commands do
       "tab",
       "diff",
       "timeline",
+      "mouse",
       "help",
       "exit"
     ]
@@ -109,6 +111,7 @@ defmodule ExAthena.Chat.Commands do
       "/tab" => "switch the details tab (timeline ↔ changes)",
       "/diff" => "show Changes tab — `/diff side` for split, `/diff inline` for unified",
       "/timeline" => "show the Timeline tab",
+      "/mouse" => "toggle mouse capture (off lets the terminal copy/paste natively)",
       "/help" => "show full usage help",
       "/exit" => "leave the chat"
     }
@@ -136,6 +139,11 @@ defmodule ExAthena.Chat.Commands do
       /diff [side|inline]  switch to Changes tab; optionally set the layout
                          (`side` = side-by-side, `inline` = unified)
       /timeline          switch back to the Timeline tab
+      /mouse [on|off]    toggle mouse capture (off lets your terminal copy
+                         text via the usual click-drag; on enables wheel-
+                         scrolling + tab clicks). Many terminals also let
+                         you bypass capture by holding Option (macOS) or
+                         Shift while click-dragging.
       /help, /?          show this help
       /exit, /quit, /q   leave the chat
 
