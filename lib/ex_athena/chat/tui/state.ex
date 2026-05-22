@@ -78,6 +78,13 @@ defmodule ExAthena.Chat.Tui.State do
             # mid-verb. `items` are slash-prefixed verbs; `idx` is the
             # selected row (0-based).
             autocomplete: nil,
+            # Up/Down history cursor for the input. `nil` = not navigating
+            # (the user is typing fresh); an integer N = the Nth-most-recent
+            # prior user message (0 = newest). `history_draft` holds whatever
+            # was in the textarea before navigation started so Down can
+            # restore it.
+            history_idx: nil,
+            history_draft: "",
             # Which tab is active in the right details pane.
             details_tab: :timeline,
             # Lines of `git diff HEAD` for the :changes tab. Refreshed
@@ -115,6 +122,8 @@ defmodule ExAthena.Chat.Tui.State do
           stream_parser: %{mode: atom(), pending: String.t(), close_tag: String.t() | nil},
           streamed_this_turn?: boolean(),
           autocomplete: autocomplete(),
+          history_idx: non_neg_integer() | nil,
+          history_draft: String.t(),
           details_tab: :timeline | :changes,
           git_diff_lines: [String.t()],
           git_diff_scroll_offset: non_neg_integer(),
@@ -615,6 +624,94 @@ defmodule ExAthena.Chat.Tui.State do
   @doc "Clear the autocomplete popup state."
   @spec close_autocomplete(t()) :: t()
   def close_autocomplete(%__MODULE__{} = state), do: %{state | autocomplete: nil}
+
+  # ─ Input history (Up/Down navigation) ────────────────────────────────────
+
+  @doc """
+  Return the list of prior user-message contents in this session,
+  newest-first. Used by the input's Up/Down history navigation.
+  """
+  @spec history(t()) :: [String.t()]
+  def history(%__MODULE__{session: nil}), do: []
+
+  def history(%__MODULE__{session: %{messages: msgs}}) when is_list(msgs) do
+    msgs
+    |> Enum.filter(fn
+      %{role: :user} -> true
+      _ -> false
+    end)
+    |> Enum.map(&extract_user_text/1)
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.reverse()
+  end
+
+  def history(_), do: []
+
+  defp extract_user_text(%{content: c}) when is_binary(c), do: c
+  defp extract_user_text(%{content: parts}) when is_list(parts) do
+    parts
+    |> Enum.map(fn
+      %{type: :text, text: t} when is_binary(t) -> t
+      %{text: t} when is_binary(t) -> t
+      _ -> ""
+    end)
+    |> Enum.join("")
+  end
+
+  defp extract_user_text(_), do: nil
+
+  @doc """
+  Step backward in input history (older). On the first call from a
+  fresh state, snapshots the current `draft` (whatever the user had
+  typed) so a later `history_next/2` can restore it.
+
+  Returns `{state, replacement_text}` — the caller writes
+  `replacement_text` into the textarea. Returns `{state, nil}` when
+  there's no history to navigate.
+  """
+  @spec history_prev(t(), String.t()) :: {t(), String.t() | nil}
+  def history_prev(%__MODULE__{} = state, draft) do
+    items = history(state)
+
+    case items do
+      [] ->
+        {state, nil}
+
+      _ ->
+        next_idx = (state.history_idx || -1) + 1
+        next_idx = min(next_idx, length(items) - 1)
+        new_draft = if is_nil(state.history_idx), do: draft, else: state.history_draft
+        new_state = %{state | history_idx: next_idx, history_draft: new_draft}
+        {new_state, Enum.at(items, next_idx)}
+    end
+  end
+
+  @doc """
+  Step forward in input history (newer). Past the newest entry
+  restores the saved draft and exits navigation mode.
+
+  Returns `{state, replacement_text}` — same contract as
+  `history_prev/2`.
+  """
+  @spec history_next(t()) :: {t(), String.t() | nil}
+  def history_next(%__MODULE__{history_idx: nil} = state), do: {state, nil}
+
+  def history_next(%__MODULE__{history_idx: 0} = state) do
+    # Off the end → restore the saved draft, exit navigation.
+    draft = state.history_draft
+    {%{state | history_idx: nil, history_draft: ""}, draft}
+  end
+
+  def history_next(%__MODULE__{history_idx: idx} = state) do
+    items = history(state)
+    new_idx = idx - 1
+    {%{state | history_idx: new_idx}, Enum.at(items, new_idx)}
+  end
+
+  @doc "Cancel any in-progress history navigation (e.g. on submit or typing)."
+  @spec reset_history_nav(t()) :: t()
+  def reset_history_nav(%__MODULE__{} = state),
+    do: %{state | history_idx: nil, history_draft: ""}
 
   # ─ Streaming-tag parser ──────────────────────────────────────────────────
 

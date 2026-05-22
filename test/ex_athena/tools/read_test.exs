@@ -41,6 +41,14 @@ defmodule ExAthena.Tools.ReadTest do
     assert {:error, :missing_path} = Read.execute(%{}, ctx)
   end
 
+  test "rejects empty path arg (model hallucinated a read with no target)", %{ctx: ctx} do
+    assert {:error, :missing_path} = Read.execute(%{"path" => ""}, ctx)
+  end
+
+  test "rejects whitespace-only path arg", %{ctx: ctx} do
+    assert {:error, :missing_path} = Read.execute(%{"path" => "  \n"}, ctx)
+  end
+
   test "surfaces File.stat errors when file is missing", %{ctx: ctx} do
     assert {:error, :enoent} = Read.execute(%{"path" => "nonexistent"}, ctx)
   end
