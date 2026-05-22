@@ -380,6 +380,72 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
+  describe "input history" do
+    setup do
+      session =
+        Session.new()
+        |> Session.append_user("first prompt")
+        |> Session.append_user("second prompt")
+        |> Session.append_user("third prompt")
+
+      {:ok, state: State.new(session)}
+    end
+
+    test "history/1 returns user messages newest-first", %{state: state} do
+      assert State.history(state) == ["third prompt", "second prompt", "first prompt"]
+    end
+
+    test "history_prev/2 walks back through prior messages and snapshots draft",
+         %{state: state} do
+      assert {s1, "third prompt"} = State.history_prev(state, "in-progress draft")
+      assert s1.history_idx == 0
+      assert s1.history_draft == "in-progress draft"
+
+      assert {s2, "second prompt"} = State.history_prev(s1, "")
+      assert s2.history_idx == 1
+      # Draft stays the same — not overwritten on subsequent presses.
+      assert s2.history_draft == "in-progress draft"
+
+      assert {s3, "first prompt"} = State.history_prev(s2, "")
+      assert s3.history_idx == 2
+
+      # At the oldest entry — further Up is a no-op (stays).
+      assert {s4, "first prompt"} = State.history_prev(s3, "")
+      assert s4.history_idx == 2
+    end
+
+    test "history_next/1 walks forward and restores the draft past the newest entry",
+         %{state: state} do
+      {s1, _} = State.history_prev(state, "my draft")
+      {s2, _} = State.history_prev(s1, "")
+      assert s2.history_idx == 1
+
+      {s3, "third prompt"} = State.history_next(s2)
+      assert s3.history_idx == 0
+
+      # Past the newest → restore draft and exit nav mode.
+      {s4, "my draft"} = State.history_next(s3)
+      assert s4.history_idx == nil
+      assert s4.history_draft == ""
+    end
+
+    test "history_next/1 with no active navigation is a no-op", %{state: state} do
+      assert {^state, nil} = State.history_next(state)
+    end
+
+    test "history_prev/2 with empty history is a no-op" do
+      state = Session.new() |> State.new()
+      assert {^state, nil} = State.history_prev(state, "anything")
+    end
+
+    test "reset_history_nav/1 clears idx and draft", %{state: state} do
+      {s1, _} = State.history_prev(state, "draft")
+      state = State.reset_history_nav(s1)
+      assert state.history_idx == nil
+      assert state.history_draft == ""
+    end
+  end
+
   describe "pane scrolling" do
     test "scroll_messages/2 records rows-above-bottom" do
       state = Session.new() |> State.new()

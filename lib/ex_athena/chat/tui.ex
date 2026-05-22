@@ -210,6 +210,26 @@ defmodule ExAthena.Chat.Tui do
     {:noreply, State.close_autocomplete(state)}
   end
 
+  # ── History navigation (Up/Down when no popup is open) ──────────────
+  # First Up snapshots the current input as `history_draft`. Subsequent
+  # Up steps further back; Down walks forward and ultimately restores
+  # the draft. Typing anything resets the cursor (see forward_to_textarea).
+  defp handle_key(%Event.Key{code: "up"}, state) do
+    current = read_textarea(state)
+
+    case State.history_prev(state, current) do
+      {state, nil} -> {:noreply, state}
+      {state, text} -> {:noreply, set_textarea(state, text)}
+    end
+  end
+
+  defp handle_key(%Event.Key{code: "down"}, state) do
+    case State.history_next(state) do
+      {state, nil} -> {:noreply, state}
+      {state, text} -> {:noreply, set_textarea(state, text)}
+    end
+  end
+
   # Tab or Enter accepts the highlighted suggestion: replace the textarea
   # contents with the selected verb (plus a trailing space so the user can
   # immediately type arguments) and close the popup. Picking from the menu
@@ -296,14 +316,31 @@ defmodule ExAthena.Chat.Tui do
 
     # After the textarea processes the key, re-read its value and refresh
     # the autocomplete popup — opens it on `/`, filters it as the user
-    # types more, closes it once whitespace appears.
+    # types more, closes it once whitespace appears. Also cancels any
+    # in-progress history navigation (typing a fresh char means the user
+    # is composing, not browsing prior messages).
     state =
       case state.input_ref do
-        nil -> state
-        ref -> State.update_autocomplete(state, ExRatatui.textarea_get_value(ref))
+        nil ->
+          state
+
+        ref ->
+          state
+          |> State.update_autocomplete(ExRatatui.textarea_get_value(ref))
+          |> State.reset_history_nav()
       end
 
     {:noreply, state}
+  end
+
+  defp read_textarea(%State{input_ref: nil}), do: ""
+  defp read_textarea(%State{input_ref: ref}), do: ExRatatui.textarea_get_value(ref) || ""
+
+  defp set_textarea(%State{input_ref: nil} = state, _text), do: state
+
+  defp set_textarea(%State{input_ref: ref} = state, text) do
+    ExRatatui.textarea_set_value(ref, text || "")
+    state
   end
 
   defp handle_popup_key(%Event.Key{code: code}, state) when code in ["up", "k"] do
@@ -434,6 +471,7 @@ defmodule ExAthena.Chat.Tui do
       |> State.set_loading(true)
       |> State.reset_stream_state()
       |> State.reset_pane_scroll()
+      |> State.reset_history_nav()
       |> update_in_session(&Session.append_user(&1, text))
 
     task_pid = Runner.start(state.session, self())
