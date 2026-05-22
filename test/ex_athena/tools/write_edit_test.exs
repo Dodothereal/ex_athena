@@ -13,13 +13,15 @@ defmodule ExAthena.Tools.WriteEditTest do
 
   describe "Write" do
     test "creates a file and reports byte count", %{dir: dir, ctx: ctx} do
-      assert {:ok, msg} = Write.execute(%{"path" => "hello.txt", "content" => "hi"}, ctx)
+      assert {:ok, msg, _ui} =
+               Write.execute(%{"path" => "hello.txt", "content" => "hi"}, ctx)
+
       assert msg =~ "wrote 2 bytes"
       assert File.read!(Path.join(dir, "hello.txt")) == "hi"
     end
 
     test "creates parent directories automatically", %{dir: dir, ctx: ctx} do
-      assert {:ok, _} =
+      assert {:ok, _, _} =
                Write.execute(%{"path" => "nested/deeply/file.txt", "content" => "x"}, ctx)
 
       assert File.read!(Path.join(dir, "nested/deeply/file.txt")) == "x"
@@ -28,13 +30,38 @@ defmodule ExAthena.Tools.WriteEditTest do
     test "overwrites existing files", %{dir: dir, ctx: ctx} do
       path = Path.join(dir, "over.txt")
       File.write!(path, "old")
-      assert {:ok, _} = Write.execute(%{"path" => "over.txt", "content" => "new"}, ctx)
+      assert {:ok, _, _} = Write.execute(%{"path" => "over.txt", "content" => "new"}, ctx)
       assert File.read!(path) == "new"
     end
 
     test "missing arguments rejected", %{ctx: ctx} do
       assert {:error, :missing_path} = Write.execute(%{}, ctx)
       assert {:error, :missing_content} = Write.execute(%{"path" => "x"}, ctx)
+    end
+
+    test "emits a :diff UI payload with before=\"\" for new files",
+         %{dir: dir, ctx: ctx} do
+      content = "first line\nsecond line\n"
+
+      assert {:ok, _msg, %{kind: :diff, payload: payload}} =
+               Write.execute(%{"path" => "new.txt", "content" => content}, ctx)
+
+      assert payload.path == Path.join(dir, "new.txt")
+      assert payload.before == ""
+      assert payload.after == content
+    end
+
+    test "emits a :diff UI payload with the prior content as `before` on overwrite",
+         %{dir: dir, ctx: ctx} do
+      path = Path.join(dir, "over.txt")
+      File.write!(path, "old contents")
+
+      assert {:ok, _msg, %{kind: :diff, payload: payload}} =
+               Write.execute(%{"path" => "over.txt", "content" => "new contents"}, ctx)
+
+      assert payload.path == path
+      assert payload.before == "old contents"
+      assert payload.after == "new contents"
     end
   end
 
