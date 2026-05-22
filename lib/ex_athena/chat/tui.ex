@@ -436,12 +436,31 @@ defmodule ExAthena.Chat.Tui do
     |> noreply()
   end
 
-  defp dispatch_command(:diff, _args, state) do
-    state
-    |> State.set_details_tab(:changes)
-    |> State.append_event({:info, "details tab → Changes"})
-    |> maybe_kick_git_diff()
-    |> noreply()
+  defp dispatch_command(:diff, args, state) do
+    case args |> Enum.map(&String.downcase/1) |> List.first() do
+      mode when mode in ["side", "side-by-side", "split"] ->
+        state
+        |> State.set_diff_mode(:side_by_side)
+        |> State.set_details_tab(:changes)
+        |> State.append_event({:info, "diff layout → side-by-side"})
+        |> maybe_kick_git_diff()
+        |> noreply()
+
+      "inline" ->
+        state
+        |> State.set_diff_mode(:inline)
+        |> State.set_details_tab(:changes)
+        |> State.append_event({:info, "diff layout → inline"})
+        |> maybe_kick_git_diff()
+        |> noreply()
+
+      _ ->
+        state
+        |> State.set_details_tab(:changes)
+        |> State.append_event({:info, "details tab → Changes"})
+        |> maybe_kick_git_diff()
+        |> noreply()
+    end
   end
 
   defp dispatch_command(:timeline, _args, state) do

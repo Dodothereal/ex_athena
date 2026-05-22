@@ -117,5 +117,10 @@ defmodule ExAthena.Chat.CommandsTest do
       assert Commands.parse("/diff") == {:command, :diff, []}
       assert Commands.parse("/timeline") == {:command, :timeline, []}
     end
+
+    test "parses /diff with a layout argument" do
+      assert Commands.parse("/diff side") == {:command, :diff, ["side"]}
+      assert Commands.parse("/diff inline") == {:command, :diff, ["inline"]}
+    end
   end
 end

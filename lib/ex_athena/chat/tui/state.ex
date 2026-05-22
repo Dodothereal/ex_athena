@@ -84,6 +84,10 @@ defmodule ExAthena.Chat.Tui.State do
             # asynchronously after every tool result and on /cd.
             git_diff_lines: [],
             git_diff_scroll_offset: 0,
+            # How the Changes tab renders its diff:
+            #   :inline       — traditional unified diff (default)
+            #   :side_by_side — two-column old / new
+            diff_mode: :inline,
             footer: @default_footer,
             prior_log_level: :info,
             run_task: nil
@@ -114,6 +118,7 @@ defmodule ExAthena.Chat.Tui.State do
           details_tab: :timeline | :changes,
           git_diff_lines: [String.t()],
           git_diff_scroll_offset: non_neg_integer(),
+          diff_mode: :inline | :side_by_side,
           footer: String.t(),
           prior_log_level: atom(),
           run_task: pid() | nil
@@ -468,6 +473,20 @@ defmodule ExAthena.Chat.Tui.State do
   def set_git_diff(%__MODULE__{} = state, lines) when is_list(lines) do
     %{state | git_diff_lines: lines}
   end
+
+  @doc "Set the Changes tab's diff layout (`:inline` or `:side_by_side`)."
+  @spec set_diff_mode(t(), :inline | :side_by_side) :: t()
+  def set_diff_mode(%__MODULE__{} = state, mode) when mode in [:inline, :side_by_side] do
+    %{state | diff_mode: mode}
+  end
+
+  @doc "Toggle the Changes tab's diff layout."
+  @spec cycle_diff_mode(t()) :: t()
+  def cycle_diff_mode(%__MODULE__{diff_mode: :inline} = state),
+    do: %{state | diff_mode: :side_by_side}
+
+  def cycle_diff_mode(%__MODULE__{} = state),
+    do: %{state | diff_mode: :inline}
 
   # ─ Pane scrolling ────────────────────────────────────────────────────────
 
