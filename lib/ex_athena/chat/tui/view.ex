@@ -56,7 +56,7 @@ defmodule ExAthena.Chat.Tui.View do
     widgets =
       [
         {header(state), header_rect},
-        {messages(state, messages_rect.width), messages_rect},
+        {messages(state, messages_rect.width, messages_rect.height), messages_rect},
         {input(state), input_rect},
         {footer(state), footer_rect}
       ] ++ details_widget(state, details_rect) ++ autocomplete_widget(state, input_rect)
@@ -77,10 +77,11 @@ defmodule ExAthena.Chat.Tui.View do
   defp details_widget(_state, nil), do: []
 
   defp details_widget(state, details_rect) do
-    # The details Block draws a left + right border, so the interior width
-    # is two cells narrower. We use the interior width for wrap calculation.
-    inner = max(details_rect.width - 2, 1)
-    [{details(state, inner), details_rect}]
+    # The details Block draws borders on all four sides, so the interior
+    # is two cells narrower AND two cells shorter than the outer rect.
+    inner_w = max(details_rect.width - 2, 1)
+    inner_h = max(details_rect.height - 2, 1)
+    [{details(state, inner_w, inner_h), details_rect}]
   end
 
   # ─ Autocomplete (slash command suggestions) ───────────────────────────────
@@ -173,17 +174,17 @@ defmodule ExAthena.Chat.Tui.View do
          %State{
            events: events,
            loading?: loading?,
-           scroll_offset: scroll,
            session: session
          },
-         width
+         width,
+         height
        ) do
     items =
       events
       |> Enum.map(&row_widget(&1, session.model, width))
       |> append_throbber(loading?)
 
-    %WidgetList{items: items, scroll_offset: scroll}
+    %WidgetList{items: items, scroll_offset: auto_scroll(items, height)}
   end
 
   @details_block %Block{
@@ -193,10 +194,22 @@ defmodule ExAthena.Chat.Tui.View do
     border_style: %Style{fg: :dark_gray}
   }
 
-  defp details(%State{details: details, details_scroll_offset: scroll}, width) do
+  defp details(%State{details: details}, width, height) do
     items = Enum.map(details, &detail_row_widget(&1, width))
-    %WidgetList{items: items, scroll_offset: scroll, block: @details_block}
+    %WidgetList{items: items, scroll_offset: auto_scroll(items, height), block: @details_block}
   end
+
+  # Compute a scroll_offset that pins the WidgetList to the bottom: sum
+  # the item heights, subtract the viewport height, clamp at 0. Once the
+  # content fits in the viewport this is 0 (top of list); as content
+  # grows past `height`, the offset advances so the latest items stay
+  # visible.
+  defp auto_scroll(items, height) when is_integer(height) and height > 0 do
+    total = items |> Enum.map(fn {_w, h} -> h end) |> Enum.sum()
+    max(total - height, 0)
+  end
+
+  defp auto_scroll(_items, _height), do: 0
 
   # Estimate the number of rows a string occupies once it's wrapped at
   # `width` columns. Counts each explicit `\n` as a line break and uses

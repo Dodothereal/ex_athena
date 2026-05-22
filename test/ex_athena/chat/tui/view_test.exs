@@ -190,17 +190,36 @@ defmodule ExAthena.Chat.Tui.ViewTest do
              end)
     end
 
-    test "scroll_offset is forwarded to the WidgetList",
+    test "scroll_offset auto-pins to the bottom when content overflows the viewport",
          %{session: session, frame: frame} do
+      # Fill the messages pane with more rows than fit in the frame.
       state =
         session
         |> State.new()
-        |> Map.put(:scroll_offset, 7)
+        |> then(fn s ->
+          Enum.reduce(1..50, s, fn n, acc ->
+            State.append_event(acc, {:assistant, "line #{n}"})
+          end)
+        end)
 
       widgets = View.build_frame(state, frame)
       list = find_widget_list(widgets)
 
-      assert list.scroll_offset == 7
+      # Total content height exceeds viewport — auto-scroll should be > 0.
+      assert list.scroll_offset > 0
+    end
+
+    test "scroll_offset stays at 0 when content fits in the viewport",
+         %{session: session, frame: frame} do
+      state =
+        session
+        |> State.new()
+        |> State.append_event({:assistant, "just one line"})
+
+      widgets = View.build_frame(state, frame)
+      list = find_widget_list(widgets)
+
+      assert list.scroll_offset == 0
     end
   end
 
