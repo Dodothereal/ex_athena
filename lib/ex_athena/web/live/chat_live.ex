@@ -72,6 +72,13 @@ defmodule ExAthena.Web.Live.ChatLive do
         # The assistant message id that streaming events are currently
         # attributed to. Set in start_agent_run; cleared in :athena_done.
         pending_assistant_msg_id: nil,
+        # Tool-UI panel (diffs / file reads / process output from tool events)
+        show_diff_panel: false,
+        diff_panel_log: [],
+        diff_panel_idx: 0,
+        # Git diff panel (git diff / git diff --staged output)
+        show_git_panel: false,
+        git_diff: nil,
         # Loading / status / errors
         page_loading: !connected?(socket),
         status: nil,
@@ -151,6 +158,9 @@ defmodule ExAthena.Web.Live.ChatLive do
          expanded_uis: MapSet.new(),
          details_stream: [],
          pending_assistant_msg_id: nil,
+         diff_panel_log: [],
+         diff_panel_idx: 0,
+         git_diff: nil,
          status: nil,
          error: nil,
          show_modal: false,
@@ -180,6 +190,9 @@ defmodule ExAthena.Web.Live.ChatLive do
          expanded_uis: MapSet.new(),
          details_stream: [],
          pending_assistant_msg_id: nil,
+         diff_panel_log: [],
+         diff_panel_idx: 0,
+         git_diff: nil,
          status: nil,
          error: nil,
          sessions: sessions,
@@ -208,6 +221,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        expanded_uis: MapSet.new(),
        details_stream: [],
        pending_assistant_msg_id: nil,
+       diff_panel_entry: nil,
        status: nil,
        error: nil,
        stream_text: "",
@@ -263,6 +277,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        expanded_uis: MapSet.new(),
        details_stream: [],
        pending_assistant_msg_id: nil,
+       diff_panel_entry: nil,
        status: nil,
        error: nil
      )}
@@ -297,6 +312,8 @@ defmodule ExAthena.Web.Live.ChatLive do
            expanded_uis: MapSet.new(),
            details_stream: details_stream,
            pending_assistant_msg_id: nil,
+           diff_panel_log: [],
+           diff_panel_idx: 0,
            status: nil,
            error: nil,
            show_sessions: false
@@ -368,6 +385,43 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def handle_event("focus_detail", %{"id" => tool_call_id}, socket) do
     {:noreply, push_event(socket, "focus-detail", %{tool_call_id: tool_call_id})}
+  end
+  def handle_event("toggle_diff_panel", _params, socket) do
+    {:noreply, assign(socket, show_diff_panel: !socket.assigns.show_diff_panel)}
+  end
+
+  def handle_event("toggle_git_panel", _params, socket) do
+    opening = !socket.assigns.show_git_panel
+    git_diff = if opening, do: fetch_git_diff(socket.assigns.cwd), else: socket.assigns.git_diff
+    {:noreply, assign(socket, show_git_panel: opening, git_diff: git_diff)}
+  end
+
+  def handle_event("refresh_git_diff", _params, socket) do
+    {:noreply, assign(socket, git_diff: fetch_git_diff(socket.assigns.cwd))}
+  end
+
+  def handle_event("panel_prev", _params, socket) do
+    idx = max(0, socket.assigns.diff_panel_idx - 1)
+    {:noreply, assign(socket, diff_panel_idx: idx)}
+  end
+
+  def handle_event("panel_next", _params, socket) do
+    idx = min(length(socket.assigns.diff_panel_log) - 1, socket.assigns.diff_panel_idx + 1)
+    {:noreply, assign(socket, diff_panel_idx: idx)}
+  end
+
+  def handle_event("pin_to_panel", %{"id" => id}, socket) do
+    log = socket.assigns.diff_panel_log
+    idx = Enum.find_index(log, fn {log_id, _} -> log_id == id end)
+
+    socket =
+      if idx do
+        assign(socket, diff_panel_idx: idx, show_diff_panel: true)
+      else
+        assign(socket, show_diff_panel: true)
+      end
+
+    {:noreply, socket}
   end
 
   # ---------------------------------------------------------------------------
@@ -455,7 +509,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         {:athena, {:tool_ui, %{tool_call_id: id, kind: kind, payload: payload}}},
         socket
       ) do
-    ui_entry = build_ui_entry(kind, payload)
+    ui_entry = build_ui_entry(kind, payload, socket.assigns.cwd)
     msg_id = socket.assigns.pending_assistant_msg_id
     detail = new_detail(:tool_ui, msg_id, %{tool_call_id: id, ui: ui_entry})
 
@@ -554,6 +608,13 @@ defmodule ExAthena.Web.Live.ChatLive do
         error: nil,
         session_title: title
       )
+
+    socket =
+      if socket.assigns.show_git_panel do
+        assign(socket, git_diff: fetch_git_diff(socket.assigns.cwd))
+      else
+        socket
+      end
 
     save_session(socket)
     {:noreply, socket}
@@ -766,6 +827,19 @@ defmodule ExAthena.Web.Live.ChatLive do
 
       <%!-- Main chat --%>
       <main class="chat-main" id="chat-main" phx-hook="SplitResize">
+        <div class="panel-toggles">
+          <button
+            class={"btn-panel-toggle#{if @show_diff_panel, do: " btn-panel-toggle--active", else: ""}"}
+            phx-click="toggle_diff_panel"
+            title={if @show_diff_panel, do: "Hide tool panel", else: "Show tool panel"}
+          >⊟</button>
+          <button
+            class={"btn-panel-toggle#{if @show_git_panel, do: " btn-panel-toggle--active", else: ""}"}
+            phx-click="toggle_git_panel"
+            title={if @show_git_panel, do: "Hide git diff", else: "Show git diff"}
+          >±</button>
+        </div>
+
         <div class="messages" id="messages" phx-hook="ScrollToBottom">
           <%= if @messages == [] and not @streaming do %>
             <div class="empty-state">
@@ -846,6 +920,77 @@ defmodule ExAthena.Web.Live.ChatLive do
           </form>
         </div>
       </main>
+
+      <%!-- Right-side panels column --%>
+      <%= if @show_diff_panel or @show_git_panel do %>
+        <div class="panels-col">
+          <%!-- Tool-UI panel --%>
+          <%= if @show_diff_panel do %>
+            <%
+              {_panel_id, panel_entry} = Enum.at(@diff_panel_log, @diff_panel_idx, {nil, nil})
+              panel_total = length(@diff_panel_log)
+            %>
+            <div class="diff-panel">
+              <div class="diff-panel-header">
+                <span class="diff-panel-title">
+                  <%= cond do %>
+                    <% is_nil(panel_entry) -> %>
+                      Changes
+                    <% panel_entry[:kind] == :diff -> %>
+                      {panel_entry[:path]}
+                    <% panel_entry[:kind] == :file -> %>
+                      {panel_entry[:path]}
+                    <% panel_entry[:kind] == :process -> %>
+                      {panel_entry[:command]}
+                    <% true -> %>
+                      Changes
+                  <% end %>
+                </span>
+                <%= if panel_total > 1 do %>
+                  <div class="diff-panel-nav">
+                    <button class="diff-panel-nav-btn" phx-click="panel_prev" disabled={@diff_panel_idx == 0}>‹</button>
+                    <span class="diff-panel-nav-pos">{@diff_panel_idx + 1}/{panel_total}</span>
+                    <button class="diff-panel-nav-btn" phx-click="panel_next" disabled={@diff_panel_idx == panel_total - 1}>›</button>
+                  </div>
+                <% end %>
+                <button class="diff-panel-close" phx-click="toggle_diff_panel" title="Close">×</button>
+              </div>
+              <div class="diff-panel-body">
+                <%= if panel_entry do %>
+                  <.tool_ui_panel ui={panel_entry} />
+                <% else %>
+                  <div class="diff-panel-empty">No output yet — run a command to see results here.</div>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+
+          <%!-- Git diff panel --%>
+          <%= if @show_git_panel do %>
+            <div class="git-panel">
+              <div class="git-panel-header">
+                <span class="git-panel-title">git diff</span>
+                <button class="git-panel-refresh" phx-click="refresh_git_diff" title="Refresh">↺</button>
+                <button class="git-panel-close" phx-click="toggle_git_panel" title="Close">×</button>
+              </div>
+              <div class="git-panel-body">
+                <%= cond do %>
+                  <% is_nil(@git_diff) -> %>
+                    <div class="diff-panel-empty">Not a git repository or git not available.</div>
+                  <% @git_diff == [] -> %>
+                    <div class="diff-panel-empty">Working tree clean — no changes.</div>
+                  <% true -> %>
+                    <div class="git-diff-output">
+                      <%= for {kind, line} <- @git_diff do %>
+                        <div class={"gdiff-line gdiff-#{kind}"}>{line}</div>
+                      <% end %>
+                    </div>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+        </div>
+      <% end %>
     </div>
     <% end %>
     """
@@ -955,10 +1100,16 @@ defmodule ExAthena.Web.Live.ChatLive do
         <span class="diff-stats">{@ui.changed_lines} changed / {@ui.total_lines} lines</span>
       </div>
       <div class="diff-body">
-        <div :for={{kind, line} <- @ui.lines} class={"diff-line diff-#{kind}"}>
-          <span class="diff-mark">{diff_mark(kind)}</span>
-          <span class="diff-text">{line}</span>
-        </div>
+        <%= for {kind, line} <- @ui.lines do %>
+          <%= if kind == :gap do %>
+            <div class="diff-gap">{line}</div>
+          <% else %>
+            <div class={"diff-line diff-#{kind}"}>
+              <span class="diff-mark">{diff_mark(kind)}</span>
+              <span class="diff-text">{line}</span>
+            </div>
+          <% end %>
+        <% end %>
         <%= if @ui.truncated do %>
           <div class="diff-truncated">… showing first {@ui.shown} lines</div>
         <% end %>
@@ -1242,6 +1393,8 @@ defmodule ExAthena.Web.Live.ChatLive do
        stream_text: "",
        stream_events: [],
        stream_tool_ui: %{},
+       diff_panel_log: [],
+       diff_panel_idx: 0,
        current_action: nil,
        pending_assistant_msg_id: assistant_msg_id,
        details_stream: [user_detail | socket.assigns.details_stream],
@@ -1363,7 +1516,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp message_to_details(_, _), do: []
 
-  defp build_ui_entry(:diff, %{path: path, before: before, after: after_text} = _payload) do
+  defp build_ui_entry(:diff, %{path: path, before: before, after: after_text}, cwd) do
     before_lines = String.split(before, "\n")
     after_lines = String.split(after_text, "\n")
 
@@ -1375,22 +1528,55 @@ defmodule ExAthena.Web.Live.ChatLive do
         {:del, lines} -> Enum.map(lines, &{:del, &1})
       end)
 
-    visible = Enum.take(all_lines, @max_diff_lines)
-    total = length(all_lines)
     changed = Enum.count(all_lines, fn {k, _} -> k != :eq end)
 
-    %{
-      kind: :diff,
-      path: Path.relative_to_cwd(path),
-      lines: visible,
-      total_lines: total,
-      changed_lines: changed,
-      shown: length(visible),
-      truncated: total > @max_diff_lines
-    }
+    if changed == 0 do
+      nil
+    else
+      total = length(all_lines)
+      ctx = 3
+
+      keep =
+        all_lines
+        |> Enum.with_index()
+        |> Enum.filter(fn {{k, _}, _} -> k != :eq end)
+        |> Enum.flat_map(fn {_, i} -> Enum.to_list(max(0, i - ctx)..min(total - 1, i + ctx)) end)
+        |> MapSet.new()
+
+      visible =
+        all_lines
+        |> Enum.with_index()
+        |> Enum.reduce({[], nil}, fn {{kind, line}, i}, {acc, last} ->
+          if MapSet.member?(keep, i) do
+            gap =
+              case last do
+                nil when i > 0 -> [{:gap, "… #{i} lines"}]
+                prev when i > prev + 1 -> [{:gap, "… #{i - prev - 1} lines"}]
+                _ -> []
+              end
+
+            {acc ++ gap ++ [{kind, line}], i}
+          else
+            {acc, last}
+          end
+        end)
+        |> elem(0)
+
+      display = Enum.take(visible, @max_diff_lines)
+
+      %{
+        kind: :diff,
+        path: relpath(path, cwd),
+        lines: display,
+        total_lines: total,
+        changed_lines: changed,
+        shown: length(visible),
+        truncated: length(visible) > @max_diff_lines
+      }
+    end
   end
 
-  defp build_ui_entry(:process, %{command: cmd, exit_code: code, stdout: out, duration_ms: ms}) do
+  defp build_ui_entry(:process, %{command: cmd, exit_code: code, stdout: out, duration_ms: ms}, _cwd) do
     %{
       kind: :process,
       command: cmd,
@@ -1400,15 +1586,52 @@ defmodule ExAthena.Web.Live.ChatLive do
     }
   end
 
-  defp build_ui_entry(:file, %{path: path, content: content}) do
-    %{kind: :file, path: path, content: truncate(content, 8_000)}
+  defp build_ui_entry(:file, %{path: path, content: content}, cwd) do
+    %{kind: :file, path: relpath(path, cwd), content: truncate(content, 8_000)}
   end
 
-  defp build_ui_entry(_kind, _payload), do: nil
+  defp build_ui_entry(_kind, _payload, _cwd), do: nil
+
+  defp relpath(path, nil), do: path
+  defp relpath(path, cwd), do: Path.relative_to(path, cwd)
+
+  defp fetch_git_diff(nil), do: nil
+
+  defp fetch_git_diff(cwd) do
+    try do
+      {unstaged, _} = System.cmd("git", ["diff", "--color=never"], cd: cwd)
+      {staged, _} = System.cmd("git", ["diff", "--staged", "--color=never"], cd: cwd)
+      combined = [unstaged, staged] |> Enum.reject(&(&1 == "")) |> Enum.join("\n")
+      if combined == "", do: [], else: parse_git_diff(combined)
+    rescue
+      _ -> nil
+    end
+  end
+
+  defp parse_git_diff(raw) do
+    raw
+    |> String.split("\n")
+    |> Enum.map(fn line ->
+      cond do
+        String.starts_with?(line, "diff --git") -> {:header, line}
+        String.starts_with?(line, "index ") -> {:meta, line}
+        String.starts_with?(line, "new file") -> {:meta, line}
+        String.starts_with?(line, "deleted file") -> {:meta, line}
+        String.starts_with?(line, "Binary files") -> {:meta, line}
+        String.starts_with?(line, "--- ") -> {:file_a, line}
+        String.starts_with?(line, "+++ ") -> {:file_b, line}
+        String.starts_with?(line, "@@") -> {:hunk, line}
+        String.starts_with?(line, "+") -> {:ins, line}
+        String.starts_with?(line, "-") -> {:del, line}
+        true -> {:ctx, line}
+      end
+    end)
+  end
 
   defp diff_mark(:ins), do: "+"
   defp diff_mark(:del), do: "−"
   defp diff_mark(:eq), do: " "
+  defp diff_mark(:gap), do: ""
 
   defp action_label("read", args) do
     path = Map.get(args, "path", "")
