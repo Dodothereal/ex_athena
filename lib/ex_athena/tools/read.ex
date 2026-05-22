@@ -76,7 +76,18 @@ defmodule ExAthena.Tools.Read do
     {start_line, end_line}
   end
 
-  defp fetch_path(%{"path" => path}, ctx), do: ToolContext.resolve_path(ctx, path)
+  defp fetch_path(%{"path" => path}, ctx) when is_binary(path) do
+    # An empty or whitespace-only path used to resolve to `cwd` (then on
+    # some filesystems return the contents of the first regular file —
+    # typically README). Reject explicitly so the model gets a clear
+    # `:missing_path` signal instead of `:not_a_regular_file` or a
+    # confusing partial read of the wrong file.
+    case String.trim(path) do
+      "" -> {:error, :missing_path}
+      trimmed -> ToolContext.resolve_path(ctx, trimmed)
+    end
+  end
+
   defp fetch_path(_, _), do: {:error, :missing_path}
 
   defp check_size(%File.Stat{size: size}) when size > @max_bytes,
