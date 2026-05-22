@@ -28,6 +28,8 @@ defmodule ExAthena.Chat.Tui.State do
           | :warning
           | :info
           | :status
+          | :thinking
+          | :detail_header
 
   @type event_row :: {event_kind(), String.t()}
 
@@ -43,6 +45,10 @@ defmodule ExAthena.Chat.Tui.State do
             loading?: false,
             popup: nil,
             events: [],
+            details: [],
+            details_scroll_offset: 0,
+            details_stream_buffer: "",
+            details_thinking_buffer: "",
             footer: @default_footer,
             prior_log_level: :info,
             run_task: nil
@@ -55,6 +61,10 @@ defmodule ExAthena.Chat.Tui.State do
           loading?: boolean(),
           popup: popup(),
           events: [event_row()],
+          details: [event_row()],
+          details_scroll_offset: non_neg_integer(),
+          details_stream_buffer: String.t(),
+          details_thinking_buffer: String.t(),
           footer: String.t(),
           prior_log_level: atom(),
           run_task: pid() | nil
@@ -74,21 +84,32 @@ defmodule ExAthena.Chat.Tui.State do
   @doc """
   Apply an `ExAthena.Loop.Events.t()` to the UI state.
 
-  `:content` deltas accumulate into `stream_buffer` and are materialized
-  by `flush_stream/1` (the App calls this every tick). Other event kinds
-  produce a row immediately. Silent events (`:iteration`, `:usage`,
-  `:tool_ui`, `:done`) and unknown events are no-ops.
+  `:content` deltas accumulate into `stream_buffer` (left pane) and
+  `details_stream_buffer` (right pane); both are materialized by
+  `flush_stream/1`. Most other events produce a one-line row in the
+  left pane and a full-detail block in the right pane.
   """
   @spec append_loop_event(t(), term()) :: t()
   def append_loop_event(%__MODULE__{} = state, {:content, text}) when is_binary(text) do
-    %{state | stream_buffer: state.stream_buffer <> text}
+    %{
+      state
+      | stream_buffer: state.stream_buffer <> text,
+        details_stream_buffer: state.details_stream_buffer <> text
+    }
+  end
+
+  def append_loop_event(%__MODULE__{} = state, {:thinking, text}) when is_binary(text) do
+    %{state | details_thinking_buffer: state.details_thinking_buffer <> text}
   end
 
   def append_loop_event(
         %__MODULE__{} = state,
         {:tool_call, %ToolCall{name: name, arguments: args}}
       ) do
-    append_event(state, {:tool_call, "→ #{name}(#{preview_args(args)})"})
+    state
+    |> append_event({:tool_call, "→ #{name}(#{preview_args(args)})"})
+    |> append_detail_header("→ #{name}")
+    |> append_detail_lines(:tool_call, format_args_full(args))
   end
 
   def append_loop_event(
@@ -96,38 +117,77 @@ defmodule ExAthena.Chat.Tui.State do
         {:tool_result, %ToolResult{content: content, is_error: is_error}}
       ) do
     kind = if is_error, do: :tool_result_error, else: :tool_result
-    append_event(state, {kind, "← #{summarize_result(content)}"})
+    arrow = if is_error, do: "✗", else: "←"
+
+    state
+    |> append_event({kind, "← #{summarize_result(content)}"})
+    |> append_detail_header("#{arrow} result")
+    |> append_detail_lines(kind, to_string(content))
   end
 
-  def append_loop_event(%__MODULE__{} = state, {:error, reason}) do
-    append_event(state, {:warning, "warn: #{inspect(reason)}"})
+  def append_loop_event(%__MODULE__{} = state, {:tool_ui, %{kind: kind, payload: payload}}) do
+    state
+    |> append_detail_header("ui · #{kind}")
+    |> append_detail_lines(:info, format_tool_ui(kind, payload))
+  end
+
+  def append_loop_event(%__MODULE__{} = state, {:iteration, n}) do
+    append_detail_header(state, "iteration #{n}")
   end
 
   def append_loop_event(%__MODULE__{} = state, {:compaction, %{before: before, after: aft}}) do
-    append_event(state, {:info, "⤵ compacted #{before}→#{aft} tokens"})
+    state
+    |> append_event({:info, "⤵ compacted #{before}→#{aft} tokens"})
+    |> append_detail_header("⤵ compacted #{before}→#{aft} tokens")
   end
 
   def append_loop_event(%__MODULE__{} = state, {:subagent_spawn, %{prompt: p}}) do
-    append_event(state, {:info, "  ↳ subagent: #{truncate(p, 80)}"})
+    state
+    |> append_event({:info, "  ↳ subagent: #{truncate(p, 80)}"})
+    |> append_detail_header("↳ subagent spawn")
+    |> append_detail_lines(:info, p)
   end
 
   def append_loop_event(%__MODULE__{} = state, {:subagent_result, %{text: t}}) do
-    append_event(state, {:info, "  ↳ subagent done: #{truncate(t, 80)}"})
+    state
+    |> append_event({:info, "  ↳ subagent done: #{truncate(t, 80)}"})
+    |> append_detail_header("↳ subagent result")
+    |> append_detail_lines(:info, t)
+  end
+
+  def append_loop_event(%__MODULE__{} = state, {:error, reason}) do
+    state
+    |> append_event({:warning, "warn: #{inspect(reason)}"})
+    |> append_detail_header("⚠ error")
+    |> append_detail_lines(:error, inspect(reason, pretty: true))
+  end
+
+  def append_loop_event(%__MODULE__{} = state, {:usage, usage}) do
+    append_detail_header(state, "usage · #{inspect(usage)}")
   end
 
   def append_loop_event(%__MODULE__{} = state, _other), do: state
 
   @doc """
-  Materialize `stream_buffer` into the events list and clear it.
+  Materialize `stream_buffer` into the events list, and the
+  `details_stream_buffer` / `details_thinking_buffer` into the details
+  list. Clears all three buffers.
 
-  If the most recent event is already `:assistant`, the buffered text is
-  appended to it (streaming continues into the same row). Otherwise a
-  fresh `:assistant` row is created.
+  For each pane, if the most recent row is already the same kind
+  (`:assistant` / `:thinking`), the buffered text is appended in place.
+  Otherwise a fresh row is started.
   """
   @spec flush_stream(t()) :: t()
-  def flush_stream(%__MODULE__{stream_buffer: ""} = state), do: state
+  def flush_stream(%__MODULE__{} = state) do
+    state
+    |> flush_main_stream()
+    |> flush_details_assistant_stream()
+    |> flush_details_thinking_stream()
+  end
 
-  def flush_stream(%__MODULE__{stream_buffer: buf, events: events} = state) do
+  defp flush_main_stream(%__MODULE__{stream_buffer: ""} = state), do: state
+
+  defp flush_main_stream(%__MODULE__{stream_buffer: buf, events: events} = state) do
     new_events =
       case Enum.reverse(events) do
         [{:assistant, prior} | rest] ->
@@ -139,6 +199,45 @@ defmodule ExAthena.Chat.Tui.State do
 
     %{state | events: new_events, stream_buffer: ""}
   end
+
+  defp flush_details_assistant_stream(%__MODULE__{details_stream_buffer: ""} = state), do: state
+
+  defp flush_details_assistant_stream(%__MODULE__{details_stream_buffer: buf} = state) do
+    state
+    |> merge_details_buffer(:assistant, buf)
+    |> Map.put(:details_stream_buffer, "")
+  end
+
+  defp flush_details_thinking_stream(%__MODULE__{details_thinking_buffer: ""} = state), do: state
+
+  defp flush_details_thinking_stream(%__MODULE__{details_thinking_buffer: buf} = state) do
+    state
+    |> merge_details_buffer(:thinking, buf)
+    |> Map.put(:details_thinking_buffer, "")
+  end
+
+  # Append `buf` to the last detail row of the given kind if it's the tail
+  # (continuing a stream), otherwise start a new block. The buffer is
+  # split into one detail row per source line so the right pane wraps
+  # naturally with one widget per row.
+  defp merge_details_buffer(%__MODULE__{details: details} = state, kind, buf) do
+    new_lines = split_lines(buf)
+
+    new_details =
+      case {Enum.reverse(details), new_lines} do
+        {[{^kind, prior} | rest], [first | more]} ->
+          merged_first = {kind, prior <> first}
+          Enum.reverse([merged_first | rest]) ++ Enum.map(more, &{kind, &1})
+
+        _ ->
+          details ++ Enum.map(new_lines, &{kind, &1})
+      end
+
+    %{state | details: new_details}
+  end
+
+  defp split_lines(""), do: [""]
+  defp split_lines(text), do: String.split(text, "\n")
 
   @spec set_loading(t(), boolean()) :: t()
   def set_loading(%__MODULE__{} = state, flag) when is_boolean(flag) do
@@ -162,7 +261,16 @@ defmodule ExAthena.Chat.Tui.State do
 
   @spec clear_session(t()) :: t()
   def clear_session(%__MODULE__{session: session} = state) do
-    %{state | session: Session.clear_messages(session), events: [], stream_buffer: ""}
+    %{
+      state
+      | session: Session.clear_messages(session),
+        events: [],
+        stream_buffer: "",
+        details: [],
+        details_scroll_offset: 0,
+        details_stream_buffer: "",
+        details_thinking_buffer: ""
+    }
   end
 
   # ─ Popups ─────────────────────────────────────────────────────────────────
@@ -191,6 +299,50 @@ defmodule ExAthena.Chat.Tui.State do
   def current_popup_selection(%__MODULE__{popup: nil}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, [], _}}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, items, idx}}), do: Enum.at(items, idx)
+
+  # ─ Details-pane helpers ──────────────────────────────────────────────────
+
+  @doc false
+  def append_detail_header(%__MODULE__{details: details} = state, label)
+      when is_binary(label) do
+    %{state | details: details ++ [{:detail_header, label}]}
+  end
+
+  @doc false
+  def append_detail_lines(%__MODULE__{details: details} = state, kind, text)
+      when is_atom(kind) do
+    rows =
+      text
+      |> to_string()
+      |> String.trim_trailing("\n")
+      |> String.split("\n")
+      |> Enum.map(&{kind, &1})
+
+    %{state | details: details ++ rows}
+  end
+
+  defp format_args_full(args) when is_map(args) do
+    case Jason.encode(args, pretty: true) do
+      {:ok, json} -> json
+      _ -> inspect(args, pretty: true, limit: :infinity)
+    end
+  end
+
+  defp format_args_full(other), do: inspect(other, pretty: true)
+
+  defp format_tool_ui(:diff, %{path: path, before: before, after: aft}) do
+    "diff: #{path}\n--- before\n#{before}\n+++ after\n#{aft}"
+  end
+
+  defp format_tool_ui(:process, %{command: cmd, exit_code: code, stdout: out, duration_ms: ms}) do
+    "$ #{cmd}\n[exit=#{code}, #{ms}ms]\n#{out}"
+  end
+
+  defp format_tool_ui(:file, %{path: path, content: content}) do
+    "file: #{path}\n#{content}"
+  end
+
+  defp format_tool_ui(kind, payload), do: "#{kind}: #{inspect(payload, pretty: true)}"
 
   # ─ Helpers ────────────────────────────────────────────────────────────────
 

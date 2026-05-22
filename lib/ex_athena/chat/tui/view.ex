@@ -6,8 +6,12 @@ defmodule ExAthena.Chat.Tui.View do
   Layout (top-to-bottom):
 
     1. Header (1 row) — `provider · model · mode · iter=N · in/out tok · $cost`.
-    2. Messages (flex) — a `WidgetList` of one `{Paragraph, 1}` per event row.
-       If `state.loading? == true`, a `Throbber` is appended to the list.
+    2. Body (flex) — split horizontally 50/50 into:
+         * Left  — `messages` WidgetList (one `{Paragraph, 1}` per event row).
+           If `state.loading? == true`, a `Throbber` is appended.
+         * Right — `details` WidgetList: full args, full tool results, thinking,
+           tool UI payloads, and every loop event. Wrapped in a titled `Block`
+           with a left border.
     3. Input (3 rows) — `Textarea` bound to `state.input_ref` inside a
        titled `Block`.
     4. Footer (1 row) — shortcut hints (changes when a popup is open).
@@ -39,7 +43,7 @@ defmodule ExAthena.Chat.Tui.View do
   def build_frame(%State{} = state, %Frame{width: w, height: h}) do
     area = %Rect{x: 0, y: 0, width: w, height: h}
 
-    [header_rect, messages_rect, input_rect, footer_rect] =
+    [header_rect, body_rect, input_rect, footer_rect] =
       Layout.split(area, :vertical, [
         {:length, 1},
         {:min, 0},
@@ -47,9 +51,16 @@ defmodule ExAthena.Chat.Tui.View do
         {:length, @footer_height}
       ])
 
+    [messages_rect, details_rect] =
+      Layout.split(body_rect, :horizontal, [
+        {:percentage, 50},
+        {:percentage, 50}
+      ])
+
     widgets = [
       {header(state), header_rect},
       {messages(state), messages_rect},
+      {details(state), details_rect},
       {input(state), input_rect},
       {footer(state), footer_rect}
     ]
@@ -98,6 +109,60 @@ defmodule ExAthena.Chat.Tui.View do
       |> append_throbber(loading?)
 
     %WidgetList{items: items, scroll_offset: scroll}
+  end
+
+  @details_block %Block{
+    title: " details ",
+    borders: [:left, :top, :bottom, :right],
+    border_type: :rounded,
+    border_style: %Style{fg: :dark_gray}
+  }
+
+  defp details(%State{details: details, details_scroll_offset: scroll}) do
+    items = Enum.map(details, &detail_row_widget/1)
+    %WidgetList{items: items, scroll_offset: scroll, block: @details_block}
+  end
+
+  defp detail_row_widget({:detail_header, text}) do
+    {%Paragraph{
+       text: text,
+       style: %Style{fg: :light_yellow, modifiers: [:bold]}
+     }, 1}
+  end
+
+  defp detail_row_widget({:thinking, text}) do
+    {%Paragraph{
+       text: text,
+       style: %Style{fg: :magenta, modifiers: [:italic]}
+     }, 1}
+  end
+
+  defp detail_row_widget({:assistant, text}) do
+    {%Paragraph{text: text, style: %Style{fg: :white}}, 1}
+  end
+
+  defp detail_row_widget({:tool_call, text}) do
+    {%Paragraph{text: text, style: %Style{fg: :cyan}}, 1}
+  end
+
+  defp detail_row_widget({:tool_result, text}) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  end
+
+  defp detail_row_widget({:tool_result_error, text}) do
+    {%Paragraph{text: text, style: %Style{fg: :red}}, 1}
+  end
+
+  defp detail_row_widget({:error, text}) do
+    {%Paragraph{text: text, style: %Style{fg: :red, modifiers: [:bold]}}, 1}
+  end
+
+  defp detail_row_widget({:info, text}) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
+  end
+
+  defp detail_row_widget({_kind, text}) do
+    {%Paragraph{text: text, style: %Style{fg: :dark_gray}}, 1}
   end
 
   defp row_widget({:user, text}, _model) do

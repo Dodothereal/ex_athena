@@ -10,6 +10,10 @@ defmodule ExAthena.Loop.Events do
   Events:
 
     * `{:content, text}` — partial or full assistant text.
+    * `{:thinking, text}` — partial or full model reasoning/thinking
+      content (Anthropic `thinking` blocks, OpenAI `reasoning`
+      content). Distinct from `:content` so hosts can display it
+      separately (e.g. in a side pane).
     * `{:tool_call, ToolCall.t()}` — model requested a tool call.
     * `{:tool_result, ToolResult.t()}` — tool produced a result (or error).
     * `{:tool_ui, %{tool_call_id:, kind:, payload:}}` — structured UI
@@ -34,6 +38,7 @@ defmodule ExAthena.Loop.Events do
 
   @type t ::
           {:content, String.t()}
+          | {:thinking, String.t()}
           | {:tool_call, ToolCall.t()}
           | {:tool_result, ToolResult.t()}
           | {:tool_ui,
