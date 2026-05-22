@@ -79,6 +79,7 @@ defmodule ExAthena.Chat.Tui do
       |> Map.put(:input_ref, input_ref)
       |> Map.put(:prior_log_level, prior_log_level)
       |> banner_events()
+      |> maybe_kick_git_diff()
 
     schedule_tick()
 
@@ -235,7 +236,18 @@ defmodule ExAthena.Chat.Tui do
   end
 
   def handle_info({:athena_event, event}, %State{} = state) do
-    {:noreply, State.append_loop_event(state, event)}
+    state = State.append_loop_event(state, event)
+
+    # Kick off a fresh `git diff` whenever a tool result lands — that's
+    # the point where the working tree may have changed. Bounded async,
+    # never blocks the UI.
+    state =
+      case event do
+        {:tool_result, _} -> maybe_kick_git_diff(state)
+        _ -> state
+      end
+
+    {:noreply, state}
   end
 
   def handle_info({:athena_done, result}, %State{} = state) do
@@ -246,8 +258,13 @@ defmodule ExAthena.Chat.Tui do
       |> State.set_loading(false)
       |> Map.put(:run_task, nil)
       |> append_status_row()
+      |> maybe_kick_git_diff()
 
     {:noreply, new_state}
+  end
+
+  def handle_info({:git_diff, lines}, %State{} = state) when is_list(lines) do
+    {:noreply, State.set_git_diff(state, lines)}
   end
 
   def handle_info({:athena_error, reason}, %State{} = state) do
@@ -370,6 +387,31 @@ defmodule ExAthena.Chat.Tui do
     |> noreply()
   end
 
+  defp dispatch_command(:tab, _args, state) do
+    state = State.cycle_details_tab(state)
+    label = state.details_tab |> Atom.to_string() |> String.capitalize()
+    state = maybe_kick_git_diff(state)
+
+    state
+    |> State.append_event({:info, "details tab → " <> label})
+    |> noreply()
+  end
+
+  defp dispatch_command(:diff, _args, state) do
+    state
+    |> State.set_details_tab(:changes)
+    |> State.append_event({:info, "details tab → Changes"})
+    |> maybe_kick_git_diff()
+    |> noreply()
+  end
+
+  defp dispatch_command(:timeline, _args, state) do
+    state
+    |> State.set_details_tab(:timeline)
+    |> State.append_event({:info, "details tab → Timeline"})
+    |> noreply()
+  end
+
   defp dispatch_command(:cd, [], state) do
     append_and_noreply(
       state,
@@ -391,6 +433,7 @@ defmodule ExAthena.Chat.Tui do
         state
         |> update_in_session(&Session.set_cwd(&1, expanded))
         |> State.append_event({:info, "cwd → " <> expanded})
+        |> maybe_kick_git_diff()
         |> noreply()
     end
   end
@@ -483,6 +526,42 @@ defmodule ExAthena.Chat.Tui do
        "provider=#{session.provider}  model=#{session.model}  mode=#{inspect(session.mode)}"}
     )
     |> State.append_event({:info, cwd_line})
+  end
+
+  # ── Git diff (Changes tab) ────────────────────────────────────────────
+
+  # Spawn an unsupervised Task that shells out to `git diff HEAD` in the
+  # session's cwd and sends `{:git_diff, lines}` back to this process.
+  # Wrapped in try/rescue/catch per the CLAUDE.md Task.start guidance.
+  # Errors / non-git directories result in an empty diff (silently).
+  defp maybe_kick_git_diff(state) do
+    parent = self()
+    cwd = state.session.cwd || File.cwd!()
+
+    Task.start(fn ->
+      try do
+        lines = fetch_git_diff(cwd)
+        send(parent, {:git_diff, lines})
+      rescue
+        _ -> send(parent, {:git_diff, []})
+      catch
+        _, _ -> send(parent, {:git_diff, []})
+      end
+    end)
+
+    state
+  end
+
+  defp fetch_git_diff(cwd) do
+    case System.cmd("git", ["diff", "HEAD"], cd: cwd, stderr_to_stdout: true) do
+      {output, 0} ->
+        output |> String.trim_trailing("\n") |> String.split("\n")
+
+      _ ->
+        []
+    end
+  rescue
+    _ -> []
   end
 
   defp restore_logger(%State{prior_log_level: level} = state) do

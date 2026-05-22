@@ -32,6 +32,9 @@ defmodule ExAthena.Chat.Commands do
     "details" => :details,
     "cd" => :cd,
     "pwd" => :pwd,
+    "tab" => :tab,
+    "diff" => :diff,
+    "timeline" => :timeline,
     "help" => :help,
     "?" => :help
   }
@@ -78,6 +81,9 @@ defmodule ExAthena.Chat.Commands do
       "details",
       "cd",
       "pwd",
+      "tab",
+      "diff",
+      "timeline",
       "help",
       "exit"
     ]
@@ -100,6 +106,9 @@ defmodule ExAthena.Chat.Commands do
       "/details" => "toggle the details pane",
       "/cd" => "set the working directory",
       "/pwd" => "print the current directory",
+      "/tab" => "switch the details tab (timeline ↔ changes)",
+      "/diff" => "show the Changes tab (git diff in cwd)",
+      "/timeline" => "show the Timeline tab",
       "/help" => "show full usage help",
       "/exit" => "leave the chat"
     }
@@ -123,6 +132,9 @@ defmodule ExAthena.Chat.Commands do
       /cd PATH           set the working directory for tools
                          (`~` is expanded; the chat process does not chdir)
       /pwd               print the current working directory
+      /tab               cycle the details-pane tab (Timeline ↔ Changes)
+      /diff              switch to the Changes tab (live `git diff` in cwd)
+      /timeline          switch back to the Timeline tab
       /help, /?          show this help
       /exit, /quit, /q   leave the chat
 

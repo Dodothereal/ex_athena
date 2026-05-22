@@ -67,6 +67,12 @@ defmodule ExAthena.Chat.Tui.State do
             # mid-verb. `items` are slash-prefixed verbs; `idx` is the
             # selected row (0-based).
             autocomplete: nil,
+            # Which tab is active in the right details pane.
+            details_tab: :timeline,
+            # Lines of `git diff HEAD` for the :changes tab. Refreshed
+            # asynchronously after every tool result and on /cd.
+            git_diff_lines: [],
+            git_diff_scroll_offset: 0,
             footer: @default_footer,
             prior_log_level: :info,
             run_task: nil
@@ -91,6 +97,9 @@ defmodule ExAthena.Chat.Tui.State do
           stream_parser: %{mode: atom(), pending: String.t(), close_tag: String.t() | nil},
           streamed_this_turn?: boolean(),
           autocomplete: autocomplete(),
+          details_tab: :timeline | :changes,
+          git_diff_lines: [String.t()],
+          git_diff_scroll_offset: non_neg_integer(),
           footer: String.t(),
           prior_log_level: atom(),
           run_task: pid() | nil
@@ -376,6 +385,33 @@ defmodule ExAthena.Chat.Tui.State do
   def current_popup_selection(%__MODULE__{popup: nil}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, [], _}}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, items, idx}}), do: Enum.at(items, idx)
+
+  # ─ Details-pane tabs (timeline / changes) ────────────────────────────────
+
+  @details_tabs [:timeline, :changes]
+
+  @doc "Returns the ordered list of tab atoms used in the details pane."
+  @spec details_tabs() :: [atom()]
+  def details_tabs, do: @details_tabs
+
+  @doc "Switch to the next tab in order, wrapping to the first."
+  @spec cycle_details_tab(t()) :: t()
+  def cycle_details_tab(%__MODULE__{details_tab: tab} = state) do
+    idx = Enum.find_index(@details_tabs, &(&1 == tab)) || 0
+    next = Enum.at(@details_tabs, Integer.mod(idx + 1, length(@details_tabs)))
+    %{state | details_tab: next}
+  end
+
+  @spec set_details_tab(t(), atom()) :: t()
+  def set_details_tab(%__MODULE__{} = state, tab) when tab in @details_tabs do
+    %{state | details_tab: tab}
+  end
+
+  @doc "Replace the cached `git diff` output with a fresh list of lines."
+  @spec set_git_diff(t(), [String.t()]) :: t()
+  def set_git_diff(%__MODULE__{} = state, lines) when is_list(lines) do
+    %{state | git_diff_lines: lines}
+  end
 
   # ─ Slash-command autocomplete ────────────────────────────────────────────
 

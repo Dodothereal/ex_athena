@@ -77,12 +77,43 @@ defmodule ExAthena.Chat.Tui.View do
   defp details_widget(_state, nil), do: []
 
   defp details_widget(state, details_rect) do
-    # The details Block draws borders on all four sides, so the interior
+    [tabs_rect, content_rect] =
+      Layout.split(details_rect, :vertical, [{:length, 1}, {:min, 0}])
+
+    # The content Block draws borders on all four sides, so the interior
     # is two cells narrower AND two cells shorter than the outer rect.
-    inner_w = max(details_rect.width - 2, 1)
-    inner_h = max(details_rect.height - 2, 1)
-    [{details(state, inner_w, inner_h), details_rect}]
+    inner_w = max(content_rect.width - 2, 1)
+    inner_h = max(content_rect.height - 2, 1)
+
+    content_widget =
+      case state.details_tab do
+        :timeline -> details(state, inner_w, inner_h)
+        :changes -> changes(state, inner_w, inner_h)
+      end
+
+    [
+      {details_tabs_widget(state), tabs_rect},
+      {content_widget, content_rect}
+    ]
   end
+
+  defp details_tabs_widget(%State{details_tab: tab}) do
+    tabs = State.details_tabs()
+    titles = Enum.map(tabs, &tab_title/1)
+    selected = Enum.find_index(tabs, &(&1 == tab)) || 0
+
+    %ExRatatui.Widgets.Tabs{
+      titles: titles,
+      selected: selected,
+      style: %Style{fg: :dark_gray},
+      highlight_style: %Style{fg: :light_blue, modifiers: [:bold]},
+      divider: " │ "
+    }
+  end
+
+  defp tab_title(:timeline), do: " Timeline "
+  defp tab_title(:changes), do: " Changes (git diff) "
+  defp tab_title(other), do: " #{other} "
 
   # ─ Autocomplete (slash command suggestions) ───────────────────────────────
 
@@ -198,6 +229,44 @@ defmodule ExAthena.Chat.Tui.View do
     items = Enum.map(details, &detail_row_widget(&1, width))
     %WidgetList{items: items, scroll_offset: auto_scroll(items, height), block: @details_block}
   end
+
+  @changes_block %Block{
+    title: " changes · git diff HEAD ",
+    borders: [:left, :top, :bottom, :right],
+    border_type: :rounded,
+    border_style: %Style{fg: :dark_gray}
+  }
+
+  defp changes(%State{git_diff_lines: []}, _width, _height) do
+    %WidgetList{
+      items: [
+        {%Paragraph{text: "No changes vs HEAD", style: %Style{fg: :dark_gray}}, 1}
+      ],
+      block: @changes_block
+    }
+  end
+
+  defp changes(%State{git_diff_lines: lines}, width, height) do
+    items = Enum.map(lines, &diff_row_widget(&1, width))
+    %WidgetList{items: items, scroll_offset: auto_scroll(items, height), block: @changes_block}
+  end
+
+  # Color each diff line by its first character: `+` green, `-` red,
+  # `@@` (hunk header) cyan, `diff/index/---/+++` (file headers) yellow,
+  # everything else dim. Each line is a height-1 wrapped Paragraph.
+  defp diff_row_widget(line, width) do
+    style = diff_line_style(line)
+    {%Paragraph{text: line, style: style, wrap: true}, wrapped_height(line, width)}
+  end
+
+  defp diff_line_style("+++ " <> _), do: %Style{fg: :light_yellow, modifiers: [:bold]}
+  defp diff_line_style("--- " <> _), do: %Style{fg: :light_yellow, modifiers: [:bold]}
+  defp diff_line_style("diff " <> _), do: %Style{fg: :light_yellow, modifiers: [:bold]}
+  defp diff_line_style("index " <> _), do: %Style{fg: :dark_gray}
+  defp diff_line_style("@@" <> _), do: %Style{fg: :cyan}
+  defp diff_line_style("+" <> _), do: %Style{fg: :green}
+  defp diff_line_style("-" <> _), do: %Style{fg: :red}
+  defp diff_line_style(_), do: %Style{fg: :dark_gray}
 
   # Compute a scroll_offset that pins the WidgetList to the bottom: sum
   # the item heights, subtract the viewport height, clamp at 0. Once the
