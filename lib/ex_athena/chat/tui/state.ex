@@ -11,7 +11,7 @@ defmodule ExAthena.Chat.Tui.State do
   NIF into pure-data unit tests.
   """
 
-  alias ExAthena.Chat.Session
+  alias ExAthena.Chat.{Commands, Session}
   alias ExAthena.Messages.{ToolCall, ToolResult}
   alias ExAthena.Result
   alias ExAthena.Streaming.Event, as: StreamEvent
@@ -62,9 +62,17 @@ defmodule ExAthena.Chat.Tui.State do
             # `{:content,...}` / `{:thinking,...}` loop events that the
             # mode emits with the full accumulated text.
             streamed_this_turn?: false,
+            # Slash-command autocomplete state. Open when the textarea
+            # starts with `/` and has no whitespace yet — the user is
+            # mid-verb. `items` are slash-prefixed verbs; `idx` is the
+            # selected row (0-based).
+            autocomplete: nil,
             footer: @default_footer,
             prior_log_level: :info,
             run_task: nil
+
+  @type autocomplete ::
+          nil | %{required(:items) => [String.t()], required(:idx) => non_neg_integer()}
 
   @type t :: %__MODULE__{
           session: Session.t(),
@@ -82,6 +90,7 @@ defmodule ExAthena.Chat.Tui.State do
           show_details: boolean(),
           stream_parser: %{mode: atom(), pending: String.t(), close_tag: String.t() | nil},
           streamed_this_turn?: boolean(),
+          autocomplete: autocomplete(),
           footer: String.t(),
           prior_log_level: atom(),
           run_task: pid() | nil
@@ -336,7 +345,8 @@ defmodule ExAthena.Chat.Tui.State do
         details_stream_buffer: "",
         details_thinking_buffer: "",
         stream_parser: %{mode: :outside, pending: "", close_tag: nil},
-        streamed_this_turn?: false
+        streamed_this_turn?: false,
+        autocomplete: nil
     }
   end
 
@@ -366,6 +376,89 @@ defmodule ExAthena.Chat.Tui.State do
   def current_popup_selection(%__MODULE__{popup: nil}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, [], _}}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, items, idx}}), do: Enum.at(items, idx)
+
+  # ─ Slash-command autocomplete ────────────────────────────────────────────
+
+  @doc """
+  Recompute the autocomplete suggestions from the current textarea value.
+  Opens the popup when the value starts with `/` and has no whitespace
+  yet (the user is typing the verb). Closes it otherwise. Preserves the
+  selected index when possible so re-rendering doesn't jump it.
+  """
+  @spec update_autocomplete(t(), String.t()) :: t()
+  def update_autocomplete(%__MODULE__{} = state, value) when is_binary(value) do
+    %{state | autocomplete: autocomplete_for(value, state.autocomplete)}
+  end
+
+  @doc false
+  def autocomplete_for(value, prior \\ nil)
+
+  def autocomplete_for("/" <> rest = _value, prior) when rest != "" do
+    if String.match?(rest, ~r/\s/) do
+      nil
+    else
+      build_autocomplete(rest, prior)
+    end
+  end
+
+  def autocomplete_for("/", prior) do
+    # Bare slash — show every verb.
+    build_autocomplete("", prior)
+  end
+
+  def autocomplete_for(_value, _prior), do: nil
+
+  defp build_autocomplete(rest, prior) do
+    needle = String.downcase(rest)
+
+    items =
+      Commands.verbs()
+      |> Enum.filter(fn "/" <> verb -> String.starts_with?(verb, needle) end)
+
+    case items do
+      [] ->
+        nil
+
+      _ ->
+        # Preserve the selected verb across keystrokes when it's still
+        # in the filtered list; otherwise reset to 0.
+        idx =
+          case prior do
+            %{items: prior_items, idx: prior_idx} ->
+              case Enum.at(prior_items, prior_idx) do
+                nil -> 0
+                selected -> Enum.find_index(items, &(&1 == selected)) || 0
+              end
+
+            _ ->
+              0
+          end
+
+        %{items: items, idx: idx}
+    end
+  end
+
+  @doc "Move the autocomplete selection by `delta` (wraps top/bottom)."
+  @spec move_autocomplete(t(), integer()) :: t()
+  def move_autocomplete(%__MODULE__{autocomplete: nil} = state, _delta), do: state
+
+  def move_autocomplete(%__MODULE__{autocomplete: %{items: items, idx: idx}} = state, delta)
+      when is_integer(delta) do
+    n = length(items)
+    new_idx = Integer.mod(idx + delta, n)
+    %{state | autocomplete: %{items: items, idx: new_idx}}
+  end
+
+  @doc "Return the currently-selected autocomplete entry (or nil)."
+  @spec selected_autocomplete(t()) :: String.t() | nil
+  def selected_autocomplete(%__MODULE__{autocomplete: nil}), do: nil
+
+  def selected_autocomplete(%__MODULE__{autocomplete: %{items: items, idx: idx}}),
+    do: Enum.at(items, idx)
+
+  @doc "Clear the autocomplete popup state."
+  @spec close_autocomplete(t()) :: t()
+  def close_autocomplete(%__MODULE__{} = state), do: %{state | autocomplete: nil}
 
   # ─ Streaming-tag parser ──────────────────────────────────────────────────
 

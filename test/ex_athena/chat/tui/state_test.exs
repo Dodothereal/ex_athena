@@ -334,6 +334,41 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
+  describe "autocomplete_for/2" do
+    test "is nil for an empty / non-slash input" do
+      assert State.autocomplete_for("") == nil
+      assert State.autocomplete_for("hello") == nil
+    end
+
+    test "opens with every verb on bare /" do
+      assert %{items: items, idx: 0} = State.autocomplete_for("/")
+      # All canonical verbs.
+      assert "/help" in items
+      assert "/cd" in items
+      assert "/details" in items
+    end
+
+    test "filters to verbs starting with the typed prefix" do
+      assert %{items: ["/cd"], idx: 0} = State.autocomplete_for("/cd")
+      assert %{items: items, idx: 0} = State.autocomplete_for("/c")
+      # /cd and /clear both start with /c.
+      assert "/cd" in items
+      assert "/clear" in items
+      refute "/help" in items
+    end
+
+    test "closes when whitespace appears in the verb" do
+      assert State.autocomplete_for("/cd ~/test") == nil
+      assert State.autocomplete_for("/help ") == nil
+    end
+
+    test "preserves the selected verb across keystrokes when still in filtered list" do
+      prior = %{items: ["/cd", "/clear"], idx: 1}
+      # Narrow /c → /cl — /clear should remain selected (still in the list).
+      assert %{items: ["/clear"], idx: 0} = State.autocomplete_for("/cl", prior)
+    end
+  end
+
   describe "parse_stream_chunk/2 — streaming <think> parser" do
     @start %{mode: :outside, pending: "", close_tag: nil}
 
