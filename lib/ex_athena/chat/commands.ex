@@ -62,6 +62,49 @@ defmodule ExAthena.Chat.Commands do
     end
   end
 
+  @doc """
+  Canonical slash-prefixed verbs available for autocomplete, sorted
+  alphabetically. The aliases (`?` for help, `q`/`quit` for exit, etc.)
+  are intentionally excluded.
+  """
+  @spec verbs() :: [String.t()]
+  def verbs do
+    canonical = [
+      "model",
+      "mode",
+      "tools",
+      "clear",
+      "expand",
+      "details",
+      "cd",
+      "pwd",
+      "help",
+      "exit"
+    ]
+
+    canonical |> Enum.sort() |> Enum.map(&("/" <> &1))
+  end
+
+  @doc """
+  One-line summary for each verb, keyed by the slash-prefixed name.
+  Used to enrich autocomplete suggestions.
+  """
+  @spec descriptions() :: %{String.t() => String.t()}
+  def descriptions do
+    %{
+      "/model" => "pick or set the model",
+      "/mode" => "pick or set the runner mode",
+      "/tools" => "list available tools",
+      "/clear" => "wipe the conversation",
+      "/expand" => "show full Nth tool result",
+      "/details" => "toggle the details pane",
+      "/cd" => "set the working directory",
+      "/pwd" => "print the current directory",
+      "/help" => "show full usage help",
+      "/exit" => "leave the chat"
+    }
+  end
+
   @spec help_text() :: String.t()
   def help_text do
     """

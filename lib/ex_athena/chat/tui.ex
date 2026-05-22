@@ -109,6 +109,39 @@ defmodule ExAthena.Chat.Tui do
     end
   end
 
+  # ── Autocomplete navigation (only when the popup is open) ─────────────
+
+  defp handle_key(%Event.Key{code: "up"}, %State{autocomplete: %{}} = state) do
+    {:noreply, State.move_autocomplete(state, -1)}
+  end
+
+  defp handle_key(%Event.Key{code: "down"}, %State{autocomplete: %{}} = state) do
+    {:noreply, State.move_autocomplete(state, +1)}
+  end
+
+  defp handle_key(%Event.Key{code: "esc"}, %State{autocomplete: %{}} = state) do
+    {:noreply, State.close_autocomplete(state)}
+  end
+
+  # Tab accepts the highlighted suggestion: replace the textarea contents
+  # with the selected verb (plus a trailing space so the user can immediately
+  # type arguments) and close the popup. If no popup is open Tab is dropped.
+  defp handle_key(%Event.Key{code: "tab"}, %State{autocomplete: %{}} = state) do
+    case State.selected_autocomplete(state) do
+      nil ->
+        {:noreply, State.close_autocomplete(state)}
+
+      verb ->
+        if state.input_ref do
+          ExRatatui.textarea_set_value(state.input_ref, verb <> " ")
+        end
+
+        {:noreply, State.close_autocomplete(state)}
+    end
+  end
+
+  defp handle_key(%Event.Key{code: "tab"}, state), do: {:noreply, state}
+
   defp handle_key(%Event.Key{code: "enter", modifiers: mods}, state) do
     cond do
       "shift" in mods ->
@@ -121,7 +154,10 @@ defmodule ExAthena.Chat.Tui do
         {:noreply, state}
 
       true ->
-        submit_input(state)
+        # Close the autocomplete popup (if any) and submit whatever is
+        # in the textarea. Don't auto-accept the suggestion — Tab is the
+        # acceptance affordance; Enter is the submit affordance.
+        state |> State.close_autocomplete() |> submit_input()
     end
   end
 
@@ -135,6 +171,15 @@ defmodule ExAthena.Chat.Tui do
     if state.input_ref do
       ExRatatui.textarea_handle_key(state.input_ref, code, mods)
     end
+
+    # After the textarea processes the key, re-read its value and refresh
+    # the autocomplete popup — opens it on `/`, filters it as the user
+    # types more, closes it once whitespace appears.
+    state =
+      case state.input_ref do
+        nil -> state
+        ref -> State.update_autocomplete(state, ExRatatui.textarea_get_value(ref))
+      end
 
     {:noreply, state}
   end

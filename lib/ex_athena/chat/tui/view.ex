@@ -20,12 +20,12 @@ defmodule ExAthena.Chat.Tui.View do
   rect with a centered `List`.
   """
 
-  alias ExAthena.Chat.{Session, Tui.State}
+  alias ExAthena.Chat.{Commands, Session, Tui.State}
   alias ExRatatui.Frame
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
-  alias ExRatatui.Widgets.{Block, List, Paragraph, Popup, Textarea, Throbber, WidgetList}
+  alias ExRatatui.Widgets.{Block, Clear, List, Paragraph, Popup, Textarea, Throbber, WidgetList}
 
   @input_height 3
   @footer_height 1
@@ -59,7 +59,7 @@ defmodule ExAthena.Chat.Tui.View do
         {messages(state, messages_rect.width), messages_rect},
         {input(state), input_rect},
         {footer(state), footer_rect}
-      ] ++ details_widget(state, details_rect)
+      ] ++ details_widget(state, details_rect) ++ autocomplete_widget(state, input_rect)
 
     case popup(state, messages_rect) do
       nil -> widgets
@@ -81,6 +81,55 @@ defmodule ExAthena.Chat.Tui.View do
     # is two cells narrower. We use the interior width for wrap calculation.
     inner = max(details_rect.width - 2, 1)
     [{details(state, inner), details_rect}]
+  end
+
+  # ─ Autocomplete (slash command suggestions) ───────────────────────────────
+
+  @ac_max_rows 10
+  @ac_block %Block{
+    title: " commands · Tab to accept · Esc to close ",
+    borders: [:all],
+    border_type: :rounded,
+    border_style: %Style{fg: :light_blue}
+  }
+
+  defp autocomplete_widget(%State{autocomplete: nil}, _input_rect), do: []
+
+  defp autocomplete_widget(%State{autocomplete: %{items: items, idx: idx}}, input_rect) do
+    descs = Commands.descriptions()
+    label_width = items |> Enum.map(&String.length/1) |> Enum.max(fn -> 8 end)
+
+    labels =
+      Enum.map(items, fn cmd ->
+        desc = Map.get(descs, cmd, "")
+        pad = max(0, label_width - String.length(cmd))
+        cmd <> String.duplicate(" ", pad) <> "  " <> desc
+      end)
+
+    body_height = min(length(labels), @ac_max_rows)
+    # +2 for the block's top/bottom borders.
+    height = body_height + 2
+
+    inner_width = labels |> Enum.map(&String.length/1) |> Enum.max(fn -> 20 end)
+    width = min(inner_width + 4, input_rect.width)
+
+    rect = %Rect{
+      x: input_rect.x,
+      y: max(input_rect.y - height, 0),
+      width: width,
+      height: height
+    }
+
+    list = %List{
+      items: labels,
+      selected: idx,
+      block: @ac_block,
+      highlight_style: %Style{fg: :black, bg: :light_blue, modifiers: [:bold]},
+      highlight_symbol: "▸ "
+    }
+
+    # Clear the underlying messages area first so the popup is opaque.
+    [{%Clear{}, rect}, {list, rect}]
   end
 
   @doc "Build the header status string from a session."
