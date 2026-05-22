@@ -142,5 +142,50 @@ defmodule ExAthena.Tools.GlobGrepTest do
       assert output =~ "_build/"
       assert output =~ "deps/"
     end
+
+    test "Glob excludes nested artifact dirs (e.g. web/_build, web/deps)", %{ctx: ctx} do
+      # Phoenix-in-subdir layout: build/dep dirs are under `web/`, not at the root.
+      File.mkdir_p!(Path.join(ctx.cwd, "web/_build/dev/lib"))
+      File.mkdir_p!(Path.join(ctx.cwd, "web/deps/phoenix/lib"))
+      File.mkdir_p!(Path.join(ctx.cwd, "web/lib"))
+      File.mkdir_p!(Path.join(ctx.cwd, "web/priv/static/assets"))
+      File.write!(Path.join(ctx.cwd, "web/lib/app.ex"), "real\n")
+      File.write!(Path.join(ctx.cwd, "web/_build/dev/lib/template.ex"), "noise\n")
+      File.write!(Path.join(ctx.cwd, "web/deps/phoenix/lib/phoenix.ex"), "noise\n")
+      File.write!(Path.join(ctx.cwd, "web/priv/static/assets/app.css"), "noise\n")
+
+      {:ok, output, _ui} = Glob.execute(%{"pattern" => "web/**/*.ex"}, ctx)
+
+      assert output =~ "web/lib/app.ex"
+      refute output =~ "web/_build/"
+      refute output =~ "web/deps/"
+    end
+
+    test "Grep excludes nested artifact dirs (e.g. web/_build, web/deps)", %{ctx: ctx} do
+      File.mkdir_p!(Path.join(ctx.cwd, "web/_build/dev/lib"))
+      File.mkdir_p!(Path.join(ctx.cwd, "web/deps/phoenix/lib"))
+      File.mkdir_p!(Path.join(ctx.cwd, "web/lib"))
+
+      File.write!(
+        Path.join(ctx.cwd, "web/lib/app.ex"),
+        "defmodule WebApp do\n  def needle, do: :ok\nend\n"
+      )
+
+      File.write!(
+        Path.join(ctx.cwd, "web/_build/dev/lib/template.ex"),
+        "defmodule Tmpl do\n  def needle, do: :noise\nend\n"
+      )
+
+      File.write!(
+        Path.join(ctx.cwd, "web/deps/phoenix/lib/phoenix.ex"),
+        "defmodule Phx do\n  def needle, do: :noise\nend\n"
+      )
+
+      {:ok, output, _ui} = Grep.execute(%{"pattern" => "needle"}, ctx)
+
+      assert output =~ "web/lib/app.ex"
+      refute output =~ "web/_build/"
+      refute output =~ "web/deps/"
+    end
   end
 end

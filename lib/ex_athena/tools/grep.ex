@@ -103,12 +103,13 @@ defmodule ExAthena.Tools.Grep do
   defp prepend_artifact_excludes(args, true), do: args
 
   defp prepend_artifact_excludes(args, false) do
-    # Each dir ends in `/` in @artifact_dirs; strip the trailing slash for the
-    # ripgrep `!dir/**` shape and stick the exclusions at the front of args.
+    # ripgrep glob semantics: `!dir/**` only matches at the search root, so
+    # use `!**/dir/**` to also catch nested cases like `web/_build/...` in
+    # Phoenix-in-subdir layouts.
     @artifact_dirs
     |> Enum.flat_map(fn dir ->
       bare = String.trim_trailing(dir, "/")
-      ["--glob", "!#{bare}/**"]
+      ["--glob", "!**/#{bare}/**", "--glob", "!#{bare}/**"]
     end)
     |> Enum.concat(args)
   end
@@ -142,7 +143,11 @@ defmodule ExAthena.Tools.Grep do
 
   defp artifact_path?(path, cwd, false) do
     rel = Path.relative_to(path, cwd)
-    Enum.any?(@artifact_dirs, &String.starts_with?(rel, &1))
+
+    Enum.any?(@artifact_dirs, fn dir ->
+      # Matches at root and nested (`web/_build/...`); see Glob for the rationale.
+      String.starts_with?(rel, dir) or String.contains?(rel, "/" <> dir)
+    end)
   end
 
   defp scan_file(path, body, regex, cwd) do

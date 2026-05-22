@@ -79,8 +79,14 @@ defmodule ExAthena.Tools.Glob do
   defp filter_artifacts(paths, true), do: paths
 
   defp filter_artifacts(paths, false) do
-    Enum.reject(paths, fn path ->
-      Enum.any?(@artifact_dirs, &String.starts_with?(path, &1))
+    Enum.reject(paths, &artifact_path?/1)
+  end
+
+  defp artifact_path?(path) do
+    Enum.any?(@artifact_dirs, fn dir ->
+      # Matches at root (`_build/...`) and nested (`web/_build/...`) — the
+      # leading-slash check is what catches Phoenix-in-subdir layouts.
+      String.starts_with?(path, dir) or String.contains?(path, "/" <> dir)
     end)
   end
 
