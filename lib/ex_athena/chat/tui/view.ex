@@ -25,6 +25,7 @@ defmodule ExAthena.Chat.Tui.View do
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
+  alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Clear, List, Paragraph, Popup, Textarea, Throbber, WidgetList}
 
   @input_height 3
@@ -280,8 +281,19 @@ defmodule ExAthena.Chat.Tui.View do
     }
   end
 
-  defp changes(%State{git_diff_lines: lines, details_scroll: above_bottom}, width, height) do
-    items = Enum.map(lines, &diff_row_widget(&1, width))
+  defp changes(
+         %State{git_diff_lines: lines, details_scroll: above_bottom, diff_mode: mode},
+         width,
+         height
+       ) do
+    {files, leading} = parse_git_diff(lines)
+
+    items =
+      cond do
+        files == [] and leading == [] -> []
+        files == [] -> Enum.map(leading, &noise_row(&1, width))
+        true -> render_diff_files(files, leading, mode, width)
+      end
 
     %WidgetList{
       items: items,
@@ -290,27 +302,283 @@ defmodule ExAthena.Chat.Tui.View do
     }
   end
 
-  # Color each diff line by its first character: `+` green, `-` red,
-  # `@@` (hunk header) cyan, `diff/index/---/+++` (file headers) yellow,
-  # everything else dim. Each line is a height-1 wrapped Paragraph.
-  defp diff_row_widget(line, width) do
-    style = diff_line_style(line)
+  defp noise_row(line, width) do
+    style =
+      cond do
+        String.starts_with?(line, "(no changes vs HEAD)") ->
+          %Style{fg: :dark_gray, modifiers: [:italic]}
+
+        String.starts_with?(line, "cwd: ") ->
+          %Style{fg: :dark_gray, modifiers: [:italic]}
+
+        String.starts_with?(line, "git diff failed") or
+          String.starts_with?(line, "git diff crashed") or
+            String.starts_with?(line, "`git` executable") ->
+          %Style{fg: :red, modifiers: [:bold]}
+
+        true ->
+          %Style{fg: :dark_gray}
+      end
+
     {%Paragraph{text: line, style: style, wrap: true}, wrapped_height(line, width)}
   end
 
-  defp diff_line_style("+++ " <> _), do: %Style{fg: :light_yellow, modifiers: [:bold]}
-  defp diff_line_style("--- " <> _), do: %Style{fg: :light_yellow, modifiers: [:bold]}
-  defp diff_line_style("diff " <> _), do: %Style{fg: :light_yellow, modifiers: [:bold]}
-  defp diff_line_style("index " <> _), do: %Style{fg: :dark_gray}
-  defp diff_line_style("@@" <> _), do: %Style{fg: :cyan}
-  defp diff_line_style("+" <> _), do: %Style{fg: :green}
-  defp diff_line_style("-" <> _), do: %Style{fg: :red}
-  defp diff_line_style("(no changes vs HEAD)"), do: %Style{fg: :dark_gray, modifiers: [:italic]}
-  defp diff_line_style("git diff failed" <> _), do: %Style{fg: :red, modifiers: [:bold]}
-  defp diff_line_style("git diff crashed" <> _), do: %Style{fg: :red, modifiers: [:bold]}
-  defp diff_line_style("`git` executable" <> _), do: %Style{fg: :red, modifiers: [:bold]}
-  defp diff_line_style("cwd: " <> _), do: %Style{fg: :dark_gray, modifiers: [:italic]}
-  defp diff_line_style(_), do: %Style{fg: :dark_gray}
+  # ── Diff parser ──
+
+  # Walks `git_diff_lines` and groups into per-file records.
+  # Returns `{files, leading_lines}` where `leading_lines` is any
+  # non-diff content before the first `diff --git` (status / error
+  # messages from fetch_git_diff).
+  defp parse_git_diff(lines) do
+    {files, leading, _state} =
+      Enum.reduce(lines, {[], [], :preamble}, &parse_line/2)
+
+    {Enum.reverse(files) |> Enum.map(&finalize_file/1), Enum.reverse(leading)}
+  end
+
+  defp parse_line("diff --git " <> rest, {files, leading, state}) do
+    files =
+      case state do
+        :preamble -> files
+        _ -> finalize_state(files, state)
+      end
+
+    path = extract_diff_path(rest)
+    {files, leading, {:file, %{path: path, additions: 0, deletions: 0, hunks: [], hunk: nil}}}
+  end
+
+  defp parse_line(line, {files, leading, :preamble}) do
+    {files, [line | leading], :preamble}
+  end
+
+  defp parse_line("index " <> _, acc), do: acc
+
+  defp parse_line("new file" <> _, {files, leading, {:file, f}}) do
+    {files, leading, {:file, Map.put(f, :kind, :added)}}
+  end
+
+  defp parse_line("deleted file" <> _, {files, leading, {:file, f}}) do
+    {files, leading, {:file, Map.put(f, :kind, :deleted)}}
+  end
+
+  defp parse_line("--- " <> _, acc), do: acc
+  defp parse_line("+++ " <> _, acc), do: acc
+
+  defp parse_line("@@" <> _ = header, {files, leading, {:file, f}}) do
+    f = flush_hunk(f)
+    {files, leading, {:file, Map.put(f, :hunk, %{header: header, lines: []})}}
+  end
+
+  defp parse_line("+" <> tail, {files, leading, {:file, %{hunk: h} = f}}) when not is_nil(h) do
+    f = %{
+      f
+      | hunk: %{h | lines: h.lines ++ [{:added, tail}]},
+        additions: f.additions + 1
+    }
+
+    {files, leading, {:file, f}}
+  end
+
+  defp parse_line("-" <> tail, {files, leading, {:file, %{hunk: h} = f}}) when not is_nil(h) do
+    f = %{
+      f
+      | hunk: %{h | lines: h.lines ++ [{:removed, tail}]},
+        deletions: f.deletions + 1
+    }
+
+    {files, leading, {:file, f}}
+  end
+
+  defp parse_line(" " <> tail, {files, leading, {:file, %{hunk: h} = f}}) when not is_nil(h) do
+    f = %{f | hunk: %{h | lines: h.lines ++ [{:context, tail}]}}
+    {files, leading, {:file, f}}
+  end
+
+  defp parse_line("\\ " <> _, acc), do: acc
+
+  defp parse_line(_line, acc), do: acc
+
+  defp flush_hunk(%{hunk: nil} = f), do: f
+
+  defp flush_hunk(%{hunk: h, hunks: hunks} = f),
+    do: %{f | hunks: hunks ++ [h], hunk: nil}
+
+  defp finalize_file(f), do: flush_hunk(f) |> Map.drop([:hunk])
+
+  defp finalize_state(files, {:file, f}), do: [f | files]
+  defp finalize_state(files, _), do: files
+
+  defp extract_diff_path(rest) do
+    # rest is like "a/path b/path"; take the `b/` path (the post-image).
+    case Regex.run(~r{ b/(.+)$}, rest) do
+      [_, path] -> path
+      _ -> String.trim(rest)
+    end
+  end
+
+  # ── Per-file rendering ──
+
+  defp render_diff_files(files, leading, mode, width) do
+    leading_rows = Enum.map(leading, &noise_row(&1, width))
+    body = Enum.flat_map(files, &render_file(&1, mode, width))
+    leading_rows ++ body
+  end
+
+  defp render_file(file, mode, width) do
+    header_text = file_header_text(file)
+
+    header = {
+      %Paragraph{
+        text: header_text,
+        style: %Style{fg: :light_yellow, modifiers: [:bold]},
+        wrap: true
+      },
+      wrapped_height(header_text, width)
+    }
+
+    hunks = Enum.flat_map(file.hunks, &render_hunk(&1, mode, width))
+
+    [header | hunks] ++ [{%Paragraph{text: " ", style: %Style{}}, 1}]
+  end
+
+  defp file_header_text(%{path: path} = f) do
+    kind_label =
+      case Map.get(f, :kind) do
+        :added -> "new"
+        :deleted -> "deleted"
+        _ -> "modified"
+      end
+
+    stats =
+      cond do
+        f.additions > 0 and f.deletions > 0 -> " (+#{f.additions} -#{f.deletions})"
+        f.additions > 0 -> " (+#{f.additions})"
+        f.deletions > 0 -> " (-#{f.deletions})"
+        true -> ""
+      end
+
+    "▸ #{path}  [#{kind_label}]#{stats}"
+  end
+
+  defp render_hunk(%{header: header, lines: lines}, :inline, _width) do
+    header_row = {
+      %Paragraph{text: "  " <> header, style: %Style{fg: :cyan}, wrap: false},
+      1
+    }
+
+    body =
+      Enum.map(lines, fn {kind, text} ->
+        {prefix, style} =
+          case kind do
+            :added -> {"+ ", %Style{fg: :green}}
+            :removed -> {"- ", %Style{fg: :red}}
+            :context -> {"  ", %Style{fg: :dark_gray}}
+          end
+
+        full = "  " <> prefix <> text
+        {%Paragraph{text: full, style: style, wrap: false}, 1}
+      end)
+
+    [header_row | body]
+  end
+
+  defp render_hunk(%{header: header, lines: lines}, :side_by_side, width) do
+    header_row = {
+      %Paragraph{text: "  " <> header, style: %Style{fg: :cyan}, wrap: false},
+      1
+    }
+
+    col_width = max(div(width - 5, 2), 8)
+
+    pair_rows =
+      lines
+      |> pair_hunk_lines()
+      |> Enum.map(&render_side_by_side_pair(&1, col_width))
+
+    [header_row | pair_rows]
+  end
+
+  # Pair `-` runs with the following `+` runs so they sit side by side.
+  defp pair_hunk_lines(lines) do
+    lines
+    |> Enum.chunk_by(fn {kind, _} -> kind end)
+    |> fold_runs([])
+    |> Enum.reverse()
+  end
+
+  defp fold_runs([], acc), do: acc
+
+  defp fold_runs([[{:context, _} | _] = run | rest], acc) do
+    pairs = Enum.map(run, fn {:context, t} -> {{:context, t}, {:context, t}} end)
+    fold_runs(rest, Enum.reverse(pairs) ++ acc)
+  end
+
+  defp fold_runs([[{:removed, _} | _] = lefts, [{:added, _} | _] = rights | rest], acc) do
+    left_texts = Enum.map(lefts, fn {:removed, t} -> t end)
+    right_texts = Enum.map(rights, fn {:added, t} -> t end)
+
+    pairs =
+      zip_pad(left_texts, right_texts)
+      |> Enum.map(fn
+        {nil, r} -> {{:none, ""}, {:added, r}}
+        {l, nil} -> {{:removed, l}, {:none, ""}}
+        {l, r} -> {{:removed, l}, {:added, r}}
+      end)
+
+    fold_runs(rest, Enum.reverse(pairs) ++ acc)
+  end
+
+  defp fold_runs([[{:removed, _} | _] = run | rest], acc) do
+    pairs = Enum.map(run, fn {:removed, t} -> {{:removed, t}, {:none, ""}} end)
+    fold_runs(rest, Enum.reverse(pairs) ++ acc)
+  end
+
+  defp fold_runs([[{:added, _} | _] = run | rest], acc) do
+    pairs = Enum.map(run, fn {:added, t} -> {{:none, ""}, {:added, t}} end)
+    fold_runs(rest, Enum.reverse(pairs) ++ acc)
+  end
+
+  defp fold_runs([_other | rest], acc), do: fold_runs(rest, acc)
+
+  defp zip_pad([], []), do: []
+  defp zip_pad([], [r | rs]), do: [{nil, r} | zip_pad([], rs)]
+  defp zip_pad([l | ls], []), do: [{l, nil} | zip_pad(ls, [])]
+  defp zip_pad([l | ls], [r | rs]), do: [{l, r} | zip_pad(ls, rs)]
+
+  defp render_side_by_side_pair({left, right}, col_width) do
+    line =
+      Line.new([
+        Span.new(side_text(left, col_width), style: side_style(left)),
+        Span.new(" │ ", style: %Style{fg: :dark_gray}),
+        Span.new(side_text(right, col_width), style: side_style(right))
+      ])
+
+    {%Paragraph{text: [line], wrap: false}, 1}
+  end
+
+  defp side_text({:none, _}, col_width), do: String.duplicate(" ", col_width)
+
+  defp side_text({kind, text}, col_width) do
+    prefix =
+      case kind do
+        :added -> "+ "
+        :removed -> "- "
+        :context -> "  "
+      end
+
+    body = prefix <> text
+    cur = String.length(body)
+
+    cond do
+      cur > col_width -> String.slice(body, 0, col_width - 1) <> "…"
+      true -> body <> String.duplicate(" ", col_width - cur)
+    end
+  end
+
+  defp side_style({:added, _}), do: %Style{fg: :green}
+  defp side_style({:removed, _}), do: %Style{fg: :red}
+  defp side_style({:context, _}), do: %Style{fg: :dark_gray}
+  defp side_style({:none, _}), do: %Style{}
 
   # Compute a scroll_offset for a WidgetList. `above_bottom` is the user's
   # manual scroll position (in rows above the natural bottom); nil = "at

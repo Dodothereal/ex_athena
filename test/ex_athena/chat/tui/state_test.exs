@@ -451,6 +451,25 @@ defmodule ExAthena.Chat.Tui.StateTest do
       assert State.set_details_tab(state, :timeline).details_tab == :timeline
     end
 
+    test "default diff_mode is :inline" do
+      state = Session.new() |> State.new()
+      assert state.diff_mode == :inline
+    end
+
+    test "set_diff_mode/2 sets explicit layout" do
+      state = Session.new() |> State.new() |> State.set_diff_mode(:side_by_side)
+      assert state.diff_mode == :side_by_side
+      assert State.set_diff_mode(state, :inline).diff_mode == :inline
+    end
+
+    test "cycle_diff_mode/1 flips inline ↔ side_by_side" do
+      state = Session.new() |> State.new()
+      assert State.cycle_diff_mode(state).diff_mode == :side_by_side
+
+      state = State.cycle_diff_mode(state)
+      assert State.cycle_diff_mode(state).diff_mode == :inline
+    end
+
     test "set_git_diff/2 stores the line list" do
       state =
         Session.new()
