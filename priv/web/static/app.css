@@ -465,6 +465,24 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .btn-send:hover        { background: #5eeaaf; }
 .btn-send--disabled    { opacity: 0.4; cursor: not-allowed; }
 
+.btn-stop {
+  background: #ff4d6d;
+  border: none;
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.btn-stop:hover { background: #ff2244; }
+
 /* Spinner */
 .spinner {
   width: 16px;
@@ -1490,6 +1508,65 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   font-size: 12px;
   text-align: center;
   line-height: 1.7;
+}
+
+/* ── File diff sections (expandable) ──────────────────────────────────────── */
+
+.file-diff-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.file-diff-section:last-child {
+  border-bottom: none;
+}
+
+.file-diff-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.file-diff-header:hover {
+  background: rgba(52, 211, 153, 0.04);
+}
+
+.file-diff-toggle {
+  color: var(--muted);
+  flex-shrink: 0;
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+}
+
+.file-diff-path {
+  flex: 1;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-diff-stats {
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.file-diff-section .ui-panel {
+  border-top: none;
+}
+
+.file-diff-section .diff-body {
+  max-height: none;
 }
 
 /* ── Git diff panel ──────────────────────────────────────────────────────── */
