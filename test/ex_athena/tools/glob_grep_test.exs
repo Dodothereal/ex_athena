@@ -89,7 +89,11 @@ defmodule ExAthena.Tools.GlobGrepTest do
       File.write!(Path.join(dir, "node_modules/foo/bar.js"), "// needle\n")
       File.write!(Path.join(dir, ".git/HEAD"), "ref: needle\n")
       File.write!(Path.join(dir, "priv/static/assets/app.css"), "/* needle */\n")
-      File.write!(Path.join(dir, "tmp/scratch.ex"), "defmodule Scratch do\n  def needle, do: :ok\nend\n")
+
+      File.write!(
+        Path.join(dir, "tmp/scratch.ex"),
+        "defmodule Scratch do\n  def needle, do: :ok\nend\n"
+      )
 
       on_exit(fn -> File.rm_rf!(dir) end)
       {:ok, ctx: ToolContext.new(cwd: dir)}
