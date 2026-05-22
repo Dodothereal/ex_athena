@@ -755,7 +755,7 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp render_untracked_file(rel, cwd) do
-    header = [
+    header_base = [
       "diff --git a/#{rel} b/#{rel}",
       "new file mode 100644",
       "--- /dev/null",
@@ -766,13 +766,17 @@ defmodule ExAthena.Chat.Tui do
 
     case File.stat(path) do
       {:ok, %{type: :regular, size: size}} when size > @max_untracked_bytes ->
-        header ++ ["+(file too large to show: #{size} bytes)"]
+        # Synthesize a 1-line hunk header so the structured diff parser
+        # counts the placeholder as part of the file rather than dropping
+        # bare `+` lines that have no enclosing hunk.
+        header_base ++
+          ["@@ -0,0 +1,1 @@", "+(file too large to show: #{size} bytes)"]
 
       {:ok, %{type: :regular}} ->
         case File.read(path) do
           {:ok, content} ->
             if binary_content?(content) do
-              header ++ ["+(binary file)"]
+              header_base ++ ["@@ -0,0 +1,1 @@", "+(binary file)"]
             else
               lines = String.split(content, "\n")
               total = length(lines)
@@ -785,7 +789,9 @@ defmodule ExAthena.Chat.Tui do
                   do: ["+… (#{total - shown} more lines)"],
                   else: []
 
-              header ++ diff_lines ++ footer
+              # `@@ -0,0 +1,N @@` — git's convention for a new file.
+              hunk_header = "@@ -0,0 +1,#{shown + length(footer)} @@"
+              header_base ++ [hunk_header] ++ diff_lines ++ footer
             end
 
           _ ->

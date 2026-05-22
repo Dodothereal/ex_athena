@@ -824,51 +824,47 @@ defmodule ExAthena.Chat.Tui.View do
     end
   end
 
-  defp diff_preview_rows(%{lines: lines, changed_lines: changed, total_lines: total}, width) do
-    {added, removed} =
-      Enum.reduce(lines, {0, 0}, fn
-        {:ins, _}, {a, r} -> {a + 1, r}
-        {:del, _}, {a, r} -> {a, r + 1}
-        _, acc -> acc
+  # Edit / Write / apply_patch tool UI payloads carry the raw `before`
+  # and `after` strings — not a pre-diffed line list — so we compute the
+  # Myers diff inline. Same logic as ChatLive's `build_ui_entry(:diff)`
+  # in the web LiveView (chat_live.ex:1568).
+  defp diff_preview_rows(%{before: before, after: aft}, width) do
+    before_lines = String.split(to_string(before), "\n")
+    after_lines = String.split(to_string(aft), "\n")
+
+    all_lines =
+      Elixir.List.myers_difference(before_lines, after_lines)
+      |> Enum.flat_map(fn
+        {:eq, ls} -> Enum.map(ls, &{:eq, &1})
+        {:ins, ls} -> Enum.map(ls, &{:ins, &1})
+        {:del, ls} -> Enum.map(ls, &{:del, &1})
       end)
+
+    added = Enum.count(all_lines, fn {k, _} -> k == :ins end)
+    removed = Enum.count(all_lines, fn {k, _} -> k == :del end)
 
     stat_text =
       cond do
-        added > 0 and removed > 0 ->
-          "  └ +#{added} −#{removed} lines (#{changed}/#{total} changed)"
-
-        added > 0 ->
-          "  └ Added #{added} line#{if added == 1, do: "", else: "s"}"
-
-        removed > 0 ->
-          "  └ Removed #{removed} line#{if removed == 1, do: "", else: "s"}"
-
-        true ->
-          "  └ #{changed} line#{if changed == 1, do: "", else: "s"} changed"
+        added > 0 and removed > 0 -> "  └ +#{added} −#{removed} lines"
+        added > 0 -> "  └ Added #{added} line#{if added == 1, do: "", else: "s"}"
+        removed > 0 -> "  └ Removed #{removed} line#{if removed == 1, do: "", else: "s"}"
+        true -> "  └ no net change"
       end
 
     stat_row =
       {%Paragraph{text: stat_text, style: %Style{fg: :dark_gray}, wrap: true},
        wrapped_height(stat_text, width)}
 
-    # Show the first ~6 non-equal lines as colored diff snippets.
     snippet_rows =
-      lines
+      all_lines
       |> Enum.reject(fn {kind, _} -> kind == :eq end)
       |> Enum.take(6)
       |> Enum.map(fn {kind, line} ->
-        prefix =
+        {prefix, style} =
           case kind do
-            :ins -> "    + "
-            :del -> "    - "
-            _ -> "      "
-          end
-
-        style =
-          case kind do
-            :ins -> %Style{fg: :green}
-            :del -> %Style{fg: :red}
-            _ -> %Style{fg: :dark_gray}
+            :ins -> {"    + ", %Style{fg: :green}}
+            :del -> {"    - ", %Style{fg: :red}}
+            _ -> {"      ", %Style{fg: :dark_gray}}
           end
 
         text = prefix <> truncate(line, max(width - 6, 20))
