@@ -124,27 +124,24 @@ defmodule ExAthena.Chat.Tui do
     {:noreply, State.close_autocomplete(state)}
   end
 
-  # Tab accepts the highlighted suggestion: replace the textarea contents
-  # with the selected verb (plus a trailing space so the user can immediately
-  # type arguments) and close the popup. If no popup is open Tab is dropped.
+  # Tab or Enter accepts the highlighted suggestion: replace the textarea
+  # contents with the selected verb (plus a trailing space so the user can
+  # immediately type arguments) and close the popup. Picking from the menu
+  # should complete the command text in the input box, not fire off the
+  # half-typed prefix as a chat message.
   defp handle_key(%Event.Key{code: "tab"}, %State{autocomplete: %{}} = state) do
-    case State.selected_autocomplete(state) do
-      nil ->
-        {:noreply, State.close_autocomplete(state)}
-
-      verb ->
-        if state.input_ref do
-          ExRatatui.textarea_set_value(state.input_ref, verb <> " ")
-        end
-
-        {:noreply, State.close_autocomplete(state)}
-    end
+    {:noreply, accept_autocomplete(state)}
   end
 
   defp handle_key(%Event.Key{code: "tab"}, state), do: {:noreply, state}
 
   defp handle_key(%Event.Key{code: "enter", modifiers: mods}, state) do
     cond do
+      match?(%{}, state.autocomplete) and State.selected_autocomplete(state) != nil ->
+        # Enter while the autocomplete popup is open with a selection:
+        # accept the suggestion. User can press Enter again to submit.
+        {:noreply, accept_autocomplete(state)}
+
       "shift" in mods ->
         # Shift+Enter inserts a newline into the textarea instead of submitting.
         if state.input_ref, do: ExRatatui.textarea_handle_key(state.input_ref, "enter", [])
@@ -155,9 +152,6 @@ defmodule ExAthena.Chat.Tui do
         {:noreply, state}
 
       true ->
-        # Close the autocomplete popup (if any) and submit whatever is
-        # in the textarea. Don't auto-accept the suggestion — Tab is the
-        # acceptance affordance; Enter is the submit affordance.
         state |> State.close_autocomplete() |> submit_input()
     end
   end
@@ -167,6 +161,20 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp handle_key(_, state), do: {:noreply, state}
+
+  defp accept_autocomplete(state) do
+    case State.selected_autocomplete(state) do
+      nil ->
+        State.close_autocomplete(state)
+
+      verb ->
+        if state.input_ref do
+          ExRatatui.textarea_set_value(state.input_ref, verb <> " ")
+        end
+
+        State.close_autocomplete(state)
+    end
+  end
 
   defp forward_to_textarea(%Event.Key{code: code, modifiers: mods}, state) do
     if state.input_ref do
