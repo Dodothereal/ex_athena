@@ -83,8 +83,21 @@ defmodule ExAthena.Compactor do
     end)
   end
 
+  # Tool-result messages can carry kilobytes of bash/Read output. Counting
+  # them as a fixed 16 lets compaction's `should_compact?` underestimate the
+  # real prompt by ~10× — observed in production where a 94K-token prompt
+  # was reported as ~5K and compaction never fired before max_iterations.
+  defp tokens_for(%Message{role: :tool, tool_results: results}) when is_list(results) do
+    Enum.reduce(results, 0, fn tr, acc -> acc + 16 + result_tokens(tr) end)
+  end
+
   defp tokens_for(%Message{content: content}) when is_binary(content),
     do: div(byte_size(content), 4) + 8
 
   defp tokens_for(_), do: 16
+
+  defp result_tokens(%{content: content}) when is_binary(content),
+    do: div(byte_size(content), 4)
+
+  defp result_tokens(_), do: 0
 end
