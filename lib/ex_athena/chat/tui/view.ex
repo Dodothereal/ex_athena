@@ -218,18 +218,31 @@ defmodule ExAthena.Chat.Tui.View do
            events: events,
            loading?: loading?,
            session: session,
-           messages_scroll: above_bottom
+           messages_scroll: above_bottom,
+           tool_blocks: tool_blocks
          },
          width,
          height
        ) do
     items =
       events
-      |> Enum.map(&row_widget(&1, session.model, width))
+      |> Enum.flat_map(&event_to_widgets(&1, session.model, width, tool_blocks))
       |> append_throbber(loading?)
 
     %WidgetList{items: items, scroll_offset: scroll_offset(items, height, above_bottom)}
   end
+
+  # One event can produce multiple widget rows — a tool block expands
+  # into a header + indented preview lines + truncation hint, etc.
+  defp event_to_widgets({:tool_block, id}, _model, width, tool_blocks) do
+    case Map.get(tool_blocks, id) do
+      nil -> [{%Paragraph{text: "● (missing tool block)", style: %Style{fg: :dark_gray}}, 1}]
+      block -> render_tool_block(block, width)
+    end
+  end
+
+  defp event_to_widgets(row, model, width, _tool_blocks),
+    do: [row_widget(row, model, width)]
 
   @details_block %Block{
     title: " details ",
@@ -385,6 +398,240 @@ defmodule ExAthena.Chat.Tui.View do
     {%Paragraph{text: text, style: %Style{fg: :dark_gray}, wrap: true},
      wrapped_height(text, width)}
   end
+
+  # ── Tool block (Claude-Code style: `● Tool(args)` + indented preview) ──
+
+  defp render_tool_block(%{todos: todos} = block, width) when is_list(todos) do
+    # Todo list: header + one row per item with a checkbox.
+    bullet = status_bullet(block.status)
+
+    header_text =
+      "#{bullet} TodoWrite (#{length(todos)} item#{if length(todos) == 1, do: "", else: "s"})"
+
+    header = {
+      %Paragraph{
+        text: header_text,
+        style: %Style{fg: bullet_color(block.status), modifiers: [:bold]},
+        wrap: true
+      },
+      wrapped_height(header_text, width)
+    }
+
+    {pending_and_active, completed} =
+      Enum.split_with(todos, &(get_todo_status(&1) != "completed"))
+
+    visible_rows =
+      pending_and_active
+      |> Enum.map(&todo_row_widget(&1, width))
+      |> Kernel.++(maybe_collapsed_completed_row(completed, width))
+
+    [header | visible_rows]
+  end
+
+  defp render_tool_block(block, width) do
+    color = bullet_color(block.status)
+    header_text = tool_header_text(block)
+
+    header = {
+      %Paragraph{
+        text: header_text,
+        style: %Style{fg: color, modifiers: [:bold]},
+        wrap: true
+      },
+      wrapped_height(header_text, width)
+    }
+
+    preview_rows = preview_widget_rows(block, width)
+
+    [header | preview_rows]
+  end
+
+  # ── Status bullet helpers ──
+
+  defp status_bullet(:pending), do: "●"
+  defp status_bullet(:success), do: "●"
+  defp status_bullet(:error), do: "●"
+  defp status_bullet(_), do: "●"
+
+  defp bullet_color(:pending), do: :light_blue
+  defp bullet_color(:success), do: :green
+  defp bullet_color(:error), do: :red
+  defp bullet_color(_), do: :dark_gray
+
+  # ── Header rendering: `● Tool(args)` ──
+
+  defp tool_header_text(%{name: name, ui: %{kind: :diff, payload: %{path: path}}})
+       when name in ["edit", "write", "apply_patch"] do
+    "#{status_bullet(:success)} #{verb_for(name)}(#{Path.relative_to_cwd(path)})"
+  end
+
+  defp tool_header_text(%{name: name, args: args}) do
+    "#{status_bullet(:success)} #{tool_display_name(name)}(#{args_summary(name, args)})"
+  end
+
+  defp tool_display_name(name) do
+    name
+    |> String.split("_")
+    |> Enum.map(&String.capitalize/1)
+    |> Enum.join("")
+  end
+
+  defp verb_for("write"), do: "Create"
+  defp verb_for("apply_patch"), do: "Patch"
+  defp verb_for(_), do: "Update"
+
+  defp args_summary("bash", %{"command" => cmd}) when is_binary(cmd), do: truncate(cmd, 100)
+  defp args_summary("bash", %{command: cmd}) when is_binary(cmd), do: truncate(cmd, 100)
+  defp args_summary("read", args), do: get_arg(args, "path") |> Path.relative_to_cwd()
+  defp args_summary("edit", args), do: get_arg(args, "path") |> Path.relative_to_cwd()
+  defp args_summary("write", args), do: get_arg(args, "path") |> Path.relative_to_cwd()
+  defp args_summary("grep", args), do: get_arg(args, "pattern")
+  defp args_summary("glob", args), do: get_arg(args, "pattern")
+  defp args_summary("web_fetch", args), do: args |> get_arg("url") |> truncate(80)
+  defp args_summary(_name, args) when args == %{} or is_nil(args), do: ""
+  defp args_summary(_name, args), do: args |> compact_args() |> truncate(80)
+
+  defp get_arg(args, key) when is_map(args) do
+    Map.get(args, key) || Map.get(args, String.to_atom(key)) || ""
+  end
+
+  defp get_arg(_args, _key), do: ""
+
+  defp compact_args(args) when is_map(args) do
+    Enum.map_join(args, ", ", fn {k, v} -> "#{k}: #{inspect(v)}" end)
+  end
+
+  defp compact_args(other), do: inspect(other)
+
+  # ── Indented preview rows ──
+
+  defp preview_widget_rows(%{ui: %{kind: :diff, payload: payload}} = _block, width) do
+    diff_preview_rows(payload, width)
+  end
+
+  defp preview_widget_rows(%{output_preview: nil}, _width), do: []
+
+  defp preview_widget_rows(%{output_preview: [], total_lines: _}, _width), do: []
+
+  defp preview_widget_rows(%{output_preview: lines, total_lines: total}, width) do
+    visible_count = length(lines)
+    preview_color = %Style{fg: :dark_gray}
+
+    visible =
+      lines
+      |> Enum.with_index()
+      |> Enum.map(fn {line, idx} ->
+        text = if idx == 0, do: "  └ #{line}", else: "    #{line}"
+        {%Paragraph{text: text, style: preview_color, wrap: true}, wrapped_height(text, width)}
+      end)
+
+    if total > visible_count do
+      remaining = total - visible_count
+
+      hint =
+        "    … +#{remaining} line#{if remaining == 1, do: "", else: "s"} (/expand 1 for full)"
+
+      visible ++
+        [{%Paragraph{text: hint, style: %Style{fg: :dark_gray, modifiers: [:italic]}}, 1}]
+    else
+      visible
+    end
+  end
+
+  defp diff_preview_rows(%{lines: lines, changed_lines: changed, total_lines: total}, width) do
+    {added, removed} =
+      Enum.reduce(lines, {0, 0}, fn
+        {:ins, _}, {a, r} -> {a + 1, r}
+        {:del, _}, {a, r} -> {a, r + 1}
+        _, acc -> acc
+      end)
+
+    stat_text =
+      cond do
+        added > 0 and removed > 0 ->
+          "  └ +#{added} −#{removed} lines (#{changed}/#{total} changed)"
+
+        added > 0 ->
+          "  └ Added #{added} line#{if added == 1, do: "", else: "s"}"
+
+        removed > 0 ->
+          "  └ Removed #{removed} line#{if removed == 1, do: "", else: "s"}"
+
+        true ->
+          "  └ #{changed} line#{if changed == 1, do: "", else: "s"} changed"
+      end
+
+    stat_row =
+      {%Paragraph{text: stat_text, style: %Style{fg: :dark_gray}, wrap: true},
+       wrapped_height(stat_text, width)}
+
+    # Show the first ~6 non-equal lines as colored diff snippets.
+    snippet_rows =
+      lines
+      |> Enum.reject(fn {kind, _} -> kind == :eq end)
+      |> Enum.take(6)
+      |> Enum.map(fn {kind, line} ->
+        prefix =
+          case kind do
+            :ins -> "    + "
+            :del -> "    - "
+            _ -> "      "
+          end
+
+        style =
+          case kind do
+            :ins -> %Style{fg: :green}
+            :del -> %Style{fg: :red}
+            _ -> %Style{fg: :dark_gray}
+          end
+
+        text = prefix <> truncate(line, max(width - 6, 20))
+        {%Paragraph{text: text, style: style, wrap: false}, 1}
+      end)
+
+    [stat_row | snippet_rows]
+  end
+
+  defp diff_preview_rows(_payload, _width), do: []
+
+  # ── Todo list rendering ──
+
+  defp todo_row_widget(todo, width) do
+    {marker, color} = todo_marker(get_todo_status(todo))
+    content = get_todo_field(todo, "content") || ""
+    text = "  #{marker} #{content}"
+    {%Paragraph{text: text, style: %Style{fg: color}, wrap: true}, wrapped_height(text, width)}
+  end
+
+  defp maybe_collapsed_completed_row([], _width), do: []
+
+  defp maybe_collapsed_completed_row(completed, width) do
+    n = length(completed)
+    text = "    … +#{n} completed"
+
+    [
+      {%Paragraph{text: text, style: %Style{fg: :dark_gray, modifiers: [:italic]}, wrap: true},
+       wrapped_height(text, width)}
+    ]
+  end
+
+  defp todo_marker("completed"), do: {"✓", :green}
+  defp todo_marker("in_progress"), do: {"◐", :light_blue}
+  defp todo_marker(_), do: {"□", :dark_gray}
+
+  defp get_todo_status(todo), do: get_todo_field(todo, "status") || "pending"
+
+  defp get_todo_field(todo, key) when is_map(todo) do
+    Map.get(todo, key) || Map.get(todo, String.to_atom(key))
+  end
+
+  defp get_todo_field(_, _), do: nil
+
+  defp truncate(text, max) when is_binary(text) and is_integer(max) do
+    if String.length(text) <= max, do: text, else: String.slice(text, 0, max - 1) <> "…"
+  end
+
+  defp truncate(other, max), do: other |> to_string() |> truncate(max)
 
   defp row_widget({:user, text}, _model, width) do
     full = "me ▸ " <> text

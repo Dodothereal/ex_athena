@@ -48,7 +48,7 @@ defmodule ExAthena.Chat.Tui.StateTest do
       assert state.events == []
     end
 
-    test ":tool_call adds a one-line arrow row" do
+    test ":tool_call records a :tool_block reference + a structured block by id" do
       tc = %ToolCall{id: "1", name: "Read", arguments: %{"path" => "lib/foo.ex"}}
 
       state =
@@ -56,50 +56,96 @@ defmodule ExAthena.Chat.Tui.StateTest do
         |> State.new()
         |> State.append_loop_event({:tool_call, tc})
 
-      assert [{:tool_call, line}] = state.events
-      assert line =~ "→ Read"
-      assert line =~ "path"
-      assert line =~ "lib/foo.ex"
+      assert state.events == [{:tool_block, "1"}]
+
+      assert %{id: "1", name: "Read", args: %{"path" => "lib/foo.ex"}, status: :pending} =
+               Map.get(state.tool_blocks, "1")
     end
 
-    test ":tool_result success uses :tool_result kind" do
+    test ":tool_result transitions the matching block to :success" do
+      tc = %ToolCall{id: "1", name: "Read", arguments: %{"path" => "lib/foo.ex"}}
       tr = %ToolResult{tool_call_id: "1", content: "file contents", is_error: false}
 
       state =
         Session.new()
         |> State.new()
+        |> State.append_loop_event({:tool_call, tc})
         |> State.append_loop_event({:tool_result, tr})
 
-      assert [{:tool_result, line}] = state.events
-      assert line =~ "← file contents"
+      # Still only one event row — the same block reference.
+      assert state.events == [{:tool_block, "1"}]
+      block = Map.get(state.tool_blocks, "1")
+      assert block.status == :success
+      assert block.output_preview == ["file contents"]
     end
 
-    test ":tool_result error uses :tool_result_error kind" do
+    test ":tool_result transitions the matching block to :error" do
+      tc = %ToolCall{id: "1", name: "Bash", arguments: %{}}
       tr = %ToolResult{tool_call_id: "1", content: "boom", is_error: true}
 
       state =
         Session.new()
         |> State.new()
+        |> State.append_loop_event({:tool_call, tc})
         |> State.append_loop_event({:tool_result, tr})
 
-      assert [{:tool_result_error, line}] = state.events
-      assert line =~ "boom"
+      block = Map.get(state.tool_blocks, "1")
+      assert block.status == :error
+      assert block.output_preview == ["boom"]
     end
 
-    test ":tool_result with multi-line content collapses into a count" do
+    test ":tool_result captures a multi-line preview + total" do
+      tc = %ToolCall{id: "1", name: "Bash", arguments: %{}}
       content = "exit 0\nCHANGELOG.md\nLICENSE\nREADME.md\n_build/"
       tr = %ToolResult{tool_call_id: "1", content: content, is_error: false}
 
       state =
         Session.new()
         |> State.new()
+        |> State.append_loop_event({:tool_call, tc})
         |> State.append_loop_event({:tool_result, tr})
 
-      assert [{:tool_result, line}] = state.events
-      assert line =~ "← exit 0"
-      assert line =~ "5 lines"
-      refute line =~ "CHANGELOG.md"
-      assert length(String.split(line, "\n")) == 1
+      block = Map.get(state.tool_blocks, "1")
+      assert block.total_lines == 5
+      # First 4 lines kept (preview_max_lines); the rest is captured as "remaining".
+      assert length(block.output_preview) == 4
+    end
+
+    test "todo_write tool call extracts the todos list on the block" do
+      todos = [
+        %{"content" => "Step 1", "status" => "completed"},
+        %{"content" => "Step 2", "status" => "in_progress"}
+      ]
+
+      tc = %ToolCall{id: "1", name: "todo_write", arguments: %{"todos" => todos}}
+
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:tool_call, tc})
+
+      block = Map.get(state.tool_blocks, "1")
+      assert block.todos == todos
+    end
+
+    test ":tool_ui :diff payload attaches to the matching block" do
+      tc = %ToolCall{id: "1", name: "edit", arguments: %{"path" => "foo.ex"}}
+
+      ui = %{
+        tool_call_id: "1",
+        kind: :diff,
+        payload: %{path: "foo.ex", before: "old", after: "new"}
+      }
+
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:tool_call, tc})
+        |> State.append_loop_event({:tool_ui, ui})
+
+      block = Map.get(state.tool_blocks, "1")
+      assert block.ui.kind == :diff
+      assert block.ui.payload.path == "foo.ex"
     end
 
     test ":error adds a warn row" do
@@ -201,7 +247,7 @@ defmodule ExAthena.Chat.Tui.StateTest do
 
       assert [
                {:assistant, "first"},
-               {:tool_call, _},
+               {:tool_block, _},
                {:assistant, "second"}
              ] = state.events
     end
