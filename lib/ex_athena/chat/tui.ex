@@ -557,6 +557,30 @@ defmodule ExAthena.Chat.Tui do
     |> noreply()
   end
 
+  defp dispatch_command(:mouse, args, state) do
+    requested =
+      case args |> Enum.map(&String.downcase/1) |> List.first() do
+        "on" -> true
+        "off" -> false
+        _ -> not state.mouse_enabled
+      end
+
+    if requested do
+      # X10 click reporting + SGR (extended coords) — same sequences
+      # Tui.start/1 writes on app startup.
+      write_to_tty("\e[?1000h\e[?1006h")
+    else
+      write_to_tty("\e[?1006l\e[?1000l")
+    end
+
+    label = if requested, do: "on", else: "off (terminal text selection restored)"
+
+    state
+    |> State.set_mouse_enabled(requested)
+    |> State.append_event({:info, "mouse capture → " <> label})
+    |> noreply()
+  end
+
   defp dispatch_command(:diff, args, state) do
     case args |> Enum.map(&String.downcase/1) |> List.first() do
       mode when mode in ["side", "side-by-side", "split"] ->

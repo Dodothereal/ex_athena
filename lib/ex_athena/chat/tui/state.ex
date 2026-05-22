@@ -85,6 +85,11 @@ defmodule ExAthena.Chat.Tui.State do
             # restore it.
             history_idx: nil,
             history_draft: "",
+            # Whether crossterm mouse reporting is currently enabled. We
+            # turn it on at App start via ANSI on /dev/tty (see Tui.start/1)
+            # and let the user toggle with /mouse so they can drop back to
+            # native terminal text selection.
+            mouse_enabled: true,
             # Which tab is active in the right details pane.
             details_tab: :timeline,
             # Lines of `git diff HEAD` for the :changes tab. Refreshed
@@ -124,6 +129,7 @@ defmodule ExAthena.Chat.Tui.State do
           autocomplete: autocomplete(),
           history_idx: non_neg_integer() | nil,
           history_draft: String.t(),
+          mouse_enabled: boolean(),
           details_tab: :timeline | :changes,
           git_diff_lines: [String.t()],
           git_diff_scroll_offset: non_neg_integer(),
@@ -713,6 +719,11 @@ defmodule ExAthena.Chat.Tui.State do
   @spec reset_history_nav(t()) :: t()
   def reset_history_nav(%__MODULE__{} = state),
     do: %{state | history_idx: nil, history_draft: ""}
+
+  @doc "Record whether crossterm mouse capture is currently on."
+  @spec set_mouse_enabled(t(), boolean()) :: t()
+  def set_mouse_enabled(%__MODULE__{} = state, enabled?) when is_boolean(enabled?),
+    do: %{state | mouse_enabled: enabled?}
 
   # ─ Streaming-tag parser ──────────────────────────────────────────────────
 

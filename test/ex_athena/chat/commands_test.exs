@@ -83,7 +83,7 @@ defmodule ExAthena.Chat.CommandsTest do
       text = Commands.help_text()
 
       for verb <-
-            ~w(/model /mode /tools /clear /expand /details /cd /pwd /tab /diff /timeline /help /exit) do
+            ~w(/model /mode /tools /clear /expand /details /cd /pwd /tab /diff /timeline /mouse /help /exit) do
         assert text =~ verb, "expected help text to mention #{verb}"
       end
     end
@@ -121,6 +121,12 @@ defmodule ExAthena.Chat.CommandsTest do
     test "parses /diff with a layout argument" do
       assert Commands.parse("/diff side") == {:command, :diff, ["side"]}
       assert Commands.parse("/diff inline") == {:command, :diff, ["inline"]}
+    end
+
+    test "parses /mouse with and without on/off" do
+      assert Commands.parse("/mouse") == {:command, :mouse, []}
+      assert Commands.parse("/mouse on") == {:command, :mouse, ["on"]}
+      assert Commands.parse("/mouse off") == {:command, :mouse, ["off"]}
     end
   end
 end
