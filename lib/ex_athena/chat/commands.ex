@@ -62,15 +62,36 @@ defmodule ExAthena.Chat.Commands do
   @spec help_text() :: String.t()
   def help_text do
     """
+    ExAthena chat — full usage
+
     Slash commands:
-      /model [name]    pick or switch the current model
-      /mode  [name]    switch runner mode (react, plan_and_solve, reflexion)
-      /tools           list the tools currently available to the agent
-      /clear           wipe the conversation history
-      /expand [N]      show the Nth-most-recent tool result in full (default 1)
-      /help, /?        show this help
-      /exit, /quit, /q leave the chat
-    Anything else is sent to the agent as a user message.
+      /model [name]      open the model picker, or set model directly
+      /mode  [name]      open the mode picker, or set mode directly
+                         (modes: react, plan_and_solve, reflexion)
+      /tools             list the tools currently available to the agent
+      /clear             wipe the conversation history (new session)
+      /expand [N]        show the Nth-most-recent tool result in full
+                         (default 1 = most recent)
+      /help, /?          show this help
+      /exit, /quit, /q   leave the chat
+
+    Keyboard:
+      Enter              send the current message
+      Shift+Enter        insert a newline in the message
+      Ctrl+C             quit the chat
+      ↑ / k              (in picker) move selection up
+      ↓ / j              (in picker) move selection down
+      Enter              (in picker) confirm selection
+      Esc                (in picker) close without selecting
+
+    Launch flags (mix athena.chat):
+      --provider NAME    ollama, llamacpp, openai, claude, gemini, ...
+      --model NAME       initial model (overrides config)
+      --mode NAME        react | plan_and_solve | reflexion
+
+    Anything that isn't a slash command is sent to the agent as a user
+    message. Tool calls and results stream inline; use /expand N to see
+    the full text of a truncated tool result.
     """
   end
 end
