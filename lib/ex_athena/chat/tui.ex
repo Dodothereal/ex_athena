@@ -51,14 +51,31 @@ defmodule ExAthena.Chat.Tui do
     # ex_ratatui's NIF enables crossterm raw mode + alternate screen but
     # does NOT toggle mouse capture, so wheel/click events never reach us.
     # Enable X10 mouse reporting + SGR-extended mode (unlimited coords)
-    # ourselves via ANSI. Disabled in the {:DOWN, ...} cleanup below.
-    IO.write("\e[?1000h\e[?1006h")
+    # ourselves via ANSI. We bypass :standard_io and write to /dev/tty
+    # directly because suspend_beam_stdin_reader/0 above tears down
+    # BEAM's I/O subsystem — IO.write/2 to :standard_io would raise
+    # :terminated.
+    write_to_tty("\e[?1000h\e[?1006h")
 
     ref = Process.monitor(pid)
 
     receive do
       {:DOWN, ^ref, :process, ^pid, _reason} ->
-        IO.write("\e[?1006l\e[?1000l")
+        write_to_tty("\e[?1006l\e[?1000l")
+        :ok
+    end
+  end
+
+  defp write_to_tty(bytes) do
+    case File.open("/dev/tty", [:write, :raw]) do
+      {:ok, dev} ->
+        try do
+          IO.binwrite(dev, bytes)
+        after
+          File.close(dev)
+        end
+
+      _ ->
         :ok
     end
   end
