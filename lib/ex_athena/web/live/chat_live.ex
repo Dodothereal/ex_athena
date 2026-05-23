@@ -423,7 +423,8 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("panel_next", _params, socket) do
-    idx = min(length(socket.assigns.diff_panel_log) - 1, socket.assigns.diff_panel_idx + 1)
+    len = length(socket.assigns.diff_panel_log)
+    idx = if len == 0, do: 0, else: min(len - 1, socket.assigns.diff_panel_idx + 1)
     {:noreply, assign(socket, diff_panel_idx: idx)}
   end
 
@@ -530,10 +531,13 @@ defmodule ExAthena.Web.Live.ChatLive do
     msg_id = socket.assigns.pending_assistant_msg_id
     detail = new_detail(:tool_ui, msg_id, %{tool_call_id: id, ui: ui_entry})
 
+    panel_id = unique_id()
+
     {:noreply,
      socket
      |> update(:stream_tool_ui, &Map.put(&1, id, ui_entry))
-     |> update(:details_stream, &[detail | &1])}
+     |> update(:details_stream, &[detail | &1])
+     |> update(:diff_panel_log, &[{panel_id, ui_entry} | &1])}
   end
 
   def handle_info({:athena, {:iteration, n}}, socket) do
@@ -1635,8 +1639,8 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp fetch_git_diff(cwd) do
     try do
-      {unstaged, _} = System.cmd("git", ["diff", "--color=never"], cd: cwd)
-      {staged, _} = System.cmd("git", ["diff", "--staged", "--color=never"], cd: cwd)
+      {_, unstaged} = System.cmd("git", ["diff", "--color=never"], cd: cwd)
+      {_, staged} = System.cmd("git", ["diff", "--staged", "--color=never"], cd: cwd)
       combined = [unstaged, staged] |> Enum.reject(&(&1 == "")) |> Enum.join("\n")
       if combined == "", do: [], else: parse_git_diff(combined)
     rescue

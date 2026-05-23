@@ -23,6 +23,7 @@ defmodule ExAthena.Tools do
   alias ExAthena.Tool.Spec
 
   @builtins [
+    ExAthena.Tools.ReadSummary,
     ExAthena.Tools.Read,
     ExAthena.Tools.Glob,
     ExAthena.Tools.Grep,

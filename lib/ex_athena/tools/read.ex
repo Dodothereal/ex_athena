@@ -23,7 +23,10 @@ defmodule ExAthena.Tools.Read do
 
   @impl true
   def description,
-    do: "Read a file from the filesystem, optionally starting at a line offset with a line limit."
+    do:
+      "Read exact file content by line range. " <>
+        "For any file you have not seen yet, call read_summary first to understand its structure. " <>
+        "Always provide offset and limit — never read a whole file."
 
   @impl true
   def schema do
