@@ -24,9 +24,12 @@ defmodule ExAthena.Tools.ReadSummary do
 
   @impl true
   def description do
-    "Summarize a file with a fast LLM call: returns purpose, key functions, " <>
-      "types, and dependencies in ~10 lines without filling context with full file content. " <>
-      "Call this before read on any file you have not seen yet in this session."
+    "Default tool for any file you have not yet read in this conversation. " <>
+      "Runs a one-off LLM call and returns a structured summary: purpose, key " <>
+      "functions/modules with approximate line numbers, important types, and notable " <>
+      "imports — without loading the full file into context. " <>
+      "Always call this first; only call read afterwards, and only for the specific " <>
+      "line ranges this summary identifies."
   end
 
   @impl true
@@ -66,21 +69,31 @@ defmodule ExAthena.Tools.ReadSummary do
 
   defp summarize(path, content, provider_opts) do
     truncated = String.slice(content, 0, @max_input_bytes)
+    total_lines = content |> String.split("\n") |> length()
 
     prompt = """
-    Summarize this source file in up to 10 concise lines.
-    Cover: purpose of the file, key functions or modules defined,
-    important types or data structures, and notable dependencies or imports.
-    Return only the summary — no preamble, no code blocks.
+    You are summarizing a source file so an AI agent can decide which specific lines to read next.
+    Be precise and actionable. Respond with this exact structure — no preamble, no code fences:
 
-    File: #{Path.basename(path)}
+    Purpose: <one sentence describing what this file does>
+    Key definitions: <name> ~L<line> — <one-phrase description>; one entry per line
+    Types/structs: <name> ~L<line> — <one-phrase description>; one entry per line (or "none")
+    Dependencies: <comma-separated notable imports or external modules>
+    Notes: <surprising constraints, invariants, or patterns a reader should know> (or "none")
+
+    Approximate line numbers are critical — they let the agent call `read` with the right
+    offset and limit instead of reading the whole file. Include them for every definition.
+
+    File: #{Path.basename(path)} (#{total_lines} lines total)
 
     #{truncated}
     """
 
     opts =
       [
-        system_prompt: "You summarize source code files concisely. Return only the summary.",
+        system_prompt:
+          "You summarize source code files into structured, line-number-anchored summaries. " <>
+            "Return only the summary in the requested format.",
         allowed_tools: []
       ] ++ provider_opts
 

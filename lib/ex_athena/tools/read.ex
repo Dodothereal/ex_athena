@@ -25,8 +25,9 @@ defmodule ExAthena.Tools.Read do
   def description,
     do:
       "Read exact file content by line range. " <>
-        "For any file you have not seen yet, call read_summary first to understand its structure. " <>
-        "Always provide offset and limit — never read a whole file."
+        "Do NOT call this on a file you have not yet summarized — call read_summary first " <>
+        "to identify which lines you need, then use offset and limit to read only those sections. " <>
+        "Never read a whole file: always supply offset and limit."
 
   @impl true
   def schema do
