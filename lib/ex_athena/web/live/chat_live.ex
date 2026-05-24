@@ -403,6 +403,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   def handle_event("focus_detail", %{"id" => tool_call_id}, socket) do
     {:noreply, push_event(socket, "focus-detail", %{tool_call_id: tool_call_id})}
   end
+
   def handle_event("toggle_diff_panel", _params, socket) do
     {:noreply, assign(socket, show_diff_panel: !socket.assigns.show_diff_panel)}
   end
@@ -1612,7 +1613,11 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  defp build_ui_entry(:process, %{command: cmd, exit_code: code, stdout: out, duration_ms: ms}, _cwd) do
+  defp build_ui_entry(
+         :process,
+         %{command: cmd, exit_code: code, stdout: out, duration_ms: ms},
+         _cwd
+       ) do
     %{
       kind: :process,
       command: cmd,

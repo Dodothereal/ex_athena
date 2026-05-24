@@ -8,8 +8,7 @@ defmodule ExAthena.Web.Endpoint do
     same_site: "Lax"
   ]
 
-  socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]]
+  socket "/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]]
 
   # Serve pre-built ESM files from each package's priv/static so we
   # can use an importmap — no npm or esbuild step required.

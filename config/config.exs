@@ -6,7 +6,6 @@ end
 
 import_config "#{config_env()}.exs"
 
-
 # To use a local llama.cpp server instead:
 #
 #   mix athena.chat --provider llamacpp
@@ -14,4 +13,3 @@ import_config "#{config_env()}.exs"
 # or set it as the default:
 #
 #   config :ex_athena, default_provider: :llamacpp
-

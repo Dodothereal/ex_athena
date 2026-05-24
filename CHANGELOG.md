@@ -7,28 +7,79 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
-## v0.12.0 — Interactive REPL, prompt contract hardening, subagent opts fix
+## v0.12.0 — Interactive TUI, web UI, llama.cpp provider, thinking, prompt hardening
 
-### Added
+The headline release for ExAthena's two new front-ends — a full-screen
+terminal TUI (`mix athena.chat`) and a Phoenix LiveView web UI
+(`mix athena.web`) — plus first-class llama.cpp support, real-time
+thinking/reasoning streaming, and a batch of tool/permission refinements. The
+TUI and web stacks ship as **optional** dependencies so the core library stays
+lean (see _Changed → Packaging_).
 
-- **`mix athena.chat` — interactive terminal REPL.** Drops you into a
-  streaming chat session against the ExAthena agent loop, defaulting to the
-  `:ollama` provider, the model configured under `config :ex_athena, :ollama`,
-  the `:react` runner, and every builtin tool. Slash commands (`/model`,
-  `/mode`, `/tools`, `/clear`, `/help`, `/exit`) switch state mid-session;
-  `/model` lists live models from `GET /api/tags`. Built on
-  [`owl`](https://hex.pm/packages/owl) with a pinned `Owl.LiveScreen` status
-  block showing model, mode, iteration, token usage, and cost. New modules:
-  `ExAthena.Chat.Repl`, `ExAthena.Chat.Session`, `ExAthena.Chat.Commands`,
-  `ExAthena.Chat.Renderer`, `ExAthena.Chat.Ollama`.
+### Added — interactive TUI (`mix athena.chat`)
+
+- **Full-screen terminal chat built on [`ex_ratatui`](https://hex.pm/packages/ex_ratatui).**
+  A streaming REPL against the ExAthena agent loop, defaulting to the `:ollama`
+  provider, the `:react` runner, and every builtin tool. Slash commands switch
+  state mid-session and `/model` lists live models from the provider.
+- **Split messages / details panes** — the conversation streams on the left
+  while a togglable details pane (`/details`) shows tool activity and a live
+  **Changes** tab (#62, #71).
+- **Real-time text + thinking** — assistant text and reasoning stream as they
+  arrive; `<think>` blocks are extracted from `:content` into a dedicated
+  thinking pane (#63, #65). A "thinking…" placeholder shows while the model is
+  silent.
+- **Live `git diff` Changes tab** — shows the working-tree diff in the cwd,
+  including untracked files, with compact side-by-side and inline rendering,
+  and a self-explanatory empty/error state (#71, #74, #77, #81).
+- **Claude-Code-style tool blocks** in the messages pane, with a compact
+  single-line tool-result preview and an `/expand` command to view a collapsed
+  result in full (#76).
+- **Navigation & input** — scrollable panes via PgUp/PgDn (Shift targets the
+  details pane) (#75), auto-scroll-to-bottom as content grows (#70),
+  slash-command autocomplete with Enter-to-accept (#69, #73), and Up/Down input
+  history (#86).
+- **Mouse support** — wheel scrolls panes and clicks switch tabs (#78), with
+  `/mouse on|off` to restore native terminal text selection (#88).
+- **Working directory control** — `--path` / `-p` launch flag and `/cd`
+  command, with the effective cwd always shown in the status bar / banner /
+  `/pwd` (#66, #68).
+- **Stop button** — replaces the spinner so you can interrupt a running LLM
+  stream (#89). Plus the ExAthena logo on the sidebar title (#83).
+
+### Added — web interface (`mix athena.web`)
+
+- **Phoenix LiveView chat UI** served by Bandit at `http://0.0.0.0:4000`:
+  sessions, fork, a diff viewer, an action indicator, and markdown rendering
+  (#58), with the same messages / details split-pane layout as the TUI (#62).
+
+### Added — providers
+
+- **llama.cpp provider** — `provider: :llamacpp` talks to a local llama-server
+  through `req_llm`, including correct tool-call argument streaming (#55, #57).
+- **Thinking / reasoning plumbed through `req_llm` to loop events** — reasoning
+  deltas now surface as loop events so front-ends can render them live (#64).
+  Inline `%LLMDB.Model{}` specs are passed through to suppress req_llm's
+  unverified-model warning.
 
 ### Changed
 
+- **Tooling.** `Glob` / `Grep` now exclude `_build`, `deps`, and `node_modules`
+  by default, including nested copies in Phoenix-in-subdir layouts (#80, #82).
+  `Write` now emits a `:diff` UI payload like `Edit` (#85).
+- **Permissions.** New `ExAthena.Permissions.plan_mode_tools/0` (read-only
+  tools + bash) (#91), and read-only bash commands are now allowed in the
+  `:plan` phase (#90).
 - **`ExAthena.Request.new/2` now fails loud on an invalid prompt.** The prompt
   contract is `String.t() | nil`; a non-string prompt (most commonly a
   content-block list built by a caller that should have used the `:images`
   opt) previously degraded silently into an empty user message, swallowing the
-  whole turn. It now raises `ArgumentError`, consistent with `normalize_images/1`.
+  whole turn. It now raises `ArgumentError`, consistent with `normalize_images/1` (#92).
+- **Packaging — TUI/web deps are now `optional`.** `ex_ratatui`, `phoenix`,
+  `phoenix_live_view`, and `bandit` are marked `optional: true`. The core agent
+  loop never starts a web server or a TUI, so library consumers no longer pull
+  in Phoenix + Bandit transitively. Add these deps yourself to use
+  `mix athena.chat` / `mix athena.web` (see the README).
 
 ### Fixed
 
@@ -37,7 +88,18 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `Map.put`, discarding any options the caller passed (e.g. a `:mock`
   responder, `:tools`, `:memory`). Switched to `Map.put_new` so explicit
   caller config — and a grandparent's config when this loop is itself a
-  subagent — survives, matching the documented intent.
+  subagent — survives, matching the documented intent (#93).
+- **Compaction token accounting.** `tokens_for` now counts `tool_result`
+  payloads, so compaction triggers on the true conversation size instead of
+  undercounting tool-heavy turns (#84).
+- **Subagents inherit the parent provider** — a spawned agent is now given the
+  parent's provider configuration instead of falling back to the default (#61).
+- **Chat turn timeouts.** Replaced the `:infinity` chat timeout with a 24h
+  integer and stopped timing out a turn while the model is still thinking.
+- **Mouse capture** writes to `/dev/tty` rather than `:standard_io`, fixing a
+  crash when stdio is redirected (#79).
+- **Quieter chat logs** — debug logs are silenced during `mix athena.chat` and
+  the chat log gate is raised from `:info` to `:warning`.
 
 ## v0.11.0 — Public multimodal capability function
 

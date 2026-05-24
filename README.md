@@ -10,21 +10,22 @@ Code SDK that runs on **Ollama**, **OpenAI-compatible endpoints**
 **Google Gemini**, or **Anthropic Claude** itself — with the same tools,
 hooks, permissions, and streaming semantics across every provider.
 
-> **Status (v0.4):** the operational-harness release. Builds on v0.3's
-> loop kernel with file-based memory (`AGENTS.md`/`CLAUDE.md`),
-> Claude Code-style skills (`SKILL.md` with progressive disclosure), a
-> five-stage compaction pipeline with reactive recovery on
-> context-window errors, 14 hook events with `{:inject, msg}` /
-> `{:transform, prompt}` returns, five permission modes (`:plan` /
-> `:default` / `:accept_edits` / `:trusted` / `:bypass_permissions`),
-> structured tool results with rich UI payloads, custom agent
-> definitions with optional git-worktree isolation, sidechain
-> transcripts, and append-only session storage with file-checkpointing
-> + `/rewind`. Backed by 248 tests.
+> **Status (v0.12):** two front-ends land on top of the agent loop — a
+> full-screen terminal TUI (`mix athena.chat`, built on `ex_ratatui`) with
+> split message/details panes, real-time thinking, a live `git diff` Changes
+> tab, mouse support, and a stop button; and a Phoenix LiveView web UI
+> (`mix athena.web`) with session recall, fork, and a diff viewer. This
+> release also adds a first-class **llama.cpp** provider and streams
+> thinking/reasoning deltas as loop events. The TUI/web deps (`ex_ratatui`,
+> `phoenix`, `phoenix_live_view`, `bandit`) are now **optional**, so the core
+> library stays lean. See the [v0.12.0 changelog](CHANGELOG.md#v0120--interactive-tui-web-ui-llamacpp-provider-thinking-prompt-hardening)
+> for the full list.
 >
-> See the [v0.4.0 changelog](CHANGELOG.md#v040--operational-harness-memory-skills-hooks-modes-agents-storage)
-> for the full list and migration notes (one breaking change: 6 builtin
-> tools now return `{:ok, text, ui}` 3-tuples).
+> The operational harness it builds on — file-based memory
+> (`AGENTS.md`/`CLAUDE.md`), Claude Code-style skills, a five-stage compaction
+> pipeline, 14 hook events, five permission modes, custom agents with
+> git-worktree isolation, and append-only session storage with checkpointing —
+> is documented under [The operational harness](#the-operational-harness-v04).
 
 ## Why
 
@@ -47,15 +48,23 @@ Or manually — add to `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_athena, "~> 0.4"},
+    {:ex_athena, "~> 0.12"},
     # optional — only needed for the Claude provider:
-    {:claude_code, "~> 0.36"}
+    {:claude_code, "~> 0.36"},
+    # optional — only needed for the TUI (`mix athena.chat`):
+    {:ex_ratatui, "~> 0.10"},
+    # optional — only needed for the web UI (`mix athena.web`):
+    {:phoenix, "~> 1.7"},
+    {:phoenix_live_view, "~> 1.0"},
+    {:bandit, "~> 1.5"}
   ]
 end
 ```
 
-…then run `mix ex_athena.install` once to wire up defaults, or configure
-manually (see [Configuration](#configuration)).
+The core agent loop has no Phoenix/TUI dependency; add the optional deps above
+only if you want `mix athena.chat` or `mix athena.web`. Then run
+`mix ex_athena.install` once to wire up defaults, or configure manually (see
+[Configuration](#configuration)).
 
 ## Quick start
 
@@ -150,6 +159,8 @@ The sidebar lets you switch provider, model, and mode without restarting. Featur
 
 The web UI is a Phoenix LiveView application that requires no separate server process — `mix athena.web` starts everything in one command. Sessions are serialized with `:erlang.term_to_binary` and survive restarts. The JS bundle is served directly from the installed `phoenix` and `phoenix_live_view` hex packages, so there is no npm or esbuild step.
 
+> **Note:** `phoenix`, `phoenix_live_view`, and `bandit` are optional dependencies. Add them to your `mix.exs` (see [Install](#install)) before running `mix athena.web`.
+
 ## Providers
 
 | Provider | Module | Notes |
@@ -207,7 +218,7 @@ ExAthena.query("…",
 The agent loop (Phase 2) will pick the protocol based on the provider's
 declared capabilities, and fall back when the model gets it wrong.
 
-## What's in v0.4
+## The operational harness (v0.4)
 
 The "1.6% reasoning, 98.4% harness" upgrade — built around the
 [Claude Code paper](https://arxiv.org/abs/2604.14228)'s observation

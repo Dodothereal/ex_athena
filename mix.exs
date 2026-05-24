@@ -32,7 +32,6 @@ defmodule ExAthena.MixProject do
 
   defp deps do
     [
-      {:ex_ratatui, "~> 0.10"},
       {:req, "~> 0.5"},
       {:req_llm, "~> 1.10"},
       {:jason, "~> 1.4"},
@@ -40,9 +39,13 @@ defmodule ExAthena.MixProject do
       {:telemetry, "~> 1.3"},
       {:claude_code, "~> 0.36", optional: true},
       {:igniter, "~> 0.6", optional: true},
-      {:phoenix, "~> 1.7"},
-      {:phoenix_live_view, "~> 1.0"},
-      {:bandit, "~> 1.5"},
+      # Optional — only needed for the interactive TUI (`mix athena.chat`) and the
+      # web UI (`mix athena.web`). The core agent loop never starts them, so library
+      # consumers aren't forced to pull in Phoenix/Bandit/ex_ratatui.
+      {:ex_ratatui, "~> 0.10", optional: true},
+      {:phoenix, "~> 1.7", optional: true},
+      {:phoenix_live_view, "~> 1.0", optional: true},
+      {:bandit, "~> 1.5", optional: true},
       {:bypass, "~> 2.1", only: :test},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
