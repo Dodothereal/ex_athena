@@ -7,6 +7,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## v0.12.0 — Interactive REPL, prompt contract hardening, subagent opts fix
+
 ### Added
 
 - **`mix athena.chat` — interactive terminal REPL.** Drops you into a
@@ -19,6 +21,23 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   block showing model, mode, iteration, token usage, and cost. New modules:
   `ExAthena.Chat.Repl`, `ExAthena.Chat.Session`, `ExAthena.Chat.Commands`,
   `ExAthena.Chat.Renderer`, `ExAthena.Chat.Ollama`.
+
+### Changed
+
+- **`ExAthena.Request.new/2` now fails loud on an invalid prompt.** The prompt
+  contract is `String.t() | nil`; a non-string prompt (most commonly a
+  content-block list built by a caller that should have used the `:images`
+  opt) previously degraded silently into an empty user message, swallowing the
+  whole turn. It now raises `ArgumentError`, consistent with `normalize_images/1`.
+
+### Fixed
+
+- **Caller-supplied `assigns[:spawn_agent_opts]` is no longer clobbered.**
+  `Loop.run/2` overwrote it with the auto-derived provider config via
+  `Map.put`, discarding any options the caller passed (e.g. a `:mock`
+  responder, `:tools`, `:memory`). Switched to `Map.put_new` so explicit
+  caller config — and a grandparent's config when this loop is itself a
+  subagent — survives, matching the documented intent.
 
 ## v0.11.0 — Public multimodal capability function
 
