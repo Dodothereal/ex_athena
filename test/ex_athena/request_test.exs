@@ -140,4 +140,35 @@ defmodule ExAthena.RequestTest do
       assert [%ContentPart{type: :text, text: "new prompt"}, %ContentPart{type: :image}] = parts
     end
   end
+
+  describe "new/2 — invalid prompt shape (fail loud)" do
+    # The prompt contract is String.t() | nil. A non-string prompt — most
+    # commonly a content-block list like [%{type: "text"}, %{type: "image"}]
+    # built by a caller that should have used the :images opt — used to fall
+    # through to a silent empty user message, swallowing the whole turn.
+    test "content-block-list prompt raises ArgumentError" do
+      blocks = [
+        %{type: "text", text: "look at this"},
+        %{type: "image", source: %{type: "base64", media_type: "image/png", data: "abc"}}
+      ]
+
+      assert_raise ArgumentError, ~r/expected a String or nil/, fn ->
+        Request.new(blocks, [])
+      end
+    end
+
+    test "content-block-list prompt raises even when :images opt is also given" do
+      blocks = [%{type: "text", text: "hi"}]
+
+      assert_raise ArgumentError, ~r/expected a String or nil/, fn ->
+        Request.new(blocks, images: [%{data: <<0>>, media_type: "image/png"}])
+      end
+    end
+
+    test "non-string scalar prompt raises ArgumentError" do
+      assert_raise ArgumentError, ~r/expected a String or nil/, fn ->
+        Request.new(123, [])
+      end
+    end
+  end
 end

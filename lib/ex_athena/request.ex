@@ -92,7 +92,7 @@ defmodule ExAthena.Request do
   end
 
   # No prompt (nil or "") + images → merge into last user message or append new one
-  defp build_messages(_prompt, existing, image_parts) do
+  defp build_messages(prompt, existing, image_parts) when prompt in [nil, ""] do
     case find_last_user(existing) do
       {before, %Message{content: text} = msg, after_msgs} when is_binary(text) ->
         before ++ [%{msg | content: [ContentPart.text(text) | image_parts]}] ++ after_msgs
@@ -106,6 +106,18 @@ defmodule ExAthena.Request do
       :none ->
         existing ++ [Messages.user(image_parts)]
     end
+  end
+
+  # Any other prompt shape violates the `String.t() | nil` contract. The
+  # usual culprit is a content-block list (`[%{type: "text"}, …]`) built by
+  # a caller that should pass text as a string and images via the `:images`
+  # opt. Fail loud rather than silently degrading it into an empty user
+  # message, which swallows the whole turn (see ContentPart-style image
+  # specs handled by `normalize_images/1`).
+  defp build_messages(other, _existing, _image_parts) do
+    raise ArgumentError,
+          "invalid prompt #{inspect(other)}; expected a String or nil. " <>
+            "Pass pre-built messages via the :messages opt and inline images via the :images opt."
   end
 
   defp normalize_images([]), do: []
