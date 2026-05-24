@@ -7,6 +7,24 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## v0.12.1 — Optional TUI dep no longer breaks library consumers
+
+A hotfix for v0.12.0: the now-`optional` `:ex_ratatui` dependency was still
+referenced at compile time, so any consumer that didn't pull it failed to
+compile ExAthena at all. Upgrade straight to v0.12.1 — v0.12.0 has been retired
+on Hex.
+
+### Fixed
+
+- **TUI modules now compile when the optional `:ex_ratatui` dep is absent.**
+  `ExAthena.Chat.Tui` (`use ExRatatui.App`) and `…Tui.View` (compile-time
+  `%ExRatatui.Widgets.Tabs{}` struct literal) referenced ExRatatui at compile
+  time, so despite `ex_ratatui` being `optional` every consumer that didn't pull
+  it failed to compile ExAthena entirely (`module ExRatatui.App is not loaded`),
+  defeating the optional packaging shipped in v0.12.0. Both modules — and the
+  `mix athena.chat` dispatch — are now guarded behind `Code.ensure_loaded?/1`,
+  so optional is truly optional (#95).
+
 ## v0.12.0 — Interactive TUI, web UI, llama.cpp provider, thinking, prompt hardening
 
 The headline release for ExAthena's two new front-ends — a full-screen
@@ -89,13 +107,6 @@ lean (see _Changed → Packaging_).
   responder, `:tools`, `:memory`). Switched to `Map.put_new` so explicit
   caller config — and a grandparent's config when this loop is itself a
   subagent — survives, matching the documented intent (#93).
-- **TUI modules now compile when the optional `:ex_ratatui` dep is absent.**
-  `ExAthena.Chat.Tui` (`use ExRatatui.App`) and `…Tui.View` (compile-time
-  `%ExRatatui.Widgets.Tabs{}` struct literal) referenced ExRatatui at compile
-  time, so despite `ex_ratatui` being `optional` every consumer that didn't pull
-  it failed to compile ExAthena entirely (`module ExRatatui.App is not loaded`).
-  Both modules — and the `mix athena.chat` dispatch — are now guarded behind
-  `Code.ensure_loaded?/1`, so optional is truly optional.
 - **Compaction token accounting.** `tokens_for` now counts `tool_result`
   payloads, so compaction triggers on the true conversation size instead of
   undercounting tool-heavy turns (#84).
