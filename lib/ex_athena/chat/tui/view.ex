@@ -1,3 +1,7 @@
+# Guarded on the OPTIONAL `:ex_ratatui` dep — this module references ExRatatui
+# widget structs at compile time (e.g. `%ExRatatui.Widgets.Tabs{}`), so it
+# can't compile for consumers that don't pull ex_ratatui. See ExAthena.Chat.Tui.
+if Code.ensure_loaded?(ExRatatui.App) do
 defmodule ExAthena.Chat.Tui.View do
   @moduledoc """
   Pure view function for `ExAthena.Chat.Tui`. Turns a `%State{}` into the
@@ -1022,4 +1026,5 @@ defmodule ExAthena.Chat.Tui.View do
 
     {popup_widget, messages_rect}
   end
+end
 end

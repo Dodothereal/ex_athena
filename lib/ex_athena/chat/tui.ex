@@ -1,3 +1,8 @@
+# The TUI requires the OPTIONAL `:ex_ratatui` dependency. Guard the whole
+# module so ExAthena still compiles for consumers that don't pull ex_ratatui
+# (declared `optional: true`). Without this, `use ExRatatui.App` raises
+# `module ExRatatui.App is not loaded` at compile time for every such consumer.
+if Code.ensure_loaded?(ExRatatui.App) do
 defmodule ExAthena.Chat.Tui do
   @moduledoc """
   Full-screen TUI App for `mix athena.chat`, built on `ExRatatui.App`.
@@ -941,4 +946,5 @@ defmodule ExAthena.Chat.Tui do
   end
 
   defp reconcile_initial_session(session), do: session
+end
 end

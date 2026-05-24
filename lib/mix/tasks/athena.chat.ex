@@ -54,7 +54,16 @@ defmodule Mix.Tasks.Athena.Chat do
       |> maybe_put_mode(parsed[:mode])
       |> maybe_put_path(parsed[:path])
 
-    Tui.start(opts)
+    # The TUI is only compiled when the optional :ex_ratatui dep is present.
+    # Dispatch dynamically so this task still compiles when Tui is absent.
+    if Code.ensure_loaded?(Tui) do
+      apply(Tui, :start, [opts])
+    else
+      Mix.raise(
+        "mix athena.chat requires the optional :ex_ratatui dependency. " <>
+          "Add `{:ex_ratatui, \"~> 0.10\"}` to your deps and re-run."
+      )
+    end
   end
 
   defp maybe_put(opts, _key, nil), do: opts
