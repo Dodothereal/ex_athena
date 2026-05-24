@@ -551,7 +551,7 @@ defmodule ExAthena.Loop do
           :tool_timeout_ms,
           Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
         )
-        |> Map.put(:spawn_agent_opts, inherited_provider_opts)
+        |> Map.put_new(:spawn_agent_opts, inherited_provider_opts)
 
       ctx =
         ExAthena.ToolContext.new(
