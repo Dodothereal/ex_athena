@@ -7,6 +7,22 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## v0.12.2 — Provider config no longer leaks base_url across providers
+
+### Fixed
+
+- **`Config.provider_opts/3` is now scoped to the requested provider atom.**
+  Every built-in provider atom (`:ollama`, `:openai`, `:gemini`, `:claude`, …)
+  maps to the same `ExAthena.Providers.ReqLLM` module, and the previous
+  `provider_app_env` accumulated `Application.get_env(:ex_athena, <atom>)` across
+  **all** of a module's atoms. An instance-specific key — most damagingly
+  `:base_url` — set for one provider therefore leaked into requests for another:
+  a consumer's `config :ex_athena, ollama: [base_url: "http://localhost:11434"]`
+  was sent on `:gemini`/`:claude` requests, 404ing against the wrong host. The
+  concrete provider atom is now threaded from the loop and only that atom's
+  config is read (unknown atoms / custom modules still fall back to module-wide
+  accumulation); per-call opts still override (#99).
+
 ## v0.12.1 — Optional TUI dep no longer breaks library consumers
 
 A hotfix for v0.12.0: the now-`optional` `:ex_ratatui` dependency was still
