@@ -3,6 +3,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   alias ExAthena.Chat.{LlamaCpp, Ollama}
   alias ExAthena.Messages
+  alias ExAthena.Messages.ContentPart
   alias ExAthena.Web.Sessions
 
   @providers [
@@ -55,6 +56,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         modes: @modes,
         # Conversation
         messages: [],
+        pending_images: [],
         streaming: false,
         stream_text: "",
         stream_events: [],
@@ -106,11 +108,21 @@ defmodule ExAthena.Web.Live.ChatLive do
     text = String.trim(text)
 
     cond do
-      text == "" -> {:noreply, socket}
+      text == "" and socket.assigns.pending_images == [] -> {:noreply, socket}
       socket.assigns.streaming -> {:noreply, socket}
       is_nil(socket.assigns.cwd) -> {:noreply, socket}
       true -> start_agent_run(socket, text)
     end
+  end
+
+  def handle_event("attach_image", %{"data" => data, "type" => type}, socket) do
+    image = %{data: data, media_type: type}
+    {:noreply, update(socket, :pending_images, &(&1 ++ [image]))}
+  end
+
+  def handle_event("remove_image", %{"index" => idx}, socket) do
+    idx = if is_binary(idx), do: String.to_integer(idx), else: idx
+    {:noreply, assign(socket, pending_images: List.delete_at(socket.assigns.pending_images, idx))}
   end
 
   def handle_event("stop", _params, socket) do
@@ -170,6 +182,7 @@ defmodule ExAthena.Web.Live.ChatLive do
          session_title: nil,
          session_created_at: DateTime.utc_now(),
          messages: [],
+         pending_images: [],
          ex_messages: [],
          tool_uis: %{},
          expanded_uis: MapSet.new(),
@@ -202,6 +215,7 @@ defmodule ExAthena.Web.Live.ChatLive do
          session_title: nil,
          session_created_at: DateTime.utc_now(),
          messages: [],
+         pending_images: [],
          ex_messages: [],
          tool_uis: %{},
          expanded_uis: MapSet.new(),
@@ -233,6 +247,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        session_title: nil,
        session_created_at: DateTime.utc_now(),
        messages: [],
+       pending_images: [],
        ex_messages: [],
        tool_uis: %{},
        expanded_uis: MapSet.new(),
@@ -289,6 +304,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        session_title: nil,
        session_created_at: DateTime.utc_now(),
        messages: [],
+       pending_images: [],
        ex_messages: [],
        tool_uis: %{},
        expanded_uis: MapSet.new(),
@@ -324,6 +340,7 @@ defmodule ExAthena.Web.Live.ChatLive do
            model: data.model,
            mode: data.mode,
            messages: data.display_messages,
+           pending_images: [],
            ex_messages: data.ex_messages,
            tool_uis: tool_uis,
            expanded_uis: MapSet.new(),
@@ -375,6 +392,7 @@ defmodule ExAthena.Web.Live.ChatLive do
            session_title: title,
            session_created_at: DateTime.utc_now(),
            messages: forked_messages,
+           pending_images: [],
            ex_messages: ex_messages,
            details_stream: details_stream,
            pending_assistant_msg_id: nil,
@@ -930,8 +948,35 @@ defmodule ExAthena.Web.Live.ChatLive do
           <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
         </div>
 
-        <div class="input-bar">
+        <div class="input-bar" id="image-input-bar" phx-hook="ImageInput">
+          <%= if @pending_images != [] do %>
+            <div class="img-preview-bar">
+              <div
+                :for={{img, idx} <- Enum.with_index(@pending_images)}
+                class="img-preview-item"
+              >
+                <img
+                  src={"data:#{img.media_type};base64,#{img.data}"}
+                  class="img-preview-thumb"
+                  alt="attached image"
+                />
+                <button
+                  type="button"
+                  class="img-preview-remove"
+                  phx-click="remove_image"
+                  phx-value-index={idx}
+                  title="Remove image"
+                >×</button>
+              </div>
+            </div>
+          <% end %>
           <form class="input-form" phx-submit="send">
+            <label
+              class={"btn-attach#{if @streaming or is_nil(@cwd), do: " btn-attach--disabled", else: ""}"}
+              for="image-file-input"
+              title="Attach image (or paste / drop)"
+            >⊕</label>
+            <input type="file" id="image-file-input" accept="image/*" multiple />
             <textarea
               id="chat-input"
               class="input-textarea"
@@ -1036,10 +1081,19 @@ defmodule ExAthena.Web.Live.ChatLive do
   # ---------------------------------------------------------------------------
 
   defp message(%{msg: %{role: :user}} = assigns) do
+    assigns = assign(assigns, :msg_images, Map.get(assigns.msg, :images, []))
+
     ~H"""
     <div class="msg msg--user">
       <div class="msg-role">you</div>
-      <div class="msg-body">{@msg.text}</div>
+      <%= if @msg_images != [] do %>
+        <div class="msg-images">
+          <img :for={src <- @msg_images} src={src} class="msg-image" alt="attached image" />
+        </div>
+      <% end %>
+      <%= if @msg.text != "" do %>
+        <div class="msg-body">{@msg.text}</div>
+      <% end %>
     </div>
     """
   end
@@ -1389,10 +1443,35 @@ defmodule ExAthena.Web.Live.ChatLive do
     provider = socket.assigns.provider
     model = socket.assigns.model
     mode = socket.assigns.mode
+    images = socket.assigns.pending_images
 
-    user_msg = %{id: unique_id(), role: :user, text: text, tool_events: [], status: nil}
+    image_data_urls =
+      Enum.map(images, fn %{data: d, media_type: t} -> "data:#{t};base64,#{d}" end)
+
+    user_msg = %{
+      id: unique_id(),
+      role: :user,
+      text: text,
+      images: image_data_urls,
+      tool_events: [],
+      status: nil
+    }
+
     assistant_msg_id = unique_id()
-    new_ex_msg = Messages.user(text)
+
+    new_ex_msg =
+      if images == [] do
+        Messages.user(text)
+      else
+        parts =
+          Enum.map(images, fn %{data: data, media_type: type} ->
+            ContentPart.image(Base.decode64!(data), type)
+          end)
+
+        parts = if text != "", do: parts ++ [ContentPart.text(text)], else: parts
+        Messages.user(parts)
+      end
+
     ex_messages = socket.assigns.ex_messages ++ [new_ex_msg]
 
     {:ok, task_pid} =
@@ -1425,6 +1504,7 @@ defmodule ExAthena.Web.Live.ChatLive do
      assign(socket,
        messages: socket.assigns.messages ++ [user_msg],
        ex_messages: ex_messages,
+       pending_images: [],
        streaming: true,
        streaming_task_pid: task_pid,
        stream_text: "",
@@ -1725,7 +1805,8 @@ defmodule ExAthena.Web.Live.ChatLive do
     |> Enum.find(&(&1.role == :user))
     |> case do
       nil -> "Untitled"
-      msg -> truncate(msg.text, 60)
+      %{text: text} when is_binary(text) and text != "" -> truncate(text, 60)
+      _ -> "[Image]"
     end
   end
 

@@ -483,6 +483,88 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 .btn-stop:hover { background: #ff2244; }
 
+/* ── Image attachment ──────────────────────────────────────────────────────── */
+
+#image-file-input { display: none; }
+
+.btn-attach {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 18px;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.btn-attach:hover { border-color: var(--accent); color: var(--accent); }
+.btn-attach--disabled { opacity: 0.4; pointer-events: none; }
+
+.input-bar.drag-over {
+  border-top-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.img-preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 0 10px;
+  max-width: 760px;
+}
+
+.img-preview-item {
+  position: relative;
+  display: inline-flex;
+}
+
+.img-preview-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+}
+
+.img-preview-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--error-text);
+  color: #fff;
+  border: none;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.msg-image {
+  max-width: 300px;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+}
+
 /* Spinner */
 .spinner {
   width: 16px;
