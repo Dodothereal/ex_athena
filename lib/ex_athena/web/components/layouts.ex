@@ -20,6 +20,12 @@ defmodule ExAthena.Web.Layouts do
             }
           }
         </script>
+        <script>
+          (function(){
+            var t = localStorage.getItem("ex_athena.theme")
+            if (t) document.documentElement.dataset.theme = t
+          })()
+        </script>
         <script type="module">
           import {Socket} from "phoenix"
           import {LiveSocket} from "phoenix_live_view"
@@ -112,7 +118,24 @@ defmodule ExAthena.Web.Layouts do
           }
 
           // ── LiveView hooks ─────────────────────────────────────────────────
+          const THEME_KEY = "ex_athena.theme"
+          const applyTheme = (light) => {
+            document.documentElement.dataset.theme = light ? "light" : "dark"
+            localStorage.setItem(THEME_KEY, light ? "light" : "dark")
+          }
+
           const Hooks = {
+            ThemeToggle: {
+              mounted() {
+                const input = this.el.querySelector("input[type=checkbox]")
+                const light = localStorage.getItem(THEME_KEY) === "light"
+                if (input) input.checked = light
+                document.documentElement.dataset.theme = light ? "light" : "dark"
+                if (input) {
+                  input.addEventListener("change", () => applyTheme(input.checked))
+                }
+              }
+            },
             ScrollToBottom: {
               mounted()  { this.scrollToBottom() },
               updated()  { this.scrollToBottom() },
