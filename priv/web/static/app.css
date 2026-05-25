@@ -18,6 +18,37 @@
   --radius:       6px;
 }
 
+[data-theme="light"] {
+  --bg:           #f5f6fa;
+  --sidebar-bg:   #eceef5;
+  --border:       #d0d5e2;
+  --border-light: #b8bfcf;
+  --text:         #1c1f2e;
+  --muted:        #6b7385;
+  --accent:       #0ea573;
+  --accent-dim:   #cef5e7;
+  --user-accent:  #2563eb;
+  --user-dim:     #dbeafe;
+  --tool-bg:      #edf2ed;
+  --tool-border:  #c2d4c2;
+  --error-text:   #dc2626;
+  --error-bg:     #fee2e2;
+}
+
+[data-theme="light"] .diff-header,
+[data-theme="light"] .process-header,
+[data-theme="light"] .file-header,
+[data-theme="light"] .diff-panel-header,
+[data-theme="light"] .git-panel-header,
+[data-theme="light"] .tool-result,
+[data-theme="light"] .diff-gap,
+[data-theme="light"] .md-fence-lang {
+  background: rgba(0,0,0,0.04);
+}
+
+[data-theme="light"] .modal-overlay { background: rgba(0,0,0,0.35); }
+[data-theme="light"] .modal         { box-shadow: 0 24px 64px rgba(0,0,0,0.2); }
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 14px; line-height: 1.6; }
@@ -578,6 +609,76 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* ── Theme toggle switch ─────────────────────────────────────────────────── */
+
+.theme-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.theme-icon {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  width: 16px;
+  text-align: center;
+}
+
+.theme-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+}
+
+.theme-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.theme-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.theme-track {
+  position: absolute;
+  inset: 0;
+  background: var(--border-light);
+  border-radius: 10px;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.theme-track::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 14px;
+  height: 14px;
+  background: var(--muted);
+  border-radius: 50%;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.theme-switch input:checked + .theme-track {
+  background: var(--accent);
+}
+
+.theme-switch input:checked + .theme-track::after {
+  transform: translateX(16px);
+  background: #fff;
 }
 
 /* Scrollbar */

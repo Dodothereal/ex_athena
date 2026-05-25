@@ -744,6 +744,14 @@ defmodule ExAthena.Web.Live.ChatLive do
           </div>
           <button class="btn-plus" phx-click="show_modal" title="New session">+</button>
         </div>
+        <div class="theme-row" id="theme-toggle" phx-hook="ThemeToggle">
+          <span class="theme-icon">☀</span>
+          <span class="theme-label">Light mode</span>
+          <label class="theme-switch">
+            <input type="checkbox" />
+            <span class="theme-track"></span>
+          </label>
+        </div>
 
         <%!-- Active project --%>
         <%= if @cwd do %>
