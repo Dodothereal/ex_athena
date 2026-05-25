@@ -153,16 +153,29 @@ defmodule ExAthena.Config do
   Flattens per-call overrides + application env for this provider into one
   keyword list. Providers use `Keyword.get/3` on the result.
   """
-  @spec provider_opts(module(), keyword()) :: keyword()
-  def provider_opts(provider_module, opts) do
-    app_env = provider_app_env(provider_module)
+  @spec provider_opts(module(), keyword(), atom() | nil) :: keyword()
+  def provider_opts(provider_module, opts, provider_atom \\ nil) do
+    atom = provider_atom || Keyword.get(opts, :provider)
+    app_env = provider_app_env(provider_module, atom)
 
     app_env
     |> Keyword.merge(opts)
     |> Keyword.delete(:provider)
   end
 
-  defp provider_app_env(provider_module) do
+  # Every built-in provider atom (:ollama, :openai, :gemini, :claude, …) maps to
+  # the SAME `ExAthena.Providers.ReqLLM` module. Accumulating config across all
+  # of a module's atoms leaks instance-specific keys — most damagingly
+  # `base_url` — from one provider into another (e.g. a configured Ollama
+  # `base_url` would be sent on a Gemini request, 404ing against the wrong host).
+  # When the concrete provider atom is known, read ONLY that atom's config.
+  defp provider_app_env(_provider_module, atom)
+       when is_atom(atom) and not is_nil(atom) and is_map_key(@builtin_providers, atom) do
+    Application.get_env(:ex_athena, atom, [])
+  end
+
+  # Unknown atom / custom module: fall back to module-wide accumulation.
+  defp provider_app_env(provider_module, _atom) do
     provider_module
     |> provider_atoms()
     |> Enum.flat_map(fn atom ->

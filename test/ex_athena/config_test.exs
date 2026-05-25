@@ -82,6 +82,39 @@ defmodule ExAthena.ConfigTest do
     end
   end
 
+  describe "provider_opts/3 atom scoping" do
+    test "does not leak a sibling provider's base_url across the shared ReqLLM module" do
+      # :ollama and :gemini both map to ExAthena.Providers.ReqLLM. A configured
+      # Ollama base_url must NOT bleed into a Gemini request (that 404s).
+      Application.put_env(:ex_athena, :ollama, base_url: "http://localhost:11434")
+      on_exit(fn -> Application.delete_env(:ex_athena, :ollama) end)
+
+      gemini_opts =
+        Config.provider_opts(ExAthena.Providers.ReqLLM, [provider: :gemini], :gemini)
+
+      assert Keyword.get(gemini_opts, :base_url) == nil
+
+      ollama_opts =
+        Config.provider_opts(ExAthena.Providers.ReqLLM, [provider: :ollama], :ollama)
+
+      assert Keyword.get(ollama_opts, :base_url) == "http://localhost:11434"
+    end
+
+    test "per-call opts still override the scoped provider env" do
+      Application.put_env(:ex_athena, :ollama, base_url: "http://localhost:11434")
+      on_exit(fn -> Application.delete_env(:ex_athena, :ollama) end)
+
+      opts =
+        Config.provider_opts(
+          ExAthena.Providers.ReqLLM,
+          [provider: :ollama, base_url: "http://example.test"],
+          :ollama
+        )
+
+      assert Keyword.get(opts, :base_url) == "http://example.test"
+    end
+  end
+
   describe "provider_module/1" do
     test "resolves built-in atoms" do
       assert ExAthena.Providers.ReqLLM = Config.provider_module(:ollama)

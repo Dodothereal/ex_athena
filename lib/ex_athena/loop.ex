@@ -585,7 +585,7 @@ defmodule ExAthena.Loop do
         tool_specs: tool_specs,
         capabilities: capabilities,
         provider_mod: provider_mod,
-        provider_opts: Config.provider_opts(provider_mod, opts),
+        provider_opts: Config.provider_opts(provider_mod, opts, raw_provider),
         request_template: request_template,
         permissions_opts: permissions_opts,
         hooks: Keyword.get(opts, :hooks, %{}) |> ImplicitDiagnostics.maybe_merge(),
