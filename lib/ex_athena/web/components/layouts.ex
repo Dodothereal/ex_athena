@@ -160,6 +160,58 @@ defmodule ExAthena.Web.Layouts do
               }
             },
 
+            ImageInput: {
+              mounted() {
+                const bar = this.el
+                const textarea = bar.querySelector("textarea")
+                const fileInput = bar.querySelector("#image-file-input")
+
+                const readAndPush = (file) => {
+                  if (!file || !file.type.startsWith("image/")) return
+                  const reader = new FileReader()
+                  reader.onload = (e) => {
+                    const [header, data] = e.target.result.split(",")
+                    const type = header.match(/:(.*?);/)[1]
+                    this.pushEvent("attach_image", {data, type})
+                  }
+                  reader.readAsDataURL(file)
+                }
+
+                if (textarea) {
+                  textarea.addEventListener("paste", (e) => {
+                    const items = Array.from(e.clipboardData?.items || [])
+                    const imgItems = items.filter(i => i.type.startsWith("image/"))
+                    if (imgItems.length > 0) {
+                      e.preventDefault()
+                      imgItems.forEach(i => readAndPush(i.getAsFile()))
+                    }
+                  })
+                }
+
+                bar.addEventListener("dragover", (e) => {
+                  e.preventDefault()
+                  bar.classList.add("drag-over")
+                })
+
+                bar.addEventListener("dragleave", (e) => {
+                  if (!bar.contains(e.relatedTarget)) bar.classList.remove("drag-over")
+                })
+
+                bar.addEventListener("drop", (e) => {
+                  e.preventDefault()
+                  bar.classList.remove("drag-over")
+                  Array.from(e.dataTransfer.files).forEach(readAndPush)
+                })
+
+                if (fileInput) {
+                  fileInput.addEventListener("change", (e) => {
+                    Array.from(e.target.files).forEach(readAndPush)
+                    e.target.value = ""
+                  })
+                }
+              }
+            },
+
             // Resizable split-pane divider inside .chat-main. Mouse-drag on
             // .chat-divider updates --left-w / --right-w CSS variables on
             // the .chat-main element (this.el). Ratio persists in
