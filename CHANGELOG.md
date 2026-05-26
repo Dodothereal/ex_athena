@@ -7,6 +7,31 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## v0.13.0 — Compaction budget sized from the model's real context window
+
+Compaction no longer assumes a static 200k-token window: ExAthena now sizes the
+budget from the model's actual context window, so compaction fires at the right
+point for both small local models and large hosted ones.
+
+### Added
+
+- **`capabilities/1` optional provider callback.** Providers can return a
+  model-aware capability map — given the per-call opts (including
+  `:req_llm_provider_tag` and `:model`) — so `max_tokens` reflects the model's
+  real context window instead of a static default. Backward-compatible: providers
+  that implement only `capabilities/0` are unaffected, as the loop falls back to
+  it via `function_exported?`.
+- **Runtime context-window detection for local models.** Resolves the real
+  context window for Ollama and llama.cpp at runtime, cached in ETS, feeding the
+  dynamic compaction budget. The bundled `ExAthena.Providers.ReqLLM` resolves
+  hosted-model windows from `llm_db`.
+
+### Changed
+
+- **Compaction budget is derived from the model's context window** rather than the
+  previous static 200k-token assumption, so compaction triggers appropriately
+  across models of very different sizes (#103).
+
 ## v0.12.2 — Provider base_url leak fix + Igniter/docs refresh
 
 Fixes a cross-provider `base_url` config leak and refreshes the Igniter
