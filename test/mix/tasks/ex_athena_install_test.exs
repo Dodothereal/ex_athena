@@ -48,7 +48,7 @@ defmodule Mix.Tasks.ExAthena.InstallTest do
     """)
   end
 
-  test "surfaces a notice that mentions v0.4 features" do
+  test "surfaces a notice that mentions core features" do
     igniter =
       test_project()
       |> Igniter.compose_task("ex_athena.install", [])
@@ -59,6 +59,18 @@ defmodule Mix.Tasks.ExAthena.InstallTest do
     assert notice =~ "AGENTS.md"
     assert notice =~ "Skills"
     assert notice =~ "Sessions"
+  end
+
+  test "notice points at the optional TUI/web front-ends and their deps" do
+    igniter =
+      test_project()
+      |> Igniter.compose_task("ex_athena.install", [])
+
+    notice = Enum.join(igniter.notices, "\n")
+    assert notice =~ "mix athena.chat"
+    assert notice =~ "mix athena.web"
+    assert notice =~ "optional"
+    assert notice =~ "ex_ratatui"
   end
 
   test "is idempotent — re-running preserves user changes" do

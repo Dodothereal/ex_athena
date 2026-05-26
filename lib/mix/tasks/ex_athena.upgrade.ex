@@ -20,6 +20,11 @@ if Code.ensure_loaded?(Igniter) do
         callers are unaffected. Also scaffolds `.exathena/.gitignore`
         so session JSONL logs and the file-history snapshots aren't
         accidentally committed.
+      * **`0.12.0`** — notices that the TUI/web deps (`ex_ratatui`,
+        `phoenix`, `phoenix_live_view`, `bandit`) became `optional`, so
+        consumers who use `mix athena.chat` / `mix athena.web` must add
+        the deps to their own `mix.exs`. Library-only consumers are
+        unaffected.
     """
 
     use Igniter.Mix.Task
@@ -45,7 +50,8 @@ if Code.ensure_loaded?(Igniter) do
       options = igniter.args.options
 
       upgrades = %{
-        "0.4.0" => [&upgrade_0_3_to_0_4/2]
+        "0.4.0" => [&upgrade_0_3_to_0_4/2],
+        "0.12.0" => [&upgrade_0_11_to_0_12/2]
       }
 
       Igniter.Upgrades.run(igniter, arguments.from, arguments.to, upgrades, options)
@@ -58,6 +64,45 @@ if Code.ensure_loaded?(Igniter) do
       |> ensure_exathena_gitignore()
       |> notice_tool_result_split()
       |> notice_new_features()
+    end
+
+    # ── 0.11.x → 0.12.0 migration ────────────────────────────────────
+
+    defp upgrade_0_11_to_0_12(igniter, _opts) do
+      notice_optional_frontend_deps(igniter)
+    end
+
+    # v0.12 marked the TUI/web stack `optional`, so the core library no
+    # longer pulls in ex_ratatui / Phoenix / Bandit transitively. That's
+    # a silent footgun for anyone who relied on `mix athena.chat` or
+    # `mix athena.web`: after the bump those tasks fail to start unless
+    # the consumer adds the deps to their own mix.exs. We can't add deps
+    # for them (we don't know if they want the TUI, the web UI, or
+    # neither), so we surface a notice with the exact dep list.
+    defp notice_optional_frontend_deps(igniter) do
+      Igniter.add_notice(igniter, """
+      ⚠ v0.12 packaging change — TUI/web deps are now optional.
+
+      `ex_ratatui`, `phoenix`, `phoenix_live_view`, and `bandit` are
+      marked `optional: true`, so the core agent loop no longer pulls
+      them in transitively — library consumers stay lean.
+
+      If you use the interactive front-ends, add the deps you need to
+      your own mix.exs:
+
+          # interactive terminal TUI — `mix athena.chat`
+          {:ex_ratatui, "~> 0.10"},
+
+          # Phoenix LiveView web UI — `mix athena.web`
+          {:phoenix, "~> 1.7"},
+          {:phoenix_live_view, "~> 1.0"},
+          {:bandit, "~> 1.5"},
+
+      Then run `mix deps.get`. If you only use ExAthena as a library
+      (via `ExAthena.run/2` / `Loop.run/2`), no action is needed.
+
+      See CHANGELOG.md (v0.12.0 → Packaging) for details.
+      """)
     end
 
     # Scaffold `.exathena/.gitignore` so users don't accidentally commit

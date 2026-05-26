@@ -7,7 +7,28 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
-## v0.12.2 — Provider config no longer leaks base_url across providers
+## v0.12.2 — Provider base_url leak fix + Igniter/docs refresh
+
+Fixes a cross-provider `base_url` config leak and refreshes the Igniter
+installer/upgrader and docs for v0.12 (no runtime changes beyond the config fix).
+
+### Added
+
+- **`0.12.0` Igniter upgrade migration.** `mix igniter.upgrade ex_athena` from a
+  pre-0.12 version now emits a notice that the TUI/web deps (`ex_ratatui`,
+  `phoenix`, `phoenix_live_view`, `bandit`) became `optional` in v0.12, so
+  consumers who rely on `mix athena.chat` / `mix athena.web` know to add the deps
+  to their own `mix.exs`. Library-only consumers are unaffected. Previously the
+  upgrader only carried the `0.4.0` migration, so the v0.12 packaging change was a
+  silent footgun.
+
+### Changed
+
+- **Installer notice covers the v0.12 front-ends.** `mix ex_athena.install`'s
+  post-install notice advertised only the v0.4 feature set; it now also points at
+  the optional `mix athena.chat` (TUI) and `mix athena.web` (web UI) front-ends
+  and the deps each requires. The moduledoc's dep-pin example is bumped from
+  `~> 0.4` to `~> 0.12`.
 
 ### Fixed
 
@@ -22,6 +43,12 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   concrete provider atom is now threaded from the loop and only that atom's
   config is read (unknown atoms / custom modules still fall back to module-wide
   accumulation); per-call opts still override (#99).
+- **Gemini guide now renders on hexdocs.** `guides/gemini.md` shipped in the
+  package and was linked from the README and other guides, but it was missing
+  from `docs.extras` — so those links broke and the guide never appeared in the
+  published docs. Added it to the docs extras.
+- **Stale dependency-version pins in the docs.** `guides/getting_started.md`
+  pinned `{:ex_athena, "~> 0.1"}`; corrected to `~> 0.12` to match the README.
 
 ## v0.12.1 — Optional TUI dep no longer breaks library consumers
 

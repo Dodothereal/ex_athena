@@ -5,7 +5,7 @@ if Code.ensure_loaded?(Igniter) do
     @moduledoc """
     Installs ExAthena into your project.
 
-    Run once after adding `{:ex_athena, "~> 0.4"}` to `mix.exs`, or via Igniter:
+    Run once after adding `{:ex_athena, "~> 0.12"}` to `mix.exs`, or via Igniter:
 
         mix igniter.install ex_athena
         mix ex_athena.install
@@ -69,8 +69,8 @@ if Code.ensure_loaded?(Igniter) do
         `config :ex_athena, default_provider: :claude` and provide
         ANTHROPIC_API_KEY in the environment.
 
-      v0.4 features available out of the box
-      ──────────────────────────────────────
+      Features available out of the box
+      ─────────────────────────────────
       • Memory: drop AGENTS.md at your project root for project-wide
         rules the agent honours on every turn.
       • Skills: drop SKILL.md files under .exathena/skills/<name>/
@@ -79,6 +79,16 @@ if Code.ensure_loaded?(Igniter) do
         with optional git-worktree isolation.
       • Sessions: pass `store: :jsonl` to ExAthena.Session for durable
         conversations with Session.resume/2.
+
+      Interactive front-ends (optional deps)
+      ──────────────────────────────────────
+      The TUI and web UI ship as optional deps so the core library stays
+      lean. Add the ones you want to your mix.exs, then run mix deps.get:
+      • `mix athena.chat` — full-screen terminal TUI. Needs
+        {:ex_ratatui, "~> 0.10"}.
+      • `mix athena.web` — Phoenix LiveView web UI. Needs
+        {:phoenix, "~> 1.7"}, {:phoenix_live_view, "~> 1.0"}, and
+        {:bandit, "~> 1.5"}.
 
       Full docs: https://hexdocs.pm/ex_athena.
       """)

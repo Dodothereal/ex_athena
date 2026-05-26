@@ -67,6 +67,34 @@ defmodule Mix.Tasks.ExAthena.UpgradeTest do
     end
   end
 
+  describe "0.11.0 -> 0.12.0 (optional TUI/web deps)" do
+    test "emits a notice that the TUI/web deps are now optional" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("ex_athena.upgrade", ["0.11.0", "0.12.0"])
+
+      notice = Enum.join(igniter.notices, "\n")
+      assert notice =~ "optional"
+      assert notice =~ "ex_ratatui"
+      assert notice =~ "phoenix"
+      assert notice =~ "phoenix_live_view"
+      assert notice =~ "bandit"
+      assert notice =~ "mix athena.chat"
+      assert notice =~ "mix athena.web"
+    end
+
+    test "does not emit the v0.4 tool-result-split notice" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("ex_athena.upgrade", ["0.11.0", "0.12.0"])
+
+      # The 0.4.0 migration must not run — its target falls outside
+      # `> 0.11.0 and <= 0.12.0`.
+      notice = Enum.join(igniter.notices, "\n")
+      refute notice =~ "tool-result split"
+    end
+  end
+
   describe "version routing (Igniter.Upgrades.run/5)" do
     test "0.4.0 -> 0.4.0 is a no-op (range is exclusive of from)" do
       igniter =
@@ -77,6 +105,16 @@ defmodule Mix.Tasks.ExAthena.UpgradeTest do
       # falls outside `> 0.4.0 and <= 0.4.0`.
       assert igniter.notices == []
       refute Map.has_key?(igniter.rewrite.sources, ".exathena/.gitignore")
+    end
+
+    test "0.12.0 -> 0.12.2 is a no-op (no migration in the exclusive range)" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("ex_athena.upgrade", ["0.12.0", "0.12.2"])
+
+      # The 0.12.0 migration's target is 0.12.0, which is outside
+      # `> 0.12.0 and <= 0.12.2`, so a within-0.12 bump emits nothing.
+      assert igniter.notices == []
     end
   end
 end

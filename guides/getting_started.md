@@ -10,7 +10,7 @@ mix igniter.install ex_athena
 
 The installer:
 
-- Adds `{:ex_athena, "~> 0.1"}` to your deps.
+- Adds `{:ex_athena, "~> 0.12"}` to your deps.
 - Writes `config :ex_athena, default_provider: :ollama` (and per-provider defaults) to `config/config.exs`.
 - Is idempotent — re-running preserves whatever you've already configured.
 
@@ -19,7 +19,7 @@ Alternatively, add the dep manually:
 ```elixir
 def deps do
   [
-    {:ex_athena, "~> 0.1"},
+    {:ex_athena, "~> 0.12"},
     {:claude_code, "~> 0.36"}  # only needed for the :claude provider
   ]
 end
