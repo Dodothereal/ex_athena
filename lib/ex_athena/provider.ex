@@ -35,5 +35,15 @@ defmodule ExAthena.Provider do
   @doc "Static capability map for this provider."
   @callback capabilities() :: Capabilities.t()
 
-  @optional_callbacks [stream: 3]
+  @doc """
+  Model-aware capability map. Receives the per-call opts (includes
+  `:req_llm_provider_tag` and `:model`) so the provider can resolve
+  the actual context window from a catalog (e.g. llm_db) and return
+  a precise `max_tokens` instead of a static default.
+
+  When not implemented, the loop falls back to `capabilities/0`.
+  """
+  @callback capabilities(opts :: keyword()) :: Capabilities.t()
+
+  @optional_callbacks [stream: 3, capabilities: 1]
 end

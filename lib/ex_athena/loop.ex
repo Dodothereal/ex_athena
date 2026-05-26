@@ -511,7 +511,11 @@ defmodule ExAthena.Loop do
 
     with :ok <- validate_tools(tool_specs) do
       capabilities =
-        provider_mod.capabilities()
+        if function_exported?(provider_mod, :capabilities, 1) do
+          provider_mod.capabilities(opts)
+        else
+          provider_mod.capabilities()
+        end
         |> Map.merge(Keyword.get(opts, :capabilities, %{}))
 
       memory_messages = resolve_memory(cwd, opts)

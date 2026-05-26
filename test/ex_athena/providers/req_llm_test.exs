@@ -4,7 +4,7 @@ defmodule ExAthena.Providers.ReqLLMTest do
   alias ExAthena.Config
   alias ExAthena.Providers.ReqLLM, as: Adapter
 
-  describe "capabilities/0" do
+  describe "capabilities/0 conservative fallback" do
     test "declares streaming + native tool-calls + json mode" do
       caps = Adapter.capabilities()
       assert caps.streaming
@@ -14,6 +14,56 @@ defmodule ExAthena.Providers.ReqLLMTest do
 
     test "declares structured_output: true" do
       assert Adapter.capabilities().structured_output == true
+    end
+
+    test "returns max_tokens: 8_192 as conservative fallback" do
+      assert Adapter.capabilities().max_tokens == 8_192
+    end
+  end
+
+  describe "capabilities/1 llm_db resolution" do
+    setup do
+      LLMDB.load()
+      :ok
+    end
+
+    test "with empty opts returns conservative fallback" do
+      assert Adapter.capabilities([]).max_tokens == 8_192
+    end
+
+    test "with provider tag but no model returns conservative fallback" do
+      opts = [req_llm_provider_tag: "openai"]
+      assert Adapter.capabilities(opts).max_tokens == 8_192
+    end
+
+    test "with a model not in llm_db returns conservative fallback" do
+      opts = [model: "custom-local:7b", req_llm_provider_tag: "openai"]
+      assert Adapter.capabilities(opts).max_tokens == 8_192
+    end
+
+    test "uses llm_db context for known openai model" do
+      opts = [model: "gpt-4o-mini", req_llm_provider_tag: "openai"]
+      caps = Adapter.capabilities(opts)
+      {:ok, model} = LLMDB.model(:openai, "gpt-4o-mini")
+      assert caps.max_tokens == model.limits[:context]
+    end
+
+    test "uses llm_db context for known anthropic model" do
+      opts = [model: "claude-opus-4-5", req_llm_provider_tag: "anthropic"]
+      caps = Adapter.capabilities(opts)
+      {:ok, model} = LLMDB.model(:anthropic, "claude-opus-4-5")
+      assert caps.max_tokens == model.limits[:context]
+      assert caps.max_tokens >= 100_000
+    end
+
+    test "preserves all other capability flags from capabilities/0" do
+      opts = [model: "gpt-4o-mini", req_llm_provider_tag: "openai"]
+      caps = Adapter.capabilities(opts)
+      assert caps.streaming == true
+      assert caps.native_tool_calls == true
+      assert caps.json_mode == true
+      assert caps.structured_output == true
+      assert caps.compact_tool_schemas == true
     end
   end
 

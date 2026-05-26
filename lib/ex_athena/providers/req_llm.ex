@@ -54,12 +54,28 @@ defmodule ExAthena.Providers.ReqLLM do
       streaming: true,
       json_mode: true,
       structured_output: true,
-      max_tokens: 200_000,
+      max_tokens: 8_192,
       supports_resume: false,
       supports_system_prompt: true,
       supports_temperature: true,
       compact_tool_schemas: true
     }
+  end
+
+  @impl ExAthena.Provider
+  def capabilities(opts) do
+    base = capabilities()
+
+    case resolve_llmdb_context(opts) do
+      {:ok, context} ->
+        %{base | max_tokens: context}
+
+      :error ->
+        case ExAthena.ContextWindow.lookup(opts) do
+          {:ok, context} -> %{base | max_tokens: context}
+          :error -> base
+        end
+    end
   end
 
   @impl ExAthena.Provider
@@ -755,5 +771,35 @@ defmodule ExAthena.Providers.ReqLLM do
 
   defp to_error(reason) do
     Error.new(:server_error, inspect(reason), provider: :req_llm, raw: reason)
+  end
+
+  # ── llm_db context resolution ─────────────────────────────────────
+
+  defp resolve_llmdb_context(opts) do
+    with tag when is_binary(tag) and tag != "" <- Keyword.get(opts, :req_llm_provider_tag),
+         {:ok, provider_atom} <- safe_to_atom(tag),
+         model_str when is_binary(model_str) and model_str != "" <-
+           Keyword.get(opts, :model, ""),
+         model_id = strip_provider_prefix(model_str, tag),
+         {:ok, %LLMDB.Model{limits: limits}} <- LLMDB.model(provider_atom, model_id),
+         context when is_integer(context) and context > 0 <- (limits || %{})[:context] do
+      {:ok, context}
+    else
+      _ -> :error
+    end
+  end
+
+  defp safe_to_atom(str) do
+    {:ok, String.to_existing_atom(str)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp strip_provider_prefix(model, tag) do
+    prefix = tag <> ":"
+
+    if String.starts_with?(model, prefix),
+      do: String.replace_prefix(model, prefix, ""),
+      else: model
   end
 end

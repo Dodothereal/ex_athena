@@ -17,6 +17,7 @@ defmodule ExAthena.Capabilities do
           optional(:max_tokens) => pos_integer(),
           optional(:supports_resume) => boolean(),
           optional(:supports_system_prompt) => boolean(),
-          optional(:supports_temperature) => boolean()
+          optional(:supports_temperature) => boolean(),
+          optional(:compact_tool_schemas) => boolean()
         }
 end

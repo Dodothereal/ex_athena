@@ -10,6 +10,36 @@ defmodule ExAthena.LoopTest do
   alias ExAthena.{Loop, Response}
   alias ExAthena.Messages.ToolCall
 
+  defmodule CapabilitiesV1Provider do
+    @behaviour ExAthena.Provider
+
+    def capabilities do
+      %{
+        native_tool_calls: true,
+        streaming: false,
+        json_mode: false,
+        structured_output: false,
+        max_tokens: 500
+      }
+    end
+
+    def capabilities(opts) do
+      parent = Process.get(:caps1_test_parent)
+      if parent, do: send(parent, {:caps1_called, opts})
+      %{capabilities() | max_tokens: 99_999}
+    end
+
+    def query(_request, _opts) do
+      {:ok,
+       %ExAthena.Response{
+         text: "caps1 response",
+         tool_calls: [],
+         finish_reason: :stop,
+         provider: :caps_v1
+       }}
+    end
+  end
+
   defp script(responses) do
     counter = :counters.new(1, [:atomics])
 
@@ -290,5 +320,37 @@ defmodule ExAthena.LoopTest do
              )
 
     assert result.text == "saw image"
+  end
+
+  test "loop dispatches capabilities/1 when provider exports it", %{dir: dir} do
+    Process.put(:caps1_test_parent, self())
+
+    assert {:ok, result} =
+             Loop.run("hi",
+               provider: CapabilitiesV1Provider,
+               model: "test-model",
+               cwd: dir,
+               tools: []
+             )
+
+    assert result.text == "caps1 response"
+    assert_received {:caps1_called, opts}
+    assert Keyword.get(opts, :model) == "test-model"
+  end
+
+  test "loop falls back to capabilities/0 for providers without capabilities/1", %{dir: dir} do
+    responses = [
+      %Response{text: "fallback ok", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, result} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [responder: script(responses)],
+               cwd: dir,
+               tools: []
+             )
+
+    assert result.text == "fallback ok"
   end
 end
