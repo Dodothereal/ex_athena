@@ -29,6 +29,10 @@ defmodule ExAthena.Result do
     * `:error_diagnostic` — structured validation failure payload when
       `finish_reason` is `:error_schema_validation`; `nil` otherwise. Shape:
       `%{schema: term(), received: String.t() | nil, violations: [%{reason: String.t()}]}`.
+    * `:deliverable` — the payload passed to the `finish` tool when
+      `finish_reason` is `:submitted`; `nil` for all other terminations.
+      Carries the model's declared output (summary, plan text, or any
+      value the `finish` tool received).
     * `:telemetry` — span metadata summarising OTel attrs for the run
       (Phase 4).
     * `:no_progress_snapshot` — the last few message pairs (assistant +
@@ -56,6 +60,7 @@ defmodule ExAthena.Result do
             finish_reason: :stop,
             halted_reason: nil,
             error_diagnostic: nil,
+            deliverable: nil,
             iterations: 0,
             tool_calls_made: 0,
             usage: nil,
@@ -72,6 +77,7 @@ defmodule ExAthena.Result do
           finish_reason: Terminations.subtype(),
           halted_reason: term() | nil,
           error_diagnostic: error_diagnostic() | nil,
+          deliverable: term() | nil,
           iterations: non_neg_integer(),
           tool_calls_made: non_neg_integer(),
           usage: usage() | nil,

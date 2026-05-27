@@ -445,7 +445,14 @@ defmodule ExAthena.Loop do
   defp to_result({:error, _} = err, _), do: err
 
   defp to_result(%State{} = state, started_at) do
-    finish_reason = state.meta[:finish_reason] || :stop
+    raw_finish_reason = state.meta[:finish_reason] || :stop
+
+    {finish_reason, deliverable, halted_reason} =
+      case {raw_finish_reason, state.halted_reason} do
+        {:error_halted, {:submitted, d}} -> {:submitted, d, nil}
+        {reason, hr} -> {reason, nil, hr}
+      end
+
     final_text = extract_final_text(state)
 
     duration_ms = System.monotonic_time(:millisecond) - started_at
@@ -454,8 +461,9 @@ defmodule ExAthena.Loop do
       text: final_text,
       messages: state.messages,
       finish_reason: finish_reason,
-      halted_reason: state.halted_reason,
+      halted_reason: halted_reason,
       error_diagnostic: state.meta[:error_diagnostic],
+      deliverable: deliverable,
       iterations: state.iterations,
       tool_calls_made: state.tool_calls_made,
       usage: state.budget && state.budget.usage,
@@ -468,6 +476,10 @@ defmodule ExAthena.Loop do
     }
 
     fire_terminal_hooks(state, result)
+
+    if finish_reason == :submitted do
+      Events.emit(state.on_event, {:submitted, deliverable})
+    end
 
     Events.emit(state.on_event, {:done, result})
 
@@ -491,7 +503,7 @@ defmodule ExAthena.Loop do
       result: result
     }
 
-    if reason == :stop do
+    if reason in [:stop, :submitted] do
       _ = ExAthena.Hooks.run_lifecycle(hooks, :Stop, payload)
     else
       _ = ExAthena.Hooks.run_lifecycle(hooks, :StopFailure, payload)

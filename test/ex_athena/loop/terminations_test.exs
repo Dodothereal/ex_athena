@@ -6,6 +6,7 @@ defmodule ExAthena.Loop.TerminationsTest do
   describe "all/0" do
     test "enumerates every known subtype" do
       assert :stop in Terminations.all()
+      assert :submitted in Terminations.all()
       assert :error_max_turns in Terminations.all()
       assert :error_max_budget_usd in Terminations.all()
       assert :error_during_execution in Terminations.all()
@@ -26,8 +27,13 @@ defmodule ExAthena.Loop.TerminationsTest do
       refute Terminations.error?(:stop)
     end
 
+    test ":submitted is success, not error" do
+      assert Terminations.success?(:submitted)
+      refute Terminations.error?(:submitted)
+    end
+
     test "every error subtype is error, not success" do
-      for subtype <- Terminations.all() -- [:stop] do
+      for subtype <- Terminations.all() -- [:stop, :submitted] do
         refute Terminations.success?(subtype), "#{subtype} should not be success"
         assert Terminations.error?(subtype), "#{subtype} should be error"
       end
@@ -37,6 +43,10 @@ defmodule ExAthena.Loop.TerminationsTest do
   describe "category/1" do
     test ":stop is :success" do
       assert Terminations.category(:stop) == :success
+    end
+
+    test ":submitted is :success" do
+      assert Terminations.category(:submitted) == :success
     end
 
     test "cap-tripping terminations are :capacity" do

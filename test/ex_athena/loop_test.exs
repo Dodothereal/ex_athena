@@ -353,4 +353,217 @@ defmodule ExAthena.LoopTest do
 
     assert result.text == "fallback ok"
   end
+
+  describe "finish tool — structured completion signal" do
+    test "model calling finish halts with :submitted and captures deliverable", %{dir: dir} do
+      responses = [
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "f1",
+              name: "finish",
+              arguments: %{"deliverable" => "Here is the plan."}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      ]
+
+      assert {:ok, result} =
+               Loop.run("plan the task",
+                 provider: :mock,
+                 mock: [responder: script(responses)],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Finish]
+               )
+
+      assert result.finish_reason == :submitted
+      assert result.deliverable == "Here is the plan."
+      assert result.halted_reason == nil
+    end
+
+    test ":submitted is a success termination" do
+      assert ExAthena.Result.success?(%ExAthena.Result{finish_reason: :submitted})
+      refute ExAthena.Result.error?(%ExAthena.Result{finish_reason: :submitted})
+    end
+
+    test "finish with summary field falls back when deliverable absent", %{dir: dir} do
+      responses = [
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "f2",
+              name: "finish",
+              arguments: %{"summary" => "Task accomplished."}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      ]
+
+      assert {:ok, result} =
+               Loop.run("do it",
+                 provider: :mock,
+                 mock: [responder: script(responses)],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Finish]
+               )
+
+      assert result.finish_reason == :submitted
+      assert result.deliverable == "Task accomplished."
+    end
+
+    test "finish with no args still produces :submitted with nil deliverable", %{dir: dir} do
+      responses = [
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{id: "f3", name: "finish", arguments: %{}}
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      ]
+
+      assert {:ok, result} =
+               Loop.run("done",
+                 provider: :mock,
+                 mock: [responder: script(responses)],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Finish]
+               )
+
+      assert result.finish_reason == :submitted
+      assert result.deliverable == nil
+    end
+
+    test "on_event callback receives {:submitted, deliverable} before {:done, result}", %{
+      dir: dir
+    } do
+      test_pid = self()
+
+      responses = [
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "f4",
+              name: "finish",
+              arguments: %{"deliverable" => "my output"}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      ]
+
+      on_event = fn event -> send(test_pid, {:event, event}) end
+
+      assert {:ok, result} =
+               Loop.run("go",
+                 provider: :mock,
+                 mock: [responder: script(responses)],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Finish],
+                 on_event: on_event
+               )
+
+      assert result.finish_reason == :submitted
+
+      events =
+        Stream.repeatedly(fn ->
+          receive do
+            {:event, e} -> e
+          after
+            0 -> nil
+          end
+        end)
+        |> Stream.take_while(&(&1 != nil))
+        |> Enum.to_list()
+
+      submitted_event = Enum.find(events, fn e -> match?({:submitted, _}, e) end)
+      done_event = Enum.find(events, fn e -> match?({:done, _}, e) end)
+
+      assert {:submitted, "my output"} = submitted_event
+      assert {:done, %ExAthena.Result{finish_reason: :submitted}} = done_event
+
+      submitted_idx = Enum.find_index(events, &match?({:submitted, _}, &1))
+      done_idx = Enum.find_index(events, &match?({:done, _}, &1))
+      assert submitted_idx < done_idx
+    end
+
+    test "finish tool in builtins — available without explicit tools list", %{dir: _dir} do
+      assert ExAthena.Tools.Finish in ExAthena.Tools.builtins()
+    end
+
+    test "finish tool in :plan_and_solve mode halts with :submitted", %{dir: dir} do
+      responses = [
+        # Planning phase — text only, no tool calls
+        %Response{
+          text: "My plan: step 1 then step 2.",
+          tool_calls: [],
+          finish_reason: :stop,
+          provider: :mock
+        },
+        # Executing phase — model calls finish
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "f_ps",
+              name: "finish",
+              arguments: %{"deliverable" => "plan_and_solve output"}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      ]
+
+      assert {:ok, result} =
+               Loop.run("plan the task",
+                 provider: :mock,
+                 mock: [responder: script(responses)],
+                 cwd: dir,
+                 mode: :plan_and_solve,
+                 tools: [ExAthena.Tools.Finish]
+               )
+
+      assert result.finish_reason == :submitted
+      assert result.deliverable == "plan_and_solve output"
+    end
+
+    test "finish tool in :reflexion mode halts with :submitted", %{dir: dir} do
+      responses = [
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "f_ref",
+              name: "finish",
+              arguments: %{"deliverable" => "reflexion output"}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      ]
+
+      assert {:ok, result} =
+               Loop.run("do the task",
+                 provider: :mock,
+                 mock: [responder: script(responses)],
+                 cwd: dir,
+                 mode: :reflexion,
+                 tools: [ExAthena.Tools.Finish]
+               )
+
+      assert result.finish_reason == :submitted
+      assert result.deliverable == "reflexion output"
+    end
+  end
 end

@@ -34,7 +34,8 @@ defmodule ExAthena.Tools do
     ExAthena.Tools.TodoWrite,
     ExAthena.Tools.PlanMode,
     ExAthena.Tools.SpawnAgent,
-    ExAthena.Tools.Lsp
+    ExAthena.Tools.Lsp,
+    ExAthena.Tools.Finish
   ]
 
   @doc "List the builtin tool modules."

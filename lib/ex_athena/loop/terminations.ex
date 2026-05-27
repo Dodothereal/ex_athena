@@ -12,6 +12,8 @@ defmodule ExAthena.Loop.Terminations do
   ## Subtypes
 
     * `:stop` — model returned text with no tool calls.
+    * `:submitted` — model explicitly called the `finish` tool to declare
+      completion. The `Result.deliverable` field carries the payload.
     * `:error_max_turns` — iteration cap reached.
     * `:error_max_budget_usd` — cost ceiling tripped.
     * `:error_during_execution` — unrecoverable tool / provider error.
@@ -37,6 +39,7 @@ defmodule ExAthena.Loop.Terminations do
 
   @type subtype ::
           :stop
+          | :submitted
           | :error_max_turns
           | :error_max_budget_usd
           | :error_during_execution
@@ -51,6 +54,7 @@ defmodule ExAthena.Loop.Terminations do
 
   @all_subtypes [
     :stop,
+    :submitted,
     :error_max_turns,
     :error_max_budget_usd,
     :error_during_execution,
@@ -71,11 +75,13 @@ defmodule ExAthena.Loop.Terminations do
   @doc "Is this a successful termination?"
   @spec success?(subtype()) :: boolean()
   def success?(:stop), do: true
+  def success?(:submitted), do: true
   def success?(_), do: false
 
   @doc "Is this an error termination?"
   @spec error?(subtype()) :: boolean()
   def error?(:stop), do: false
+  def error?(:submitted), do: false
   def error?(_), do: true
 
   @doc """
@@ -89,6 +95,7 @@ defmodule ExAthena.Loop.Terminations do
   """
   @spec category(subtype()) :: :success | :retryable | :capacity | :fatal
   def category(:stop), do: :success
+  def category(:submitted), do: :success
   def category(:error_max_turns), do: :capacity
   def category(:error_max_budget_usd), do: :capacity
   def category(:error_max_structured_output_retries), do: :capacity
