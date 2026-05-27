@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.12.2"
+  @version "0.14.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -147,7 +147,8 @@ defmodule ExAthena.MixProject do
           ExAthena.Tools.WebFetch,
           ExAthena.Tools.TodoWrite,
           ExAthena.Tools.PlanMode,
-          ExAthena.Tools.SpawnAgent
+          ExAthena.Tools.SpawnAgent,
+          ExAthena.Tools.Finish
         ],
         "Memory + Skills": [
           ExAthena.Memory,
