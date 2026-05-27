@@ -38,7 +38,7 @@ returns one of:
 
 ## Catalog
 
-`ExAthena.Hooks.events/0` enumerates all 17 supported events.
+`ExAthena.Hooks.events/0` enumerates all 18 supported events.
 
 ### Session lifecycle
 
@@ -53,12 +53,15 @@ returns one of:
 |---|---|---|
 | `:UserPromptSubmit` | Before the first iteration | `%{prompt, session_id, parent_session_id}` |
 | `:ChatParams` | Before every provider call inside `Modes.ReAct.iterate/1` | `%{request, session_id, messages}` |
+| `:PreIteration` | Before every `mode.iterate/1` call | `%{iteration, unproductive_iterations, fingerprint, session_id}` |
 | `:Stop` | Run finished cleanly (`finish_reason == :stop`) | `%{session_id, finish_reason: :stop, result}` |
 | `:StopFailure` | Run finished with any error finish_reason | `%{session_id, finish_reason, result}` |
 
 `UserPromptSubmit` honours `{:transform, prompt}` to rewrite the
 incoming user message; `ChatParams` honours `{:inject, msg}` to add
-context just before a provider call.
+context just before a provider call; `PreIteration` honours
+`{:inject, msg}` to nudge the model mid-loop and `{:halt, reason}` to
+stop cleanly before the iteration runs.
 
 ### Per-tool
 
@@ -129,6 +132,26 @@ end
 
 ExAthena.run("...", tools: :all, hooks: %{ChatParams: [inject_metadata]})
 ```
+
+### Inject a nudge after N stalled iterations
+
+```elixir
+nudge = fn %{unproductive_iterations: n}, _id ->
+  if n >= 2 do
+    {:inject,
+     ExAthena.Messages.user(
+       "You have enough context. Produce your deliverable now and call finish."
+     )}
+  else
+    :ok
+  end
+end
+
+ExAthena.run("...", tools: :all, hooks: %{PreIteration: [nudge]})
+```
+
+Return `{:halt, reason}` instead to stop the loop cleanly without
+producing the next iteration at all.
 
 ### Rewrite a user prompt with project conventions
 

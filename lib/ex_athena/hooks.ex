@@ -32,7 +32,7 @@ defmodule ExAthena.Hooks do
   ## Catalog of supported events
 
     * Session: `:SessionStart`, `:SessionEnd`
-    * Per-turn: `:UserPromptSubmit`, `:ChatParams`, `:Stop`, `:StopFailure`
+    * Per-turn: `:UserPromptSubmit`, `:ChatParams`, `:PreIteration`, `:Stop`, `:StopFailure`
     * Per-tool: `:PreToolUse`, `:PostToolUse`, `:PostToolUseFailure`,
       `:PermissionRequest`, `:PermissionDenied`, `:ToolDenied`
     * Subagent: `:SubagentStart`, `:SubagentStop`
@@ -67,6 +67,7 @@ defmodule ExAthena.Hooks do
       :SessionEnd,
       :UserPromptSubmit,
       :ChatParams,
+      :PreIteration,
       :Stop,
       :StopFailure,
       :PreToolUse,

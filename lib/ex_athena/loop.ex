@@ -144,21 +144,29 @@ defmodule ExAthena.Loop do
           {:ok, state} ->
             Events.emit(state.on_event, {:iteration, state.iterations})
 
-            case state.mode.iterate(state) do
-              {:continue, new_state} ->
-                new_state = update_progress_tracking(state, new_state)
-                loop(%{new_state | iterations: new_state.iterations + 1})
-
-              {:halt, new_state} ->
-                new_state
-
-              {:error, :error_prompt_too_long} ->
-                handle_prompt_too_long(state)
-
-              {:error, reason} ->
+            case run_pre_iteration_hook(state) do
+              {:halt, reason} ->
                 state
                 |> Map.put(:halted_reason, reason)
-                |> set_finish_reason(:error_during_execution)
+                |> set_finish_reason(:error_halted)
+
+              {:ok, state} ->
+                case state.mode.iterate(state) do
+                  {:continue, new_state} ->
+                    new_state = update_progress_tracking(state, new_state)
+                    loop(%{new_state | iterations: new_state.iterations + 1})
+
+                  {:halt, new_state} ->
+                    new_state
+
+                  {:error, :error_prompt_too_long} ->
+                    handle_prompt_too_long(state)
+
+                  {:error, reason} ->
+                    state
+                    |> Map.put(:halted_reason, reason)
+                    |> set_finish_reason(:error_during_execution)
+                end
             end
 
           {:error, reason} ->
@@ -355,6 +363,23 @@ defmodule ExAthena.Loop do
 
   defp set_finish_reason(%State{} = state, reason) do
     put_in(state.meta[:finish_reason], reason)
+  end
+
+  # ── PreIteration hook ─────────────────────────────────────────────
+
+  defp run_pre_iteration_hook(%State{} = state) do
+    payload = %{
+      iteration: state.iterations,
+      unproductive_iterations: state.unproductive_iterations,
+      fingerprint: state.last_tool_fingerprint || [],
+      session_id: state.session_id
+    }
+
+    case ExAthena.Hooks.run_lifecycle_with_outputs(state.hooks, :PreIteration, payload) do
+      %{halt: {:halt, reason}} -> {:halt, reason}
+      %{injects: [_ | _] = msgs} -> {:ok, %{state | messages: state.messages ++ msgs}}
+      _ -> {:ok, state}
+    end
   end
 
   # ── No-progress tracking ──────────────────────────────────────────

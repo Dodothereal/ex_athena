@@ -49,6 +49,7 @@ defmodule ExAthena.Loop.HooksModesTest do
       assert :PermissionDenied in events
       assert :SubagentStart in events
       assert :SubagentStop in events
+      assert :PreIteration in events
       assert :PreCompact in events
       assert :PreCompactStage in events
       assert :PostCompact in events
@@ -288,6 +289,179 @@ defmodule ExAthena.Loop.HooksModesTest do
         )
 
       assert_receive {^ref, :post_tool_use_failure, "read"}
+    end
+  end
+
+  describe "PreIteration hook" do
+    test "catalog includes :PreIteration" do
+      assert :PreIteration in ExAthena.Hooks.events()
+    end
+
+    test "fires every iteration with correct payload" do
+      parent = self()
+      ref = make_ref()
+
+      hooks = %{
+        PreIteration: [
+          fn p, _ ->
+            send(parent, {ref, :pre_iter, p})
+            :ok
+          end
+        ]
+      }
+
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn _req ->
+        :counters.add(counter, 1, 1)
+
+        case :counters.get(counter, 1) do
+          n when n < 3 ->
+            %Response{
+              text: "step #{n}",
+              tool_calls: [
+                %ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "/f#{n}"}}
+              ],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          _ ->
+            %Response{text: "done", finish_reason: :stop, provider: :mock}
+        end
+      end
+
+      {:ok, _} =
+        Loop.run("go",
+          provider: :mock,
+          mock: [responder: responder],
+          tools: [ExAthena.Tools.Read],
+          hooks: hooks,
+          memory: false
+        )
+
+      assert_receive {^ref, :pre_iter, %{iteration: 0, unproductive_iterations: 0}}
+      assert_receive {^ref, :pre_iter, %{iteration: 1}}
+      assert_receive {^ref, :pre_iter, %{iteration: 2}}
+    end
+
+    test "{:inject, msg} adds a message before the model sees the next turn" do
+      injected = %Message{
+        role: :system,
+        content: "nudge from PreIteration",
+        name: "pre-iter-inject"
+      }
+
+      hooks = %{
+        PreIteration: [fn _p, _ -> {:inject, injected} end]
+      }
+
+      {:ok, result} =
+        Loop.run("hi",
+          provider: :mock,
+          mock: [responder: single_text("ok")],
+          tools: [],
+          hooks: hooks,
+          memory: false
+        )
+
+      assert Enum.any?(result.messages, fn m ->
+               m.role == :system and m.name == "pre-iter-inject"
+             end)
+    end
+
+    test "{:halt, reason} stops with finish_reason: :error_halted" do
+      hooks = %{
+        PreIteration: [
+          fn %{iteration: iter}, _ ->
+            if iter == 1, do: {:halt, :my_reason}, else: :ok
+          end
+        ]
+      }
+
+      responder = fn _req ->
+        %Response{
+          text: "thinking",
+          tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "/x"}}],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      end
+
+      {:ok, result} =
+        Loop.run("hi",
+          provider: :mock,
+          mock: [responder: responder],
+          tools: [ExAthena.Tools.Read],
+          hooks: hooks,
+          memory: false
+        )
+
+      assert result.finish_reason == :error_halted
+      assert result.halted_reason == :my_reason
+    end
+
+    test ":ok / :continue allows normal completion" do
+      hooks = %{
+        PreIteration: [fn _p, _ -> :ok end]
+      }
+
+      {:ok, result} =
+        Loop.run("hi",
+          provider: :mock,
+          mock: [responder: single_text("done")],
+          tools: [],
+          hooks: hooks,
+          memory: false
+        )
+
+      assert result.finish_reason == :stop
+    end
+
+    test "unproductive_iterations increments in payload and hook can halt before :error_no_progress" do
+      parent = self()
+      ref = make_ref()
+
+      hooks = %{
+        PreIteration: [
+          fn p, _ ->
+            send(parent, {ref, :pre_iter, p})
+
+            if p.unproductive_iterations >= 2 do
+              {:halt, :stalled}
+            else
+              :ok
+            end
+          end
+        ]
+      }
+
+      responder = fn _req ->
+        %Response{
+          text: "",
+          tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "/same"}}],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      end
+
+      {:ok, result} =
+        Loop.run("hi",
+          provider: :mock,
+          mock: [responder: responder],
+          tools: [ExAthena.Tools.Read],
+          hooks: hooks,
+          memory: false,
+          max_unproductive_iterations: 5
+        )
+
+      assert result.finish_reason == :error_halted
+      assert result.halted_reason == :stalled
+
+      assert_receive {^ref, :pre_iter, %{unproductive_iterations: 0}}
+      assert_receive {^ref, :pre_iter, %{unproductive_iterations: 0}}
+      assert_receive {^ref, :pre_iter, %{unproductive_iterations: 1}}
+      assert_receive {^ref, :pre_iter, %{unproductive_iterations: 2}}
     end
   end
 
