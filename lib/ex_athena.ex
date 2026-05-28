@@ -65,9 +65,23 @@ defmodule ExAthena do
 
   Consumers can also pass a custom module that implements `ExAthena.Provider`, or
   define JSON-file providers as described above.
+
+  ## Request queue
+
+  An opt-in semaphore caps concurrent in-flight requests per provider. When
+  enabled, `query/2`, `stream/3`, `run/2`, and `extract_structured/2` all
+  acquire a slot before calling the provider and release it on every exit path
+  (success, error, or exception).
+
+  Enable via:
+
+      config :ex_athena, :request_queue, enabled: true
+
+  Pass `queue: false` on any individual call to bypass the queue for that call.
   """
 
-  alias ExAthena.{Config, Request, Response}
+  alias ExAthena.{Config, Request, Response, Telemetry}
+  alias ExAthena.RequestQueue
 
   @doc """
   One-shot inference. Returns the final `Response` struct with the full text.
@@ -92,12 +106,22 @@ defmodule ExAthena do
       images or `%{url: String.t()}` for remote image URLs. Merged into the
       user message created from `prompt`, or the last user message in
       `:messages` when no prompt is given.
+    * `:queue` — set to `false` to bypass the request queue for this call
+      (default `true`). Has no effect when the request queue is not enabled.
+    * `:queue_timeout` — milliseconds to wait for a queue slot before returning
+      `{:error, :request_queue_timeout}` (default 5_000).
   """
   @spec query(String.t() | nil, keyword()) :: {:ok, Response.t()} | {:error, term()}
   def query(prompt \\ nil, opts \\ []) do
+    {queue, opts} = Keyword.pop(opts, :queue, true)
+    {timeout, opts} = Keyword.pop(opts, :queue_timeout, 5_000)
+    provider_atom = peek_provider_atom(opts)
     {provider_mod, opts} = Config.pop_provider!(opts)
     request = Request.new(prompt, opts)
-    provider_mod.query(request, Config.provider_opts(provider_mod, opts))
+
+    with_request_queue(provider_atom, queue, timeout, fn ->
+      provider_mod.query(request, Config.provider_opts(provider_mod, opts))
+    end)
   end
 
   @doc """
@@ -108,32 +132,62 @@ defmodule ExAthena do
   and its return value is ignored. Callbacks must not block the caller; if you
   need to do expensive work per-delta, hand off to a `Task`.
 
-  Options are the same as `query/2`, including `:images` and the `:provider`
-  string form for JSON-defined providers.
+  Options are the same as `query/2`, including `:images`, `:queue`,
+  `:queue_timeout`, and the `:provider` string form for JSON-defined providers.
+  When the request queue is enabled, the slot is held for the full duration of
+  the stream and released on every exit path (success, error, or callback
+  exception).
   """
   @spec stream(String.t() | nil, function(), keyword()) ::
           {:ok, Response.t()} | {:error, term()}
   def stream(prompt \\ nil, callback, opts \\ []) when is_function(callback, 1) do
+    {queue, opts} = Keyword.pop(opts, :queue, true)
+    {timeout, opts} = Keyword.pop(opts, :queue_timeout, 5_000)
+    provider_atom = peek_provider_atom(opts)
     {provider_mod, opts} = Config.pop_provider!(opts)
     request = Request.new(prompt, opts)
-    provider_mod.stream(request, callback, Config.provider_opts(provider_mod, opts))
+
+    with_request_queue(provider_atom, queue, timeout, fn ->
+      provider_mod.stream(request, callback, Config.provider_opts(provider_mod, opts))
+    end)
   end
 
   @doc """
   Run a multi-turn agent loop: infer → tool call → execute → replay → repeat.
 
+  Accepts `:queue` and `:queue_timeout` options (see `query/2`). The slot is
+  held for the entire loop run.
+
   See `ExAthena.Loop.run/2` for the full option list.
   """
   @spec run(String.t() | nil, keyword()) :: {:ok, map()} | {:error, term()}
-  defdelegate run(prompt, opts \\ []), to: ExAthena.Loop
+  def run(prompt, opts \\ []) do
+    {queue, opts} = Keyword.pop(opts, :queue, true)
+    {timeout, opts} = Keyword.pop(opts, :queue_timeout, 5_000)
+    provider_atom = peek_provider_atom(opts)
+
+    with_request_queue(provider_atom, queue, timeout, fn ->
+      ExAthena.Loop.run(prompt, opts)
+    end)
+  end
 
   @doc """
   One-shot structured extraction. Returns a validated JSON map.
 
+  Accepts `:queue` and `:queue_timeout` options (see `query/2`).
+
   See `ExAthena.Structured.extract/2` for the full option list.
   """
   @spec extract_structured(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  defdelegate extract_structured(prompt, opts), to: ExAthena.Structured, as: :extract
+  def extract_structured(prompt, opts) do
+    {queue, opts} = Keyword.pop(opts, :queue, true)
+    {timeout, opts} = Keyword.pop(opts, :queue_timeout, 5_000)
+    provider_atom = peek_provider_atom(opts)
+
+    with_request_queue(provider_atom, queue, timeout, fn ->
+      ExAthena.Structured.extract(prompt, opts)
+    end)
+  end
 
   @doc """
   Returns the capabilities map for a provider.
@@ -159,4 +213,71 @@ defmodule ExAthena do
   """
   @spec supports_multimodal?() :: true
   def supports_multimodal?, do: true
+
+  # ---------------------------------------------------------------------------
+  # Request queue helpers
+  # ---------------------------------------------------------------------------
+
+  defp peek_provider_atom(opts) do
+    Keyword.get(opts, :provider) || Application.get_env(:ex_athena, :default_provider)
+  end
+
+  defp with_request_queue(_provider_atom, false, _timeout, fun), do: fun.()
+
+  defp with_request_queue(provider_atom, true, timeout, fun)
+       when is_atom(provider_atom) and not is_nil(provider_atom) do
+    if Config.request_queue_enabled?() do
+      start_ms = System.monotonic_time(:millisecond)
+      Telemetry.event([:ex_athena, :request_queue, :wait], %{}, %{provider: provider_atom})
+
+      case do_acquire(provider_atom, timeout) do
+        :ok ->
+          wait_ms = System.monotonic_time(:millisecond) - start_ms
+
+          Telemetry.event(
+            [:ex_athena, :request_queue, :acquired],
+            %{wait_ms: wait_ms, depth: RequestQueue.depth(provider_atom)},
+            %{provider: provider_atom}
+          )
+
+          try do
+            fun.()
+          after
+            RequestQueue.release(provider_atom)
+
+            Telemetry.event(
+              [:ex_athena, :request_queue, :released],
+              %{depth: RequestQueue.depth(provider_atom)},
+              %{provider: provider_atom}
+            )
+          end
+
+        {:error, :timeout} ->
+          waited_ms = System.monotonic_time(:millisecond) - start_ms
+
+          Telemetry.event(
+            [:ex_athena, :request_queue, :timeout],
+            %{waited_ms: waited_ms},
+            %{provider: provider_atom}
+          )
+
+          {:error, :request_queue_timeout}
+      end
+    else
+      fun.()
+    end
+  end
+
+  # Provider is nil or a non-atom value — fall through without queue
+  defp with_request_queue(_provider_atom, true, _timeout, fun), do: fun.()
+
+  defp do_acquire(provider_atom, timeout) do
+    try do
+      RequestQueue.acquire(provider_atom, timeout)
+    catch
+      :exit, _ ->
+        RequestQueue.cancel_acquire(provider_atom)
+        {:error, :timeout}
+    end
+  end
 end

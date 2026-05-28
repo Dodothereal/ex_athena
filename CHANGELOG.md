@@ -9,6 +9,23 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Request queue wired into all public entry points.** `query/2`, `stream/3`,
+  `run/2`, and `extract_structured/2` now acquire a semaphore slot before
+  calling the provider and release it on every exit path — including success,
+  error return, and exception propagation. For streaming, the slot is held for
+  the full duration of the stream. Opt out per call with `queue: false`; set
+  `queue_timeout: ms` to override the default 5 s acquisition timeout. No
+  behaviour change when `config :ex_athena, :request_queue, enabled: true` is
+  not set (opt-in, default disabled).
+
+- **Request queue telemetry.** Four new events emitted around slot
+  acquire/release: `[:ex_athena, :request_queue, :wait]`,
+  `[:ex_athena, :request_queue, :acquired]`,
+  `[:ex_athena, :request_queue, :released]`, and
+  `[:ex_athena, :request_queue, :timeout]`. All carry `%{provider: atom}`
+  metadata and conform to the existing telemetry shape so they wire directly
+  into OpenTelemetry.
+
 - **Runtime JSON provider config + example providers (#111).** Drop a `*.json`
   file into `~/.config/ex_athena/providers/` to define a named provider at
   startup with no changes to `config.exs`. The new `ExAthena.ProviderRegistry`

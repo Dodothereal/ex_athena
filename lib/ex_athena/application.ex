@@ -52,8 +52,15 @@ defmodule ExAthena.Application do
         children
       end
 
-    if Application.get_env(:ex_athena, :enable_mcp, true) do
-      children ++ [ExAthena.Mcp.Supervisor]
+    children =
+      if Application.get_env(:ex_athena, :enable_mcp, true) do
+        children ++ [ExAthena.Mcp.Supervisor]
+      else
+        children
+      end
+
+    if Application.get_env(:ex_athena, :request_queue, [])[:enabled] do
+      children ++ [ExAthena.RequestQueue.Supervisor]
     else
       children
     end

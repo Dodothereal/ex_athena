@@ -38,7 +38,47 @@ defmodule ExAthena.Config do
 
   You may also pass any module that implements `ExAthena.Provider` directly, or a
   string name matching a JSON-defined provider.
+
+  ## Request queue
+
+  `ExAthena.RequestQueue` is an opt-in semaphore that caps concurrent in-flight
+  requests per provider. Enable it with:
+
+      config :ex_athena, :request_queue, enabled: true
+
+  Per-provider depth limits can be set inside provider config blocks:
+
+      config :ex_athena, :ollama, request_queue: [max_depth: 3]
+
+  A global `max_depth` applies to all providers that don't have a per-provider
+  override:
+
+      config :ex_athena, :request_queue, enabled: true, max_depth: 5
+
+  Built-in defaults (used when no application config is set):
+
+  | Provider | Default max_depth |
+  |---|---|
+  | `:ollama` | 2 |
+  | `:llamacpp` | 1 |
+  | `:exo` | 3 |
+  | `:openai`, `:anthropic`, `:claude`, `:gemini`, `:openrouter`, `:req_llm` | 10 |
+  | unknown | 10 |
   """
+
+  @request_queue_defaults %{
+    ollama: 2,
+    llamacpp: 1,
+    exo: 3,
+    openai: 10,
+    openai_compatible: 10,
+    anthropic: 10,
+    claude: 10,
+    gemini: 10,
+    openrouter: 10,
+    req_llm: 10,
+    mock: 10
+  }
 
   @builtin_providers %{
     ollama: ExAthena.Providers.ReqLLM,
@@ -203,6 +243,45 @@ defmodule ExAthena.Config do
     @builtin_providers
     |> Enum.filter(fn {_atom, mod} -> mod == provider_module end)
     |> Enum.map(&elem(&1, 0))
+  end
+
+  @doc """
+  Return the maximum concurrent request depth for `provider_atom`.
+
+  Resolution order:
+    1. `config :ex_athena, provider_atom, request_queue: [max_depth: N]`
+    2. `config :ex_athena, :request_queue, max_depth: N`
+    3. Built-in per-provider default (ollama: 2, llamacpp: 1, exo: 3, cloud: 10).
+    4. `10` for unrecognised providers.
+  """
+  @spec request_queue_max_depth(atom()) :: pos_integer()
+  def request_queue_max_depth(provider_atom) when is_atom(provider_atom) do
+    per_provider =
+      :ex_athena
+      |> Application.get_env(provider_atom, [])
+      |> Keyword.get(:request_queue, [])
+      |> Keyword.get(:max_depth)
+
+    global =
+      :ex_athena
+      |> Application.get_env(:request_queue, [])
+      |> Keyword.get(:max_depth)
+
+    per_provider || global || Map.get(@request_queue_defaults, provider_atom, 10)
+  end
+
+  @doc """
+  Return `true` when the request queue feature is enabled via application config.
+
+  Opt-in: defaults to `false`. Enable with:
+
+      config :ex_athena, :request_queue, enabled: true
+  """
+  @spec request_queue_enabled?() :: boolean()
+  def request_queue_enabled? do
+    :ex_athena
+    |> Application.get_env(:request_queue, [])
+    |> Keyword.get(:enabled, false)
   end
 
   defp get_provider_env(provider_module, key) do

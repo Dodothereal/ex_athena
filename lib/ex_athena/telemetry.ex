@@ -28,6 +28,16 @@ defmodule ExAthena.Telemetry do
       — a subagent was spawned / returned.
     * `[:ex_athena, :structured_retry]` — a structured-output repair
       attempt fired. Measurements include `:attempt`.
+    * `[:ex_athena, :request_queue, :wait]` — a call is about to attempt
+      acquiring a request-queue slot. Metadata includes `:provider`.
+    * `[:ex_athena, :request_queue, :acquired]` — a slot was granted.
+      Metadata includes `:provider`.
+    * `[:ex_athena, :request_queue, :released]` — a slot was released after
+      the call completed (success, error, or exception). Metadata includes
+      `:provider`.
+    * `[:ex_athena, :request_queue, :timeout]` — acquiring a slot timed out;
+      the call returns `{:error, :request_queue_timeout}`. Metadata includes
+      `:provider`.
 
   ## GenAI semconv metadata
 
