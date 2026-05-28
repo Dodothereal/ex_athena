@@ -87,6 +87,11 @@ defmodule ExAthena.Chat.Session do
     %{session | mode: mode}
   end
 
+  @spec set_provider(t(), atom()) :: t()
+  def set_provider(%__MODULE__{} = session, provider) when is_atom(provider) do
+    %{session | provider: provider}
+  end
+
   @doc """
   Extract every `ToolResult` from the session's message history, ordered
   most-recent first.

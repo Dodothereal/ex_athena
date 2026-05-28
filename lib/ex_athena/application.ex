@@ -42,8 +42,16 @@ defmodule ExAthena.Application do
         [
           ExAthena.Sessions.Stores.InMemory,
           ExAthena.Sessions.Stores.ETS,
-          ExAthena.ContextWindow
+          ExAthena.ContextWindow,
+          ExAthena.ModelDiscovery
         ]
+
+    children =
+      if Application.get_env(:ex_athena, :enable_provider_registry, true) do
+        children ++ [ExAthena.ProviderRegistry]
+      else
+        children
+      end
 
     children =
       if Application.get_env(:ex_athena, :enable_lsp, true) do

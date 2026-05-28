@@ -72,6 +72,7 @@ defmodule ExAthena.Chat.Tui.Runner do
     base
     |> maybe_put_cwd(session.cwd)
     |> apply_default_base_url(session.provider)
+    |> apply_provider_spec_extra_headers(session.provider)
   end
 
   defp maybe_put_cwd(opts, cwd) when is_binary(cwd) and cwd != "",
@@ -102,4 +103,22 @@ defmodule ExAthena.Chat.Tui.Runner do
 
   defp provider_base_url_defaults(:llamacpp), do: {:llamacpp, "http://localhost:8080"}
   defp provider_base_url_defaults(_), do: {:ollama, "http://localhost:11434"}
+
+  defp apply_provider_spec_extra_headers(opts, provider) when is_atom(provider) do
+    case lookup_registry_spec(provider) do
+      {:ok, %{extra_headers: headers}} when headers != %{} ->
+        existing = Keyword.get(opts, :extra_headers, %{})
+        Keyword.put(opts, :extra_headers, Map.merge(existing, headers))
+
+      _ ->
+        opts
+    end
+  end
+
+  defp lookup_registry_spec(provider) when is_atom(provider) do
+    case Process.whereis(ExAthena.ProviderRegistry) do
+      nil -> :error
+      _pid -> ExAthena.ProviderRegistry.lookup(provider)
+    end
+  end
 end

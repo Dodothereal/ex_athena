@@ -1,8 +1,16 @@
 {
   "name": "together",
   "adapter": "req_llm",
-  "req_llm_provider_tag": "openai",
+  "req_llm_provider_tag": "together",
   "base_url": "https://api.together.xyz/v1",
   "api_key_env": "TOGETHER_API_KEY",
-  "default_model": "meta-llama/Llama-3-70b-chat-hf"
+  "default_model": "meta-llama/Llama-3-70b-chat-hf",
+  "model_discovery": {
+    "url": "https://api.together.xyz/v1/models",
+    "path": "id",
+    "ttl_seconds": 300
+  },
+  "metadata": {
+    "note": "Copy to ~/.config/ex_athena/providers/together.json and set TOGETHER_API_KEY"
+  }
 }

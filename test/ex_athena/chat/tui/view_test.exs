@@ -302,6 +302,56 @@ defmodule ExAthena.Chat.Tui.ViewTest do
     end
   end
 
+  describe "build_frame/2 — provider popup" do
+    setup do
+      session = Session.new(provider: :ollama, model: "qwen3:8b", mode: :react)
+      frame = %Frame{width: 80, height: 24}
+      {:ok, session: session, frame: frame}
+    end
+
+    test "when state.popup is {:provider, items, idx}, a Popup widget is overlaid with display names",
+         %{session: session, frame: frame} do
+      items = [{"ollama", "Ollama"}, {"my-openai", "My OpenAI"}]
+
+      state =
+        session
+        |> State.new()
+        |> State.open_popup({:provider, items})
+
+      widgets = View.build_frame(state, frame)
+
+      popup =
+        Enum.find(widgets, fn
+          {%Popup{}, _} -> true
+          _ -> false
+        end)
+
+      assert popup, "expected a Popup widget when provider popup is open"
+      {%Popup{content: content, block: block}, _rect} = popup
+      assert %List{items: list_items, selected: 0} = content
+      # Should show display names, not raw names
+      assert "Ollama" in list_items
+      assert "My OpenAI" in list_items
+      refute "ollama" in list_items
+      refute "my-openai" in list_items
+      assert block && block.title =~ "provider"
+    end
+
+    test "footer shows API key hint when api_key_pending is true",
+         %{session: session, frame: frame} do
+      state =
+        session
+        |> State.new()
+        |> Map.put(:api_key_pending, true)
+
+      widgets = View.build_frame(state, frame)
+      {%Paragraph{text: text}, _} = find_footer(widgets, frame)
+
+      assert text =~ "API key"
+      assert text =~ "Enter"
+    end
+  end
+
   describe "build_frame/2 — CellSession snapshot integration" do
     test "the widget list renders without panicking and the header text reaches the buffer" do
       session = Session.new(provider: :ollama, model: "llama3.1", mode: :react)

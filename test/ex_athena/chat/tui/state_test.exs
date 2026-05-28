@@ -735,6 +735,73 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
+  describe "provider popup" do
+    test "open_popup/2 opens a :provider popup with {name, display_name} tuples" do
+      items = [{"ollama", "ollama"}, {"my-openai", "My OpenAI"}]
+
+      state =
+        Session.new()
+        |> State.new()
+        |> State.open_popup({:provider, items})
+
+      assert state.popup == {:provider, items, 0}
+    end
+
+    test "current_popup_selection/1 returns the name (not display_name) from a provider tuple" do
+      items = [{"ollama", "Ollama"}, {"my-openai", "My OpenAI"}]
+
+      state =
+        Session.new()
+        |> State.new()
+        |> State.open_popup({:provider, items})
+
+      assert State.current_popup_selection(state) == "ollama"
+
+      moved = State.move_popup_selection(state, +1)
+      assert State.current_popup_selection(moved) == "my-openai"
+    end
+
+    test "current_popup_selection/1 returns nil for empty provider popup" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.open_popup({:provider, []})
+
+      assert State.current_popup_selection(state) == nil
+    end
+  end
+
+  describe "set_provider/2" do
+    test "updates the session provider" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.set_provider(:openai)
+
+      assert state.session.provider == :openai
+    end
+  end
+
+  describe "set_api_key/2" do
+    test "sets the api_key and clears api_key_pending" do
+      state =
+        Session.new()
+        |> State.new()
+        |> Map.put(:api_key_pending, true)
+        |> State.set_api_key("sk-test-key")
+
+      assert state.api_key == "sk-test-key"
+      assert state.api_key_pending == false
+    end
+
+    test "api_key and api_key_pending default to nil/false in new state" do
+      state = Session.new() |> State.new()
+      assert state.api_key == nil
+      assert state.api_key_pending == false
+      assert state.pending_message == nil
+    end
+  end
+
   describe "details pane" do
     test ":tool_call appends a header + full pretty-printed args to details" do
       tc = %ToolCall{id: "1", name: "Read", arguments: %{"path" => "lib/foo.ex"}}

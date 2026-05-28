@@ -38,6 +38,7 @@ defmodule ExAthena.Chat.Tui.State do
           nil
           | {:model, [String.t()], non_neg_integer()}
           | {:mode, [atom()], non_neg_integer()}
+          | {:provider, [{String.t(), String.t()}], non_neg_integer()}
 
   defstruct session: nil,
             input_ref: nil,
@@ -102,7 +103,10 @@ defmodule ExAthena.Chat.Tui.State do
             diff_mode: :inline,
             footer: @default_footer,
             prior_log_level: :info,
-            run_task: nil
+            run_task: nil,
+            api_key: nil,
+            api_key_pending: false,
+            pending_message: nil
 
   @type autocomplete ::
           nil | %{required(:items) => [String.t()], required(:idx) => non_neg_integer()}
@@ -136,7 +140,10 @@ defmodule ExAthena.Chat.Tui.State do
           diff_mode: :inline | :side_by_side,
           footer: String.t(),
           prior_log_level: atom(),
-          run_task: pid() | nil
+          run_task: pid() | nil,
+          api_key: String.t() | nil,
+          api_key_pending: boolean(),
+          pending_message: String.t() | nil
         }
 
   @spec new(Session.t()) :: t()
@@ -417,6 +424,16 @@ defmodule ExAthena.Chat.Tui.State do
     %{state | session: Session.set_mode(session, mode)}
   end
 
+  @spec set_provider(t(), atom()) :: t()
+  def set_provider(%__MODULE__{session: session} = state, provider) when is_atom(provider) do
+    %{state | session: Session.set_provider(session, provider)}
+  end
+
+  @spec set_api_key(t(), String.t()) :: t()
+  def set_api_key(%__MODULE__{} = state, key) when is_binary(key) do
+    %{state | api_key: key, api_key_pending: false}
+  end
+
   @spec clear_session(t()) :: t()
   def clear_session(%__MODULE__{session: session} = state) do
     %{
@@ -437,10 +454,17 @@ defmodule ExAthena.Chat.Tui.State do
 
   # ─ Popups ─────────────────────────────────────────────────────────────────
 
-  @spec open_popup(t(), {:model, [String.t()]} | {:mode, [atom()]}) :: t()
+  @spec open_popup(
+          t(),
+          {:model, [String.t()]} | {:mode, [atom()]} | {:provider, [{String.t(), String.t()}]}
+        ) :: t()
   def open_popup(%__MODULE__{} = state, {kind, items})
       when kind in [:model, :mode] and is_list(items) do
     %{state | popup: {kind, items, 0}}
+  end
+
+  def open_popup(%__MODULE__{} = state, {:provider, items}) when is_list(items) do
+    %{state | popup: {:provider, items, 0}}
   end
 
   @spec close_popup(t()) :: t()
@@ -460,6 +484,14 @@ defmodule ExAthena.Chat.Tui.State do
   @spec current_popup_selection(t()) :: any() | nil
   def current_popup_selection(%__MODULE__{popup: nil}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, [], _}}), do: nil
+
+  def current_popup_selection(%__MODULE__{popup: {:provider, items, idx}}) do
+    case Enum.at(items, idx) do
+      {name, _display} -> name
+      other -> other
+    end
+  end
+
   def current_popup_selection(%__MODULE__{popup: {_, items, idx}}), do: Enum.at(items, idx)
 
   # ─ Details-pane tabs (timeline / changes) ────────────────────────────────

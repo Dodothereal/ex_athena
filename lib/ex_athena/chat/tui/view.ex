@@ -988,6 +988,13 @@ if Code.ensure_loaded?(ExRatatui.App) do
       }
     end
 
+    defp footer(%State{api_key_pending: true}) do
+      %Paragraph{
+        text: "Enter API key and press Enter  Ctrl+C: quit",
+        style: %Style{fg: :yellow}
+      }
+    end
+
     defp footer(%State{popup: nil}) do
       %Paragraph{
         text: "Enter: send  Ctrl+C: quit  /help",
@@ -1009,6 +1016,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
         case kind do
           :model -> {" Pick a model ", items}
           :mode -> {" Pick a mode ", Enum.map(items, &inspect/1)}
+          :provider -> {" Pick a provider ", Enum.map(items, fn {_name, display} -> display end)}
         end
 
       list = %List{

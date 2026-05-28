@@ -1,8 +1,16 @@
 {
   "name": "groq",
   "adapter": "req_llm",
-  "req_llm_provider_tag": "openai",
+  "req_llm_provider_tag": "groq",
   "base_url": "https://api.groq.com/openai/v1",
   "api_key_env": "GROQ_API_KEY",
-  "default_model": "llama-3.3-70b-versatile"
+  "default_model": "llama-3.3-70b-versatile",
+  "model_discovery": {
+    "url": "https://api.groq.com/openai/v1/models",
+    "path": "data.id",
+    "ttl_seconds": 300
+  },
+  "metadata": {
+    "note": "Copy to ~/.config/ex_athena/providers/groq.json and set GROQ_API_KEY"
+  }
 }

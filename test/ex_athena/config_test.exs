@@ -149,9 +149,209 @@ defmodule ExAthena.ConfigTest do
       assert "google" = Config.req_llm_provider_tag(:gemini)
     end
 
+    test "returns nil for unknown atom when registry is not running" do
+      assert nil == Config.req_llm_provider_tag(:nonexistent_provider)
+    end
+
+    test "returns tag from registry spec when registry has the provider" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "custom.json", %{
+        name: "my-local",
+        adapter: "req_llm",
+        req_llm_provider_tag: "openai"
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert "openai" == Config.req_llm_provider_tag(:"my-local")
+    end
+
+    test "returns nil for registry spec without req_llm_provider_tag" do
+      dir = tmp_dir_create()
+      write_json(dir, "custom.json", %{name: "my-mock", adapter: "mock"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert nil == Config.req_llm_provider_tag(:"my-mock")
+    end
+
     test "returns openai for :openrouter" do
       assert "openai" = Config.req_llm_provider_tag(:openrouter)
     end
+  end
+
+  describe "provider_module/1 with registry fallthrough" do
+    test "resolves registry-loaded providers by atom name" do
+      dir = tmp_dir_create()
+      write_json(dir, "custom.json", %{name: "my-mock", adapter: "mock"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert ExAthena.Providers.Mock = Config.provider_module(:"my-mock")
+    end
+
+    test "built-in providers still resolve when registry is running" do
+      dir = tmp_dir_create()
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert ExAthena.Providers.Mock = Config.provider_module(:mock)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:ollama)
+    end
+
+    test "raises for unknown atom not in registry" do
+      dir = tmp_dir_create()
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert_raise ArgumentError, ~r/unknown provider/, fn ->
+        Config.provider_module(:totally_unknown)
+      end
+    end
+  end
+
+  describe "list_providers/0" do
+    test "includes all built-in provider atoms" do
+      providers = Config.list_providers()
+      names = Enum.map(providers, & &1.name)
+      assert "ollama" in names
+      assert "mock" in names
+      assert "openai" in names
+      assert "gemini" in names
+    end
+
+    test "all built-in entries have source: :builtin" do
+      providers = Config.list_providers()
+      builtin = Enum.filter(providers, &(&1.source == :builtin))
+      assert length(builtin) == map_size(ExAthena.Config.builtin_providers())
+    end
+
+    test "includes registry specs when registry is running" do
+      dir = tmp_dir_create()
+      write_json(dir, "custom.json", %{name: "custom-prov", adapter: "mock"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      providers = Config.list_providers()
+      registry_entry = Enum.find(providers, &(&1.name == "custom-prov"))
+      assert registry_entry != nil
+      assert registry_entry.source == :registry
+      assert registry_entry.module == ExAthena.Providers.Mock
+    end
+
+    test "returns only built-ins when registry is not running" do
+      providers = Config.list_providers()
+      assert Enum.all?(providers, &(&1.source == :builtin))
+    end
+  end
+
+  describe "pop_provider!/1 threads registry spec fields" do
+    test "threads base_url from spec into opts" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "openrouter.json", %{
+        name: "openrouter",
+        adapter: "req_llm",
+        req_llm_provider_tag: "openrouter",
+        base_url: "https://openrouter.ai/api/v1"
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {mod, opts} = Config.pop_provider!(provider: :openrouter)
+      assert mod == ExAthena.Providers.ReqLLM
+      assert opts[:req_llm_provider_tag] == "openrouter"
+      assert opts[:base_url] == "https://openrouter.ai/api/v1"
+    end
+
+    test "threads extra_headers from spec into opts" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "openrouter.json", %{
+        name: "openrouter",
+        adapter: "req_llm",
+        extra_headers: %{"HTTP-Referer" => "https://myapp.io"}
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :openrouter)
+      assert opts[:extra_headers] == %{"HTTP-Referer" => "https://myapp.io"}
+    end
+
+    test "does not thread extra_headers when map is empty" do
+      dir = tmp_dir_create()
+      write_json(dir, "groq.json", %{name: "groq", adapter: "req_llm", extra_headers: %{}})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq)
+      refute Keyword.has_key?(opts, :extra_headers)
+    end
+
+    test "threads api_key from spec into opts" do
+      dir = tmp_dir_create()
+      write_json(dir, "groq.json", %{name: "groq", adapter: "req_llm", api_key: "gsk-abc123"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq)
+      assert opts[:api_key] == "gsk-abc123"
+    end
+
+    test "resolves api_key from api_key_env" do
+      env_var = "EX_ATHENA_TEST_API_KEY_#{System.unique_integer([:positive])}"
+      System.put_env(env_var, "resolved-key-value")
+      on_exit(fn -> System.delete_env(env_var) end)
+
+      dir = tmp_dir_create()
+
+      write_json(dir, "custom.json", %{
+        name: "custom-prov",
+        adapter: "req_llm",
+        api_key_env: env_var
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :"custom-prov")
+      assert opts[:api_key] == "resolved-key-value"
+    end
+
+    test "api_key in opts wins over spec api_key" do
+      dir = tmp_dir_create()
+      write_json(dir, "groq.json", %{name: "groq", adapter: "req_llm", api_key: "spec-key"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq, api_key: "call-key")
+      assert opts[:api_key] == "call-key"
+    end
+
+    test "base_url in opts wins over spec base_url" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "groq.json", %{
+        name: "groq",
+        adapter: "req_llm",
+        base_url: "https://api.groq.com/openai/v1"
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq, base_url: "https://override.example")
+      assert opts[:base_url] == "https://override.example"
+    end
+  end
+
+  # ── Helpers for registry-based tests ─────────────────────────────
+
+  defp tmp_dir do
+    Path.join(System.tmp_dir!(), "ex_athena_cfg_#{System.unique_integer([:positive])}")
+  end
+
+  defp tmp_dir_create do
+    dir = tmp_dir()
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
+  defp write_json(dir, filename, data) do
+    File.write!(Path.join(dir, filename), Jason.encode!(data))
   end
 
   describe "pop_provider!/1 with :openrouter" do

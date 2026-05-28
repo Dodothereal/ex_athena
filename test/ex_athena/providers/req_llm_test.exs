@@ -361,6 +361,56 @@ defmodule ExAthena.Providers.ReqLLMTest do
     end
   end
 
+  describe "build_opts/2 folds extra_headers into req_http_options" do
+    alias ExAthena.Request
+
+    test "folds extra_headers map into req_http_options headers list" do
+      request = %Request{messages: []}
+      headers = %{"HTTP-Referer" => "https://myapp.io", "X-Title" => "MyApp"}
+
+      {:ok, opts} = Adapter.build_opts(request, extra_headers: headers)
+
+      http_opts = Keyword.get(opts, :req_http_options, [])
+      headers_list = Keyword.get(http_opts, :headers, [])
+
+      assert {"HTTP-Referer", "https://myapp.io"} in headers_list
+      assert {"X-Title", "MyApp"} in headers_list
+    end
+
+    test "does not add req_http_options when extra_headers is absent" do
+      request = %Request{messages: []}
+      {:ok, opts} = Adapter.build_opts(request, [])
+      refute Keyword.has_key?(opts, :req_http_options)
+    end
+
+    test "does not add req_http_options when extra_headers is an empty map" do
+      request = %Request{messages: []}
+      {:ok, opts} = Adapter.build_opts(request, extra_headers: %{})
+      refute Keyword.has_key?(opts, :req_http_options)
+    end
+
+    test "extra_headers is not forwarded as a top-level opt" do
+      request = %Request{messages: []}
+      {:ok, opts} = Adapter.build_opts(request, extra_headers: %{"X-Custom" => "val"})
+      refute Keyword.has_key?(opts, :extra_headers)
+    end
+
+    test "merges extra_headers with existing req_http_options headers" do
+      request = %Request{messages: []}
+      existing = [headers: [{"X-Existing", "old"}]]
+
+      {:ok, opts} =
+        Adapter.build_opts(request,
+          extra_headers: %{"X-New" => "new"},
+          provider_opts: [req_http_options: existing]
+        )
+
+      http_opts = Keyword.get(opts, :req_http_options, [])
+      headers_list = Keyword.get(http_opts, :headers, [])
+      assert {"X-New", "new"} in headers_list
+    end
+  end
+
   describe "build_opts/2 forwards response_format" do
     alias ExAthena.Request
 

@@ -293,7 +293,23 @@ defmodule ExAthena.Providers.ReqLLM do
       |> Keyword.reject(fn {_k, v} -> is_nil(v) or v == [] end)
 
     provider_opts = Keyword.get(opts, :provider_opts, [])
-    {:ok, Keyword.merge(base_opts, provider_opts)}
+    merged = Keyword.merge(base_opts, provider_opts)
+    merged = fold_extra_headers(merged, Keyword.get(opts, :extra_headers))
+    {:ok, merged}
+  end
+
+  # Converts a string-to-string map of extra headers into the `req_http_options`
+  # keyword list that req_llm uses to inject headers into Req requests.
+  defp fold_extra_headers(opts, nil), do: opts
+  defp fold_extra_headers(opts, headers) when is_map(headers) and map_size(headers) == 0, do: opts
+
+  defp fold_extra_headers(opts, headers) when is_map(headers) do
+    header_list = Enum.map(headers, fn {k, v} -> {k, v} end)
+    existing_http_opts = Keyword.get(opts, :req_http_options, [])
+    existing_headers = Keyword.get(existing_http_opts, :headers, [])
+    merged_headers = existing_headers ++ header_list
+    merged_http_opts = Keyword.put(existing_http_opts, :headers, merged_headers)
+    Keyword.put(opts, :req_http_options, merged_http_opts)
   end
 
   # ex_athena's modes (see `Tools.describe_for_provider/1`) build OpenAI-format

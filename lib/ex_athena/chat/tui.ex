@@ -388,6 +388,23 @@ if Code.ensure_loaded?(ExRatatui.App) do
       end
     end
 
+    defp handle_popup_key(%Event.Key{code: "enter"}, %State{popup: {:provider, _, _}} = state) do
+      case State.current_popup_selection(state) do
+        nil ->
+          {:noreply, State.close_popup(state)}
+
+        name when is_binary(name) ->
+          provider_atom = provider_name_to_atom(name)
+
+          state
+          |> State.set_provider(provider_atom)
+          |> State.close_popup()
+          |> State.append_event({:info, "Provider → " <> name})
+          |> append_provider_details(name)
+          |> noreply()
+      end
+    end
+
     defp handle_popup_key(_, state), do: {:noreply, state}
 
     # ── Process messages ─────────────────────────────────────────────────────
@@ -445,6 +462,40 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     # ── Submission + commands ────────────────────────────────────────────────
 
+    defp submit_input(%State{api_key_pending: true} = state) do
+      raw = read_textarea(state) |> String.trim()
+      if state.input_ref, do: ExRatatui.textarea_set_value(state.input_ref, "")
+
+      cond do
+        raw == "" ->
+          append_and_noreply(
+            state,
+            {:warning, "API key cannot be empty. Enter it below (or /cancel to abort):"}
+          )
+
+        raw in ["/exit", "/quit"] ->
+          {:stop, restore_logger(state)}
+
+        raw == "/cancel" ->
+          state
+          |> Map.put(:api_key_pending, false)
+          |> Map.put(:pending_message, nil)
+          |> State.append_event({:info, "API key prompt cancelled."})
+          |> noreply()
+
+        true ->
+          pending = state.pending_message
+
+          state =
+            state
+            |> State.set_api_key(raw)
+            |> Map.put(:pending_message, nil)
+            |> State.append_event({:info, "API key saved for this session."})
+
+          if pending, do: do_dispatch_message(pending, state), else: noreply(state)
+      end
+    end
+
     defp submit_input(%State{input_ref: nil} = state), do: {:noreply, state}
 
     defp submit_input(%State{input_ref: ref} = state) do
@@ -469,7 +520,22 @@ if Code.ensure_loaded?(ExRatatui.App) do
       end
     end
 
-    defp dispatch_message(text, state) do
+    defp dispatch_message(text, %State{api_key_pending: false} = state) do
+      case check_api_key_needed(state) do
+        {:needs_key, provider_name, api_key_env} ->
+          state
+          |> State.append_event({:info, "Provider '#{provider_name}' requires an API key."})
+          |> State.append_event({:info, "Env: #{api_key_env} (not set). Enter key below:"})
+          |> Map.put(:api_key_pending, true)
+          |> Map.put(:pending_message, text)
+          |> noreply()
+
+        :ok ->
+          do_dispatch_message(text, state)
+      end
+    end
+
+    defp do_dispatch_message(text, state) do
       state =
         state
         |> State.append_event({:user, text})
@@ -479,7 +545,8 @@ if Code.ensure_loaded?(ExRatatui.App) do
         |> State.reset_history_nav()
         |> update_in_session(&Session.append_user(&1, text))
 
-      task_pid = Runner.start(state.session, self())
+      extra_opts = if state.api_key, do: [api_key: state.api_key], else: []
+      task_pid = Runner.start(state.session, self(), extra_opts)
       {:noreply, %{state | run_task: task_pid}}
     end
 
@@ -549,6 +616,21 @@ if Code.ensure_loaded?(ExRatatui.App) do
       state
       |> State.set_model(arg)
       |> State.append_event({:info, "Model → " <> arg})
+      |> noreply()
+    end
+
+    defp dispatch_command(:provider, [], state) do
+      providers = ExAthena.Config.list_providers()
+      items = Enum.map(providers, fn p -> {p.name, p.display_name} end)
+      {:noreply, State.open_popup(state, {:provider, items})}
+    end
+
+    defp dispatch_command(:provider, [arg | _], state) when is_binary(arg) do
+      provider = provider_name_to_atom(arg)
+
+      state
+      |> State.set_provider(provider)
+      |> State.append_event({:info, "Provider → " <> arg})
       |> noreply()
     end
 
@@ -883,6 +965,43 @@ if Code.ensure_loaded?(ExRatatui.App) do
       state
     end
 
+    defp append_provider_details(state, provider_name) do
+      case lookup_provider_spec(provider_name) do
+        {:ok, spec} when spec.extra_headers != %{} ->
+          state
+          |> State.append_detail_header("provider: #{provider_name}")
+          |> State.append_detail_lines(:info, "extra_headers: #{inspect(spec.extra_headers)}")
+
+        _ ->
+          state
+      end
+    end
+
+    defp lookup_provider_spec(name) when is_binary(name) do
+      case Process.whereis(ExAthena.ProviderRegistry) do
+        nil -> :error
+        _pid -> ExAthena.ProviderRegistry.lookup(name)
+      end
+    end
+
+    defp check_api_key_needed(%State{api_key: api_key, session: session}) do
+      if is_nil(api_key) do
+        case lookup_provider_spec(Atom.to_string(session.provider)) do
+          {:ok, %{api_key_prompt: true, api_key_env: env}} when is_binary(env) ->
+            if is_nil(System.get_env(env)) do
+              {:needs_key, session.provider, env}
+            else
+              :ok
+            end
+
+          _ ->
+            :ok
+        end
+      else
+        :ok
+      end
+    end
+
     defp update_in_session(state, fun), do: %{state | session: fun.(state.session)}
 
     defp noreply(state), do: {:noreply, state}
@@ -894,6 +1013,12 @@ if Code.ensure_loaded?(ExRatatui.App) do
       |> String.trim_trailing("\n")
       |> String.split("\n")
       |> Enum.reduce(state, fn line, s -> State.append_event(s, {kind, line}) end)
+    end
+
+    defp provider_name_to_atom(name) when is_binary(name) do
+      String.to_existing_atom(name)
+    rescue
+      ArgumentError -> String.to_atom(name)
     end
 
     defp parse_mode_atom(arg) when is_binary(arg) do
@@ -913,7 +1038,16 @@ if Code.ensure_loaded?(ExRatatui.App) do
     end
 
     defp list_models_for(%{provider: :llamacpp}), do: LlamaCpp.list_models([])
-    defp list_models_for(_session), do: Ollama.list_models([])
+
+    defp list_models_for(%{provider: provider}) do
+      with pid when not is_nil(pid) <- Process.whereis(ExAthena.ProviderRegistry),
+           {:ok, %ExAthena.ProviderSpec{model_discovery: disc} = spec}
+           when not is_nil(disc) <- ExAthena.ProviderRegistry.lookup(provider) do
+        ExAthena.ModelDiscovery.list_models(spec)
+      else
+        _ -> Ollama.list_models([])
+      end
+    end
 
     defp no_models_message(:llamacpp),
       do: "No models loaded. Start one with: llama-server --model path/to/model.gguf"

@@ -1,8 +1,20 @@
 {
   "name": "openrouter",
   "adapter": "req_llm",
-  "req_llm_provider_tag": "openai",
+  "req_llm_provider_tag": "openrouter",
   "base_url": "https://openrouter.ai/api/v1",
   "api_key_env": "OPENROUTER_API_KEY",
-  "default_model": "anthropic/claude-opus-4-5"
+  "default_model": "anthropic/claude-opus-4-5",
+  "extra_headers": {
+    "HTTP-Referer": "https://yourapp.io",
+    "X-Title": "YourApp"
+  },
+  "model_discovery": {
+    "url": "https://openrouter.ai/api/v1/models",
+    "path": "data.id",
+    "ttl_seconds": 300
+  },
+  "metadata": {
+    "note": "Copy to ~/.config/ex_athena/providers/openrouter.json and set OPENROUTER_API_KEY"
+  }
 }

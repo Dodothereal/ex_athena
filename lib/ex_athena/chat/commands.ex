@@ -37,7 +37,8 @@ defmodule ExAthena.Chat.Commands do
     "timeline" => :timeline,
     "mouse" => :mouse,
     "help" => :help,
-    "?" => :help
+    "?" => :help,
+    "provider" => :provider
   }
 
   @spec parse(String.t() | :eof) :: result()
@@ -87,7 +88,8 @@ defmodule ExAthena.Chat.Commands do
       "timeline",
       "mouse",
       "help",
-      "exit"
+      "exit",
+      "provider"
     ]
 
     canonical |> Enum.sort() |> Enum.map(&("/" <> &1))
@@ -113,7 +115,8 @@ defmodule ExAthena.Chat.Commands do
       "/timeline" => "show the Timeline tab",
       "/mouse" => "toggle mouse capture (off lets the terminal copy/paste natively)",
       "/help" => "show full usage help",
-      "/exit" => "leave the chat"
+      "/exit" => "leave the chat",
+      "/provider" => "pick or switch the active provider"
     }
   end
 
@@ -144,6 +147,7 @@ defmodule ExAthena.Chat.Commands do
                          scrolling + tab clicks). Many terminals also let
                          you bypass capture by holding Option (macOS) or
                          Shift while click-dragging.
+      /provider [name]   open the provider picker, or set provider directly
       /help, /?          show this help
       /exit, /quit, /q   leave the chat
 
