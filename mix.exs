@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.14.0"
+  @version "0.15.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -134,6 +134,15 @@ defmodule ExAthena.MixProject do
           ExAthena.Providers.ReqLLM,
           ExAthena.Providers.Mock
         ],
+        "Provider configuration": [
+          ExAthena.ProviderRegistry,
+          ExAthena.ProviderSpec,
+          ExAthena.ModelDiscovery
+        ],
+        "Request queue": [
+          ExAthena.RequestQueue,
+          ExAthena.RequestQueue.Supervisor
+        ],
         "Tool calls": [
           ExAthena.ToolCalls,
           ExAthena.ToolCalls.Native,
@@ -186,6 +195,7 @@ defmodule ExAthena.MixProject do
           ExAthena.Checkpoint.Sweeper
         ],
         Streaming: [ExAthena.Streaming, ExAthena.Streaming.Event],
+        Telemetry: [ExAthena.Telemetry],
         Errors: [ExAthena.Error],
         MCP: [
           ExAthena.Mcp,

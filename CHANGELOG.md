@@ -7,6 +7,14 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## v0.15.0 — Runtime JSON provider config + per-provider request queue
+
+Two coordinated upgrades to provider handling: a runtime JSON registry so users
+can add providers (OpenRouter, Groq, Together, Fireworks, DeepSeek, …) by
+dropping a config file — no code change or redeploy required — and a built-in
+per-provider request queue with telemetry for safe concurrency control across
+every public entry point.
+
 ### Added
 
 - **Request queue wired into all public entry points.** `query/2`, `stream/3`,
@@ -49,6 +57,19 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   See the [Providers guide](guides/providers.md#runtime-json-config) for the
   full schema reference and the new [Upgrading guide](guides/upgrading.md) for
   migration notes (existing `config.exs` setups require no changes).
+
+### Fixed
+
+- **`Config.req_llm_provider_tag/1` now consults the registry first.** When a
+  JSON-defined provider's name collided with a built-in atom (in practice:
+  `:openrouter`, which is in both the built-in tag map and the example JSON
+  spec), the built-in map was consulted first and the JSON spec's
+  `req_llm_provider_tag` was silently ignored. OpenRouter requests on the
+  JSON-registry path went out tagged `"openai"` instead of `"openrouter"`. The
+  registry spec is now authoritative; the built-in map is the fallback when no
+  spec is loaded for the atom or the spec's tag is unset. `provider_module/1`
+  is unchanged — its built-in-first order is correct (a JSON spec can't
+  override which Elixir module backs a built-in atom).
 
 ## v0.14.0 — Mid-loop intervention hook + structured completion signal
 

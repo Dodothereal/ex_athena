@@ -193,16 +193,22 @@ defmodule ExAthena.Config do
   `"tag:model-id"` specs. Returns `nil` when the atom doesn't map to req_llm
   (e.g. `:mock`, or a user-supplied module).
 
-  For registry-loaded providers the tag is taken from the spec's
-  `req_llm_provider_tag` field when the static map has no entry.
+  Resolution order: a registry-loaded JSON spec wins (its `req_llm_provider_tag`
+  field), with the static built-in map as fallback when no spec is loaded for
+  the atom or the spec's tag is unset. This matters when a JSON-defined
+  provider's name collides with a built-in atom (e.g. `:openrouter`, which is
+  also present in the built-in map for `config.exs` users) — the user's JSON
+  file is authoritative.
   """
   @spec req_llm_provider_tag(atom() | module()) :: String.t() | nil
   def req_llm_provider_tag(atom) when is_atom(atom) do
-    Map.get(@req_llm_provider_tag, atom) ||
-      case registry_lookup(atom) do
-        {:ok, spec} -> spec.req_llm_provider_tag
-        :error -> nil
-      end
+    case registry_lookup(atom) do
+      {:ok, %{req_llm_provider_tag: tag}} when is_binary(tag) and tag != "" ->
+        tag
+
+      _ ->
+        Map.get(@req_llm_provider_tag, atom)
+    end
   end
 
   def req_llm_provider_tag(_), do: nil
