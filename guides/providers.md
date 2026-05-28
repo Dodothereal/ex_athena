@@ -1,7 +1,9 @@
 # Providers
 
-ExAthena ships four built-in providers plus a `:mock` for tests. Consumers
-can also pass any module that implements `ExAthena.Provider` directly.
+ExAthena ships five built-in providers plus a `:mock` for tests. Consumers
+can also pass any module that implements `ExAthena.Provider` directly, or drop
+a JSON file into `~/.config/ex_athena/providers/` to define a named provider
+at runtime without touching `config.exs`.
 
 ## Ollama (`:ollama`)
 
@@ -111,6 +113,33 @@ ExAthena.query("…", provider: :gemini, model: "gemini-2.5-pro")
 For the full walkthrough — API key setup, model table, tool-calling caveats,
 and rate-limit notes — see the **[Gemini setup guide](gemini.md)**.
 
+## OpenRouter (`:openrouter`)
+
+Hosted model gateway that routes to hundreds of models from Anthropic, Google,
+Meta, Mistral, and others through a single OpenAI-compatible endpoint. Requires
+an [OpenRouter API key](https://openrouter.ai).
+
+```elixir
+config :ex_athena, :openrouter,
+  api_key: System.get_env("OPENROUTER_API_KEY"),
+  model: "anthropic/claude-opus-4-5"
+```
+
+Per-call model switch:
+
+```elixir
+ExAthena.query("…", provider: :openrouter, model: "google/gemini-2.5-pro")
+```
+
+### Capabilities
+
+| Feature | Status |
+|---|---|
+| Native tool calls | ✅ (model-dependent) |
+| Streaming | ✅ SSE |
+| JSON mode | ✅ via `response_format: %{type: "json_object"}` |
+| Resume | ❌ |
+
 ## Mock (`:mock`)
 
 Unit-test double. Scripted responses either via canned text or a responder
@@ -148,6 +177,156 @@ walkthrough including examples for each provider.
 | `:openai_compatible` | ✅ gpt-4o, gpt-4o-mini | URL + inline |
 | `:claude` | ✅ Any `claude-3`+ model | PNG, JPEG, GIF, WebP |
 | `:gemini` | ✅ Any `gemini-1.5`+ model | Inline + URL |
+
+## Runtime JSON config
+
+ExAthena reads every `*.json` file from `~/.config/ex_athena/providers/` at
+application startup via `ExAthena.ProviderRegistry`. Each file defines one named
+provider that you reference by its `name` string, the same way you pass a
+built-in atom.
+
+```elixir
+ExAthena.query("…", provider: "my-groq")
+ExAthena.query("…", provider: "my-groq", model: "mixtral-8x7b-32768")
+```
+
+Files that fail validation are skipped with a warning — a single bad file does
+not prevent others from loading and the application still starts.
+
+### Schema
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `name` | string | ✅ | — | Unique provider name; used as the lookup key |
+| `adapter` | string | ✅ | — | `"req_llm"` or `"mock"` |
+| `req_llm_provider_tag` | string | — | `null` | req_llm routing tag (`"openai"`, `"anthropic"`, `"google"`) |
+| `base_url` | string | — | `null` | Override the adapter's default endpoint URL |
+| `api_key` | string | — | `null` | Static API key (prefer `api_key_env` — see Security) |
+| `api_key_env` | string | — | `null` | Environment variable name; key is read at startup |
+| `default_model` | string | — | `null` | Model used when no `model:` is supplied per-call |
+| `api_key_prompt` | boolean | — | `false` | When `true`, the web UI sidebar shows an inline API-key password field; key is held in socket state and never written to disk. Web UI only — has no effect in the TUI. |
+| `metadata` | object | — | `{}` | Arbitrary pass-through data; ignored by ExAthena |
+
+### Security
+
+Never store raw API keys in JSON files that may be committed to version control.
+
+* Use `api_key_env` to name the environment variable instead of embedding the
+  key directly:
+
+```json
+{
+  "name": "my-groq",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.groq.com/openai/v1",
+  "api_key_env": "GROQ_API_KEY",
+  "default_model": "llama-3.3-70b-versatile"
+}
+```
+
+* Restrict file permissions on any file that does contain a literal key:
+
+```sh
+chmod 600 ~/.config/ex_athena/providers/my-provider.json
+```
+
+* Add `~/.config/ex_athena/providers/` to `.gitignore` when files may contain
+  credentials.
+
+### Writing your own
+
+1. **`name`** must be a non-empty string unique across all files in the
+   directory. It becomes the string you pass to `provider:`.
+2. **`adapter`** must be exactly `"req_llm"` (any HTTP-based model endpoint) or
+   `"mock"` (tests only).
+3. **`req_llm_provider_tag`** routes requests through req_llm's model catalog.
+   Use `"openai"` for OpenAI-compatible endpoints, `"anthropic"` for Anthropic,
+   `"google"` for Google Gemini.
+4. **Validation errors** (missing required fields, unknown adapter, malformed
+   JSON) are logged as warnings and the file is skipped — the application still
+   starts normally.
+5. Files are loaded once at startup. Restart the application to pick up changes.
+
+Ready-to-copy examples live in `priv/provider_examples/`.
+
+## Groq
+
+[Groq](https://groq.com) provides ultra-fast inference for open-source models on
+dedicated LPU hardware.
+
+```json
+{
+  "name": "groq",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.groq.com/openai/v1",
+  "api_key_env": "GROQ_API_KEY",
+  "default_model": "llama-3.3-70b-versatile"
+}
+```
+
+Copy `priv/provider_examples/groq.json` to `~/.config/ex_athena/providers/` and
+set `GROQ_API_KEY`. Supported models include `llama-3.3-70b-versatile`,
+`llama-3.1-8b-instant`, and `mixtral-8x7b-32768`.
+
+## Together AI
+
+[Together AI](https://www.together.ai) hosts a broad catalog of open-source
+models with optional fine-tuning.
+
+```json
+{
+  "name": "together",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.together.xyz/v1",
+  "api_key_env": "TOGETHER_API_KEY",
+  "default_model": "meta-llama/Llama-3-70b-chat-hf"
+}
+```
+
+Copy `priv/provider_examples/together.json` to `~/.config/ex_athena/providers/`
+and set `TOGETHER_API_KEY`.
+
+## Fireworks AI
+
+[Fireworks AI](https://fireworks.ai) offers serverless inference for popular
+open-source models with low latency.
+
+```json
+{
+  "name": "fireworks",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.fireworks.ai/inference/v1",
+  "api_key_env": "FIREWORKS_API_KEY",
+  "default_model": "accounts/fireworks/models/llama-v3p3-70b-instruct"
+}
+```
+
+Copy `priv/provider_examples/fireworks.json` to
+`~/.config/ex_athena/providers/` and set `FIREWORKS_API_KEY`.
+
+## DeepSeek
+
+[DeepSeek](https://www.deepseek.com) provides cost-effective inference for the
+DeepSeek family of models.
+
+```json
+{
+  "name": "deepseek",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key_env": "DEEPSEEK_API_KEY",
+  "default_model": "deepseek-chat"
+}
+```
+
+Copy `priv/provider_examples/deepseek.json` to
+`~/.config/ex_athena/providers/` and set `DEEPSEEK_API_KEY`. Use
+`"deepseek-reasoner"` for the reasoning-optimised variant.
 
 ## Custom providers
 

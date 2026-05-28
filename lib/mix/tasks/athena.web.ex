@@ -10,6 +10,9 @@ defmodule Mix.Tasks.Athena.Web do
   Opens a Phoenix LiveView chat interface backed by the same agent loop as
   `mix athena.chat`. Provider, model, and mode are configurable in the sidebar.
 
+  For a full walkthrough — sidebar controls, session persistence, JSON provider
+  setup, and screenshot tour — see the [Web UI guide](guides/web.md).
+
   ## Flags
 
     * `--port PORT` — HTTP port (default 4000).

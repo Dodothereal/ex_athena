@@ -1,0 +1,8 @@
+{
+  "name": "fireworks",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.fireworks.ai/inference/v1",
+  "api_key_env": "FIREWORKS_API_KEY",
+  "default_model": "accounts/fireworks/models/llama-v3p3-70b-instruct"
+}

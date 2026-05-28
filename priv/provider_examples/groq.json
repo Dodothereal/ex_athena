@@ -1,0 +1,8 @@
+{
+  "name": "groq",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.groq.com/openai/v1",
+  "api_key_env": "GROQ_API_KEY",
+  "default_model": "llama-3.3-70b-versatile"
+}

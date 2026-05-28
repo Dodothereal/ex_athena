@@ -79,6 +79,8 @@ defmodule ExAthena.MixProject do
         "CHANGELOG.md",
         "guides/getting_started.md",
         "guides/providers.md",
+        "guides/tui.md",
+        "guides/web.md",
         "guides/gemini.md",
         "guides/multimodal.md",
         "guides/tool_calls.md",
@@ -90,6 +92,7 @@ defmodule ExAthena.MixProject do
         "guides/permissions.md",
         "guides/agents_subagents.md",
         "guides/sessions_and_checkpoints.md",
+        "guides/upgrading.md",
         "LICENSE"
       ],
       groups_for_extras: [

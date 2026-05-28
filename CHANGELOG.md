@@ -9,12 +9,29 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- **`:openrouter` built-in provider.** Register OpenRouter as a first-class
-  provider atom. Callers can now write `provider: :openrouter,
-  base_url: "https://openrouter.ai/api/v1", api_key: ..., model: "anthropic/claude-3.5-sonnet"`.
-  OpenRouter is 100% OpenAI wire-compatible so this is a pure registration
-  change backed by the existing `ExAthena.Providers.ReqLLM` adapter — no new
-  HTTP code, no streaming changes, no tool-call changes.
+- **Runtime JSON provider config + example providers (#111).** Drop a `*.json`
+  file into `~/.config/ex_athena/providers/` to define a named provider at
+  startup with no changes to `config.exs`. The new `ExAthena.ProviderRegistry`
+  reads every file at boot, validates the schema, and registers each provider
+  under its `name` string. Files that fail validation are skipped with a warning
+  — a bad file does not prevent the application from starting. Five ready-to-copy
+  example providers ship in `priv/provider_examples/`:
+  - **`openrouter.json`** — OpenRouter gateway; routes to hundreds of models
+    from Anthropic, Google, Meta, and Mistral through a single OpenAI-compatible
+    endpoint. Also registered as the `:openrouter` built-in atom for
+    `config.exs` users.
+  - **`groq.json`** — Groq LPU inference; ultra-low-latency open-source models
+    including Llama 3.3 and Mixtral.
+  - **`together.json`** — Together AI; broad catalog of hosted open-source
+    models with optional fine-tuning support.
+  - **`fireworks.json`** — Fireworks AI; fast serverless inference for popular
+    open-source models.
+  - **`deepseek.json`** — DeepSeek; cost-effective inference for DeepSeek-series
+    models including the reasoning variant.
+
+  See the [Providers guide](guides/providers.md#runtime-json-config) for the
+  full schema reference and the new [Upgrading guide](guides/upgrading.md) for
+  migration notes (existing `config.exs` setups require no changes).
 
 ## v0.14.0 — Mid-loop intervention hook + structured completion signal
 

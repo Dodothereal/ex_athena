@@ -1,0 +1,8 @@
+{
+  "name": "together",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.together.xyz/v1",
+  "api_key_env": "TOGETHER_API_KEY",
+  "default_model": "meta-llama/Llama-3-70b-chat-hf"
+}

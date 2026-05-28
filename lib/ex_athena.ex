@@ -43,13 +43,28 @@ defmodule ExAthena do
 
       ExAthena.query("…", provider: :claude, model: "claude-sonnet-4-6")
 
+  ## Runtime JSON providers
+
+  You can define additional named providers without touching `config.exs` by
+  dropping a JSON file into `~/.config/ex_athena/providers/`. Each file's
+  `"name"` field becomes the string you pass as `provider:`:
+
+      ExAthena.query("…", provider: "my-groq")
+      ExAthena.query("…", provider: "my-groq", model: "mixtral-8x7b-32768")
+
+  Files are loaded once at application startup via `ExAthena.ProviderRegistry`.
+  Per-call opts still override JSON-file defaults. See the
+  [Providers guide](guides/providers.md) for the full schema, security notes, and
+  ready-to-copy examples for Groq, Together AI, Fireworks, and DeepSeek.
+
   ## Providers
 
   * `ExAthena.Providers.ReqLLM` — multi-backend via `req_llm`. Covers `:gemini`
     (Google Gemini), `:openai`, `:claude`/`:anthropic`, `:ollama`, and `:llamacpp`.
   * `ExAthena.Providers.Mock` — test double with scripted responses.
 
-  Consumers can also pass a custom module that implements `ExAthena.Provider`.
+  Consumers can also pass a custom module that implements `ExAthena.Provider`, or
+  define JSON-file providers as described above.
   """
 
   alias ExAthena.{Config, Request, Response}
@@ -60,8 +75,10 @@ defmodule ExAthena do
   ## Options
 
     * `:provider` — provider atom (`:ollama`, `:openai_compatible`, `:claude`,
-      `:gemini`, `:mock`) or a module that implements `ExAthena.Provider`. Defaults to
-      `Application.get_env(:ex_athena, :default_provider)`.
+      `:gemini`, `:mock`), a module that implements `ExAthena.Provider`, or a
+      string matching a JSON-defined provider loaded from
+      `~/.config/ex_athena/providers/` (see the [Providers guide](guides/providers.md)).
+      Defaults to `Application.get_env(:ex_athena, :default_provider)`.
     * `:model` — model name string. Defaults to the provider's configured model.
     * `:system_prompt` — optional system prompt string.
     * `:messages` — list of canonical messages; `prompt` is prepended as a user
@@ -91,7 +108,8 @@ defmodule ExAthena do
   and its return value is ignored. Callbacks must not block the caller; if you
   need to do expensive work per-delta, hand off to a `Task`.
 
-  Options are the same as `query/2`, including `:images`.
+  Options are the same as `query/2`, including `:images` and the `:provider`
+  string form for JSON-defined providers.
   """
   @spec stream(String.t() | nil, function(), keyword()) ::
           {:ok, Response.t()} | {:error, term()}

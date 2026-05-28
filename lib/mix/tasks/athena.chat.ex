@@ -8,6 +8,9 @@ defmodule Mix.Tasks.Athena.Chat do
   (falls back to `:ollama` when unset). The model is read from the provider's
   config block, e.g. `config :ex_athena, :llamacpp, model: "my-model"`.
 
+  For a full walkthrough — keybindings, mode switching, JSON provider setup,
+  and screenshot tour — see the [TUI guide](guides/tui.md).
+
   ## Usage
 
       mix athena.chat

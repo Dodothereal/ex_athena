@@ -1,0 +1,8 @@
+{
+  "name": "deepseek",
+  "adapter": "req_llm",
+  "req_llm_provider_tag": "openai",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key_env": "DEEPSEEK_API_KEY",
+  "default_model": "deepseek-chat"
+}

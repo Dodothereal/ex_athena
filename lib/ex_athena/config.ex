@@ -2,15 +2,24 @@ defmodule ExAthena.Config do
   @moduledoc """
   Resolves the provider and per-call options for an ExAthena request.
 
-  Resolution order (per key):
+  Resolution order (per key, highest to lowest priority):
 
     1. `opts[:key]` — per-call override always wins.
-    2. `Application.get_env(:ex_athena, provider)[:key]` — provider-specific config.
+    2. For atom-named providers: `Application.get_env(:ex_athena, provider)[:key]`
+       — provider-specific `config.exs` entry.
+       For string-named providers: the matching JSON file loaded from
+       `~/.config/ex_athena/providers/` by `ExAthena.ProviderRegistry`.
     3. `Application.get_env(:ex_athena, :key)` — top-level library config.
     4. Provider default (if the provider declares one).
 
   Matches the `stripity_stripe` / `ex_aws` pattern: per-call overrides win,
   application config is the default, no global mutable state.
+
+  String provider names (e.g. `provider: "my-groq"`) are resolved through
+  `ExAthena.ProviderRegistry`, which loads `*.json` files from
+  `~/.config/ex_athena/providers/` at application startup. See the
+  [Providers guide](guides/providers.md) for the full JSON schema, security
+  notes, and ready-to-copy examples.
 
   ## Known providers
 
@@ -27,7 +36,8 @@ defmodule ExAthena.Config do
   | `:req_llm` | `ExAthena.Providers.ReqLLM` |
   | `:mock` | `ExAthena.Providers.Mock` |
 
-  You may also pass any module that implements `ExAthena.Provider` directly.
+  You may also pass any module that implements `ExAthena.Provider` directly, or a
+  string name matching a JSON-defined provider.
   """
 
   @builtin_providers %{
