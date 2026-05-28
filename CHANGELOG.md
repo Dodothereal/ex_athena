@@ -7,6 +7,15 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Added
+
+- **`:openrouter` built-in provider.** Register OpenRouter as a first-class
+  provider atom. Callers can now write `provider: :openrouter,
+  base_url: "https://openrouter.ai/api/v1", api_key: ..., model: "anthropic/claude-3.5-sonnet"`.
+  OpenRouter is 100% OpenAI wire-compatible so this is a pure registration
+  change backed by the existing `ExAthena.Providers.ReqLLM` adapter — no new
+  HTTP code, no streaming changes, no tool-call changes.
+
 ## v0.14.0 — Mid-loop intervention hook + structured completion signal
 
 Two control-flow features for steering long agent loops: a per-iteration hook for

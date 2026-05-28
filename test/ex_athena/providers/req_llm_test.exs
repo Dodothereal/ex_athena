@@ -68,8 +68,17 @@ defmodule ExAthena.Providers.ReqLLMTest do
   end
 
   describe "Config resolves builtin provider atoms to the ReqLLM adapter" do
-    test ":ollama, :openai*, :llamacpp, :claude, :anthropic all route here" do
-      for atom <- [:ollama, :openai, :openai_compatible, :llamacpp, :claude, :anthropic, :req_llm] do
+    test ":ollama, :openai*, :llamacpp, :claude, :anthropic, :openrouter all route here" do
+      for atom <- [
+            :ollama,
+            :openai,
+            :openai_compatible,
+            :llamacpp,
+            :claude,
+            :anthropic,
+            :openrouter,
+            :req_llm
+          ] do
         assert Config.provider_module(atom) == Adapter,
                "expected provider atom #{inspect(atom)} to resolve to ReqLLM adapter"
       end
@@ -113,6 +122,16 @@ defmodule ExAthena.Providers.ReqLLMTest do
 
     test ":openai_compatible does NOT inject the ollama backend marker" do
       {_mod, opts} = Config.pop_provider!(provider: :openai_compatible)
+      refute Keyword.has_key?(opts, :openai_compatible_backend)
+    end
+
+    test ":openrouter uses the openai tag (OpenRouter is OpenAI wire-compatible)" do
+      {_mod, opts} = Config.pop_provider!(provider: :openrouter)
+      assert Keyword.get(opts, :req_llm_provider_tag) == "openai"
+    end
+
+    test ":openrouter does NOT inject the openai_compatible_backend marker" do
+      {_mod, opts} = Config.pop_provider!(provider: :openrouter)
       refute Keyword.has_key?(opts, :openai_compatible_backend)
     end
 

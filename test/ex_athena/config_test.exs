@@ -11,7 +11,8 @@ defmodule ExAthena.ConfigTest do
     :claude,
     :anthropic,
     :req_llm,
-    :gemini
+    :gemini,
+    :openrouter
   ]
 
   setup do
@@ -124,6 +125,7 @@ defmodule ExAthena.ConfigTest do
       assert ExAthena.Providers.ReqLLM = Config.provider_module(:claude)
       assert ExAthena.Providers.Mock = Config.provider_module(:mock)
       assert ExAthena.Providers.ReqLLM = Config.provider_module(:gemini)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:openrouter)
     end
 
     test "accepts modules that implement the behaviour" do
@@ -145,6 +147,25 @@ defmodule ExAthena.ConfigTest do
   describe "req_llm_provider_tag/1" do
     test "returns google for :gemini" do
       assert "google" = Config.req_llm_provider_tag(:gemini)
+    end
+
+    test "returns openai for :openrouter" do
+      assert "openai" = Config.req_llm_provider_tag(:openrouter)
+    end
+  end
+
+  describe "pop_provider!/1 with :openrouter" do
+    test "resolves to ReqLLM and injects openai req_llm_provider_tag" do
+      assert {ExAthena.Providers.ReqLLM, rest} =
+               Config.pop_provider!(
+                 provider: :openrouter,
+                 base_url: "https://openrouter.ai/api/v1",
+                 model: "anthropic/claude-3.5-sonnet"
+               )
+
+      assert rest[:req_llm_provider_tag] == "openai"
+      assert rest[:model] == "anthropic/claude-3.5-sonnet"
+      refute Keyword.has_key?(rest, :openai_compatible_backend)
     end
   end
 end

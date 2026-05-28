@@ -23,6 +23,7 @@ defmodule ExAthena.Config do
   | `:claude` | `ExAthena.Providers.ReqLLM` |
   | `:anthropic` | `ExAthena.Providers.ReqLLM` |
   | `:gemini` | `ExAthena.Providers.ReqLLM` |
+  | `:openrouter` | `ExAthena.Providers.ReqLLM` |
   | `:req_llm` | `ExAthena.Providers.ReqLLM` |
   | `:mock` | `ExAthena.Providers.Mock` |
 
@@ -37,6 +38,7 @@ defmodule ExAthena.Config do
     claude: ExAthena.Providers.ReqLLM,
     anthropic: ExAthena.Providers.ReqLLM,
     gemini: ExAthena.Providers.ReqLLM,
+    openrouter: ExAthena.Providers.ReqLLM,
     mock: ExAthena.Providers.Mock,
     req_llm: ExAthena.Providers.ReqLLM
   }
@@ -55,7 +57,8 @@ defmodule ExAthena.Config do
     llamacpp: "openai",
     claude: "anthropic",
     anthropic: "anthropic",
-    gemini: "google"
+    gemini: "google",
+    openrouter: "openai"
   }
 
   # Provider atoms that talk to a local OpenAI-compatible server. These
