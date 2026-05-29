@@ -411,6 +411,87 @@ defmodule ExAthena.Providers.ReqLLMTest do
     end
   end
 
+  describe "consume_stream/3 transport error handling" do
+    alias ExAthena.Request
+
+    test "returns {:error, %ExAthena.Error{}} when the stream raises ReqLLM.Error.API.Stream" do
+      # Simulate a mid-stream transport closure: the req_llm lazy stream raises
+      # ReqLLM.Error.API.Stream when it cannot receive the next HTTP chunk (e.g. the
+      # upstream TCP connection was reset). consume_stream/3 must rescue this and
+      # return {:error, %ExAthena.Error{}} rather than letting it crash.
+      error = %ReqLLM.Error.API.Stream{reason: "Stream failed: closed", cause: :closed}
+
+      exploding_stream =
+        Stream.resource(
+          fn -> :start end,
+          fn
+            :start -> raise error
+          end,
+          fn _ -> :ok end
+        )
+
+      sr = %ReqLLM.StreamResponse{
+        stream: exploding_stream,
+        metadata_handle: self(),
+        cancel: fn -> :ok end,
+        model: nil,
+        context: nil
+      }
+
+      request = %Request{messages: [], model: "test-model"}
+      callback = fn _event -> :ok end
+
+      assert {:error, %ExAthena.Error{kind: :server_error}} =
+               Adapter.consume_stream(sr, callback, request)
+    end
+
+    test "returns {:error, %ExAthena.Error{}} when the stream raises Mint.TransportError" do
+      exploding_stream =
+        Stream.resource(
+          fn -> :start end,
+          fn :start -> raise %Mint.TransportError{reason: :closed} end,
+          fn _ -> :ok end
+        )
+
+      sr = %ReqLLM.StreamResponse{
+        stream: exploding_stream,
+        metadata_handle: self(),
+        cancel: fn -> :ok end,
+        model: nil,
+        context: nil
+      }
+
+      request = %Request{messages: [], model: "test-model"}
+      callback = fn _event -> :ok end
+
+      assert {:error, %ExAthena.Error{kind: :server_error}} =
+               Adapter.consume_stream(sr, callback, request)
+    end
+
+    test "returns {:error, %ExAthena.Error{}} when the stream raises Finch.Error" do
+      exploding_stream =
+        Stream.resource(
+          fn -> :start end,
+          fn :start -> raise %Finch.Error{reason: :request_timeout} end,
+          fn _ -> :ok end
+        )
+
+      sr = %ReqLLM.StreamResponse{
+        stream: exploding_stream,
+        metadata_handle: self(),
+        cancel: fn -> :ok end,
+        model: nil,
+        context: nil
+      }
+
+      request = %Request{messages: [], model: "test-model"}
+      callback = fn _event -> :ok end
+
+      assert {:error, %ExAthena.Error{kind: :server_error}} =
+               Adapter.consume_stream(sr, callback, request)
+    end
+  end
+
   describe "build_opts/2 forwards response_format" do
     alias ExAthena.Request
 

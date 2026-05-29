@@ -107,9 +107,14 @@ defmodule ExAthena.Providers.ReqLLM do
 
       case ReqLLM.stream_text(model_spec, messages, req_opts) do
         {:ok, %ReqLLM.StreamResponse{} = sr} ->
-          response = consume_stream(sr, callback, request)
-          log_response(response)
-          {:ok, response}
+          case consume_stream(sr, callback, request) do
+            {:ok, response} ->
+              log_response(response)
+              {:ok, response}
+
+            {:error, _} = err ->
+              err
+          end
 
         {:error, reason} ->
           log_error(reason)
@@ -447,7 +452,8 @@ defmodule ExAthena.Providers.ReqLLM do
 
   # ── Streaming ─────────────────────────────────────────────────────
 
-  defp consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request) do
+  @doc false
+  def consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request) do
     state = %{
       text: [],
       thinking: [],
@@ -466,57 +472,74 @@ defmodule ExAthena.Providers.ReqLLM do
 
     heartbeat_pid = start_heartbeat(state.stream_started_ms)
 
-    final =
+    stream_result =
       try do
-        Enum.reduce(stream, state, fn chunk, acc ->
-          acc = maybe_log_first_chunk(chunk, acc)
-          handle_chunk(chunk, callback, acc)
-        end)
+        final =
+          Enum.reduce(stream, state, fn chunk, acc ->
+            acc = maybe_log_first_chunk(chunk, acc)
+            handle_chunk(chunk, callback, acc)
+          end)
+
+        {:ok, final}
+      rescue
+        e in [ReqLLM.Error.API.Stream, Mint.TransportError, Finch.Error] ->
+          Logger.warning(
+            "#{@log_prefix} transport/stream error during consume: #{Exception.message(e)}"
+          )
+
+          {:error, to_error(e)}
       after
         stop_heartbeat(heartbeat_pid)
       end
 
-    ExAthena.Streaming.stop(callback, final.finish_reason || :stop)
+    case stream_result do
+      {:error, _} = err ->
+        err
 
-    tool_calls = patch_tool_call_args(final.tool_calls, final.tool_call_args_buffer)
+      {:ok, final} ->
+        ExAthena.Streaming.stop(callback, final.finish_reason || :stop)
 
-    text = final.text |> Enum.reverse() |> IO.iodata_to_binary()
-    thinking = final.thinking |> Enum.reverse() |> IO.iodata_to_binary()
+        tool_calls = patch_tool_call_args(final.tool_calls, final.tool_call_args_buffer)
 
-    # Log the resolved tool calls. Warn when args are still empty after patching
-    # (means neither fragments nor raw_arguments provided usable JSON).
-    if Enum.any?(tool_calls, fn tc ->
-         args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
-         args == %{} or is_nil(args)
-       end) do
-      Logger.warning(
-        "#{@log_prefix} [diag] tool_call with empty args after patching — " <>
-          "buffer=#{inspect(final.tool_call_args_buffer)} " <>
-          "text_snippet=#{preview(text, 200)} " <>
-          "calls=#{inspect(Enum.map(tool_calls, fn tc -> {Map.get(tc, :name) || (is_struct(tc) && tc.name), Map.get(tc, :arguments) || (is_struct(tc) && tc.arguments)} end))}"
-      )
-    else
-      Logger.debug(fn ->
-        calls_preview =
-          Enum.map_join(tool_calls, ", ", fn tc ->
-            name = if is_struct(tc), do: tc.name, else: Map.get(tc, :name)
-            args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
-            "#{name}(#{inspect(args, limit: 5, printable_limit: 200)})"
+        text = final.text |> Enum.reverse() |> IO.iodata_to_binary()
+        thinking = final.thinking |> Enum.reverse() |> IO.iodata_to_binary()
+
+        # Log the resolved tool calls. Warn when args are still empty after patching
+        # (means neither fragments nor raw_arguments provided usable JSON).
+        if Enum.any?(tool_calls, fn tc ->
+             args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
+             args == %{} or is_nil(args)
+           end) do
+          Logger.warning(
+            "#{@log_prefix} [diag] tool_call with empty args after patching — " <>
+              "buffer=#{inspect(final.tool_call_args_buffer)} " <>
+              "text_snippet=#{preview(text, 200)} " <>
+              "calls=#{inspect(Enum.map(tool_calls, fn tc -> {Map.get(tc, :name) || (is_struct(tc) && tc.name), Map.get(tc, :arguments) || (is_struct(tc) && tc.arguments)} end))}"
+          )
+        else
+          Logger.debug(fn ->
+            calls_preview =
+              Enum.map_join(tool_calls, ", ", fn tc ->
+                name = if is_struct(tc), do: tc.name, else: Map.get(tc, :name)
+                args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
+                "#{name}(#{inspect(args, limit: 5, printable_limit: 200)})"
+              end)
+
+            "#{@log_prefix} ←tool_calls_resolved #{calls_preview}"
           end)
+        end
 
-        "#{@log_prefix} ←tool_calls_resolved #{calls_preview}"
-      end)
+        {:ok,
+         %Response{
+           text: text,
+           thinking: if(thinking == "", do: nil, else: thinking),
+           tool_calls: tool_calls,
+           finish_reason: final.finish_reason || :stop,
+           model: final.model,
+           provider: :req_llm,
+           usage: final.usage
+         }}
     end
-
-    %Response{
-      text: text,
-      thinking: if(thinking == "", do: nil, else: thinking),
-      tool_calls: tool_calls,
-      finish_reason: final.finish_reason || :stop,
-      model: final.model,
-      provider: :req_llm,
-      usage: final.usage
-    }
   end
 
   # Merge accumulated argument fragments back into each tool call.
