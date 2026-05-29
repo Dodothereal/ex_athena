@@ -140,7 +140,7 @@ if Code.ensure_loaded?(Igniter) do
         "config.exs",
         :ex_athena,
         [:claude, :model],
-        "claude-opus-4-5",
+        "claude-opus-4-8",
         updater: &keep_existing/1
       )
     end

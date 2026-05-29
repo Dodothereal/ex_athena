@@ -112,7 +112,7 @@ Swap the provider by changing one option:
 
 ```elixir
 ExAthena.query("hi", provider: :openai_compatible, model: "gpt-4o-mini")
-ExAthena.query("hi", provider: :claude, model: "claude-opus-4-5")
+ExAthena.query("hi", provider: :claude, model: "claude-opus-4-8")
 ExAthena.query("hi", provider: :ollama, model: "qwen2.5-coder")
 ExAthena.query("hi", provider: :gemini, model: "gemini-2.5-flash")
 ```
@@ -214,7 +214,7 @@ config :ex_athena, :openai_compatible,
 
 config :ex_athena, :claude,
   api_key: System.get_env("ANTHROPIC_API_KEY"),
-  model: "claude-opus-4-5"
+  model: "claude-opus-4-8"
 ```
 
 Resolution is **tiered** — per-call opts always beat app env:

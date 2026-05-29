@@ -59,7 +59,7 @@ Swap `base_url` for any OpenAI-compatible endpoint (OpenRouter, LM Studio, Groq,
 config :ex_athena, default_provider: :claude
 config :ex_athena, :claude,
   api_key: System.get_env("ANTHROPIC_API_KEY"),
-  model: "claude-opus-4-5"
+  model: "claude-opus-4-8"
 ```
 
 ## Make a call

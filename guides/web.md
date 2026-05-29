@@ -117,7 +117,7 @@ selected:
   "req_llm_provider_tag": "openai",
   "base_url": "https://openrouter.ai/api/v1",
   "api_key_prompt": true,
-  "default_model": "anthropic/claude-opus-4-5"
+  "default_model": "anthropic/claude-opus-4-8"
 }
 ```
 

@@ -33,7 +33,7 @@ defmodule ExAthena do
 
       config :ex_athena, :claude,
         api_key: System.get_env("ANTHROPIC_API_KEY"),
-        model: "claude-opus-4-5"
+        model: "claude-opus-4-8"
 
       config :ex_athena, :gemini,
         api_key: System.get_env("GEMINI_API_KEY"),

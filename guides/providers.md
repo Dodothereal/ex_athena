@@ -73,7 +73,7 @@ prompt cache reuse — by passing them through via `:provider_opts`.
 ```elixir
 config :ex_athena, :claude,
   api_key: System.get_env("ANTHROPIC_API_KEY"),
-  model: "claude-opus-4-5"
+  model: "claude-opus-4-8"
 ```
 
 The `claude_code` dep is declared `optional: true` on `ex_athena`; if you
@@ -122,7 +122,7 @@ an [OpenRouter API key](https://openrouter.ai).
 ```elixir
 config :ex_athena, :openrouter,
   api_key: System.get_env("OPENROUTER_API_KEY"),
-  model: "anthropic/claude-opus-4-5"
+  model: "anthropic/claude-opus-4-8"
 ```
 
 Per-call model switch:

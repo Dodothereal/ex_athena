@@ -29,7 +29,7 @@ defmodule Mix.Tasks.ExAthena.InstallTest do
     assert config =~ "openai_compatible:"
     assert config =~ "https://api.openai.com/v1"
     assert config =~ "claude:"
-    assert config =~ "claude-opus-4-5"
+    assert config =~ "claude-opus-4-8"
   end
 
   defp render_source(igniter, path) do

@@ -21,7 +21,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
       ExAthena.query("hi",
         provider: :req_llm,
-        model: "anthropic:claude-opus-4-5",
+        model: "anthropic:claude-opus-4-8",
         api_key: System.get_env("ANTHROPIC_API_KEY")
       )
 

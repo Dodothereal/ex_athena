@@ -36,7 +36,7 @@ config :ex_athena, :ollama,
 
 config :ex_athena, :openrouter,
   api_key: System.get_env("OPENROUTER_API_KEY"),
-  model: "anthropic/claude-opus-4-5"
+  model: "anthropic/claude-opus-4-8"
 ```
 
 Per-call opts still override everything:

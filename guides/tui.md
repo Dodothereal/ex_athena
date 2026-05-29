@@ -65,7 +65,7 @@ config :ex_athena, :openai_compatible,
 # Anthropic Claude
 config :ex_athena, :claude,
   api_key: System.get_env("ANTHROPIC_API_KEY"),
-  model: "claude-opus-4-5"
+  model: "claude-opus-4-8"
 
 # Google Gemini
 config :ex_athena, :gemini,
@@ -75,7 +75,7 @@ config :ex_athena, :gemini,
 # OpenRouter
 config :ex_athena, :openrouter,
   api_key: System.get_env("OPENROUTER_API_KEY"),
-  model: "anthropic/claude-opus-4-5"
+  model: "anthropic/claude-opus-4-8"
 ```
 
 Then launch with the provider you configured:
