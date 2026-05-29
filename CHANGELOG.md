@@ -7,6 +7,26 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## v0.15.1
+
+A reliability fix for streaming runs plus a refresh of the default Claude model.
+
+### Changed
+
+- **Default Claude model bumped `claude-opus-4-5` → `claude-opus-4-8` (#121).**
+  Updates the runtime defaults (installer scaffold, config and provider
+  moduledoc examples) and all docs/guides/examples to the current latest Opus.
+  The catalog-lookup test is intentionally left at `claude-opus-4-5` (still
+  present in the bundled `llm_db` snapshot) since it verifies `LLMDB.model/2`
+  lookup, not the default.
+
+### Fixed
+
+- **Mid-stream Mint `:closed` exceptions now classify as retryable (#123).**
+  These exceptions were bypassing the retryable-error classification, causing
+  streaming runs to crash instead of retrying. They are now treated as
+  retryable transport errors like other mid-stream connection drops.
+
 ## v0.15.0 — Runtime JSON provider config + per-provider request queue
 
 Two coordinated upgrades to provider handling: a runtime JSON registry so users
