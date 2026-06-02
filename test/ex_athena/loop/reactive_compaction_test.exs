@@ -250,6 +250,79 @@ defmodule ExAthena.Loop.ReactiveCompactionTest do
            "Expected the multi-result tool message to be pinned when any result matches"
   end
 
+  # Stateful provider: the first `query/2` reports a context-length overflow
+  # (as req_llm does for an HTTP 413), the second — after the kernel has
+  # force-compacted the existing context and retried — succeeds. Proves the
+  # default ReAct mode translates the provider's `:context_length_exceeded`
+  # error into the `:error_prompt_too_long` recovery signal.
+  defmodule OverflowThenRecoverProvider do
+    @behaviour ExAthena.Provider
+
+    alias ExAthena.{Error, Response}
+
+    @impl true
+    def capabilities, do: %{native_tool_calls: true, streaming: false, max_tokens: 128_000}
+
+    @impl true
+    def query(_request, opts) do
+      counter = Keyword.fetch!(opts, :counter)
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          {:error,
+           %Error{
+             kind: :context_length_exceeded,
+             message: "context length exceeded",
+             provider: :test
+           }}
+
+        _ ->
+          {:ok,
+           %Response{text: "recovered after compaction", finish_reason: :stop, provider: :test}}
+      end
+    end
+  end
+
+  test "ReAct recovers from a provider context-length error by compacting the existing context and retrying" do
+    counter = :counters.new(1, [:atomics])
+
+    {:ok, %Result{} = result} =
+      Loop.run("hi",
+        provider: OverflowThenRecoverProvider,
+        counter: counter,
+        tools: [],
+        mode: ExAthena.Modes.ReAct,
+        memory: false,
+        skills: %{}
+      )
+
+    assert result.finish_reason == :stop
+    assert result.text == "recovered after compaction"
+
+    assert :counters.get(counter, 1) == 2,
+           "expected the provider to be retried once after compacting the existing context"
+  end
+
+  test "PlanAndSolve recovers from a context-length error during the planning phase" do
+    counter = :counters.new(1, [:atomics])
+
+    {:ok, %Result{} = result} =
+      Loop.run("hi",
+        provider: OverflowThenRecoverProvider,
+        counter: counter,
+        tools: [],
+        mode: ExAthena.Modes.PlanAndSolve,
+        memory: false,
+        skills: %{}
+      )
+
+    assert result.finish_reason == :stop
+
+    assert :counters.get(counter, 1) >= 2,
+           "expected the planning call to be retried after compacting the existing context"
+  end
+
   test "with reactive compaction disabled, prompt-too-long terminates immediately" do
     responder = fn _req ->
       %Response{text: "x", finish_reason: :stop, provider: :mock}

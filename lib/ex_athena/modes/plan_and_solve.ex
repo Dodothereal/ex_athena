@@ -77,6 +77,12 @@ defmodule ExAthena.Modes.PlanAndSolve do
 
         {:continue, %{state | messages: new_messages, mode_state: %{phase: :executing}}}
 
+      # Context overflow during planning: surface the kernel's typed capacity
+      # signal so it force-compacts the existing context and retries planning,
+      # rather than dying as a generic execution error. Mirrors ReAct.
+      {:error, %ExAthena.Error{kind: :context_length_exceeded}} ->
+        {:error, :error_prompt_too_long}
+
       {:error, reason} ->
         {:error, {:plan_and_solve_planning_failed, reason}}
     end

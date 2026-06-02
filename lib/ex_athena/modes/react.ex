@@ -156,6 +156,13 @@ defmodule ExAthena.Modes.ReAct do
 
         {:halt, state}
 
+      # The prompt exceeded the model's context window (req_llm maps an HTTP
+      # 413 to `:context_length_exceeded`). Surface the kernel's typed
+      # capacity signal so it force-compacts the existing context and retries
+      # this iteration once, rather than dying as a generic execution error.
+      {:error, %ExAthena.Error{kind: :context_length_exceeded}} ->
+        {:error, :error_prompt_too_long}
+
       {:error, reason} ->
         state =
           %{state | halted_reason: reason}

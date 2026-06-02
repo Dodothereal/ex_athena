@@ -213,7 +213,7 @@ defmodule ExAthena.Loop do
     compactor = compactor_module(state)
 
     estimate = %{
-      tokens: ExAthena.Compactor.estimate_tokens(state.messages),
+      tokens: ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state)),
       max_tokens: state.capabilities[:max_tokens] || 128_000,
       force: true
     }
@@ -313,7 +313,7 @@ defmodule ExAthena.Loop do
     compactor = compactor_module(state)
 
     estimate = %{
-      tokens: ExAthena.Compactor.estimate_tokens(state.messages),
+      tokens: ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state)),
       max_tokens: state.capabilities[:max_tokens] || 128_000
     }
 
@@ -360,6 +360,11 @@ defmodule ExAthena.Loop do
       Application.get_env(:ex_athena, :compactor_module) ||
       ExAthena.Compactor.Pipeline
   end
+
+  # The system prompt is part of every request (it carries tool descriptions
+  # and the skill catalog), so the compaction estimate must include it.
+  defp system_prompt(%State{request_template: %{system_prompt: sp}}), do: sp
+  defp system_prompt(_), do: nil
 
   defp set_finish_reason(%State{} = state, reason) do
     put_in(state.meta[:finish_reason], reason)

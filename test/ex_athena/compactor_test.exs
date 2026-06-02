@@ -4,6 +4,24 @@ defmodule ExAthena.CompactorTest do
   alias ExAthena.Compactor
   alias ExAthena.Messages.{Message, ToolCall, ToolResult}
 
+  describe "estimate_tokens/2 (system prompt)" do
+    test "adds the system prompt's token cost on top of the messages" do
+      msgs = [%Message{role: :user, content: "hi"}]
+      # A large system prompt — tool descriptions / skill catalogs routinely
+      # run to thousands of tokens and are part of every request, yet were
+      # previously excluded from the proactive estimate.
+      prompt = String.duplicate("x", 4000)
+
+      assert Compactor.estimate_tokens(msgs, prompt) ==
+               Compactor.estimate_tokens(msgs) + div(4000, 4)
+    end
+
+    test "a nil system prompt is equivalent to estimate_tokens/1" do
+      msgs = [%Message{role: :user, content: "hi"}]
+      assert Compactor.estimate_tokens(msgs, nil) == Compactor.estimate_tokens(msgs)
+    end
+  end
+
   describe "estimate_tokens/1" do
     test "counts text content at ~4 chars per token + 8 fixed overhead" do
       msg = %Message{role: :user, content: String.duplicate("x", 4000)}

@@ -71,11 +71,21 @@ defmodule ExAthena.Compactor do
   Best-effort token estimator. Counts ~4 chars per token for text
   content, plus a small fixed cost per tool-call to cover the JSON
   envelope. Good enough for compaction triggers; not a billing number.
+
+  Pass the request's `system_prompt` as the second argument to include its
+  cost in the estimate. The system prompt (which carries tool descriptions
+  and skill catalogs) is part of every request and can run to thousands of
+  tokens, so omitting it makes the proactive `should_compact?` trigger fire
+  later than it should — or not at all on prompt-heavy agents.
   """
-  @spec estimate_tokens([Message.t()]) :: non_neg_integer()
-  def estimate_tokens(messages) do
-    Enum.reduce(messages, 0, fn msg, acc -> acc + tokens_for(msg) end)
+  @spec estimate_tokens([Message.t()], String.t() | nil) :: non_neg_integer()
+  def estimate_tokens(messages, system_prompt \\ nil) do
+    msg_tokens = Enum.reduce(messages, 0, fn msg, acc -> acc + tokens_for(msg) end)
+    msg_tokens + system_prompt_tokens(system_prompt)
   end
+
+  defp system_prompt_tokens(prompt) when is_binary(prompt), do: div(byte_size(prompt), 4)
+  defp system_prompt_tokens(_), do: 0
 
   defp tokens_for(%Message{content: nil, tool_calls: calls}) when is_list(calls) do
     Enum.reduce(calls, 0, fn tc, acc ->
