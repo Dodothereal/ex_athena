@@ -16,6 +16,8 @@ defmodule Mix.Tasks.Athena.Web do
   ## Flags
 
     * `--port PORT` — HTTP port (default 4000).
+    * `--log` — also write log output to `log/phoenix_output.log` (in addition
+      to the terminal).
   """
 
   use Mix.Task
@@ -24,8 +26,15 @@ defmodule Mix.Tasks.Athena.Web do
   def run(argv) do
     Mix.Task.run("app.start", [])
 
-    {parsed, _rest, _invalid} = OptionParser.parse(argv, strict: [port: :integer])
+    {parsed, _rest, _invalid} =
+      OptionParser.parse(argv, strict: [port: :integer, log: :boolean])
+
     port = parsed[:port] || 4000
+
+    if parsed[:log] do
+      path = ExAthena.LogFile.attach!()
+      Mix.shell().info("Logging to #{path}")
+    end
 
     Application.put_env(:ex_athena, ExAthena.Web.Endpoint,
       adapter: Bandit.PhoenixAdapter,

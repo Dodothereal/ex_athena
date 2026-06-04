@@ -27,6 +27,7 @@ defmodule Mix.Tasks.Athena.Chat do
     * `--path PATH` (`-p`) — working directory for tools that touch the
       filesystem. `~` is expanded. The chat process does NOT `cd` into
       this path; tools just receive it as their `cwd`.
+    * `--log` — also write log output to `log/phoenix_output.log`.
 
   ## Provider-specific requirements
 
@@ -46,9 +47,14 @@ defmodule Mix.Tasks.Athena.Chat do
 
     {parsed, _rest, _invalid} =
       OptionParser.parse(argv,
-        strict: [model: :string, mode: :string, provider: :string, path: :string],
+        strict: [model: :string, mode: :string, provider: :string, path: :string, log: :boolean],
         aliases: [p: :path]
       )
+
+    if parsed[:log] do
+      path = ExAthena.LogFile.attach!()
+      Mix.shell().info("Logging to #{path}")
+    end
 
     opts =
       []
