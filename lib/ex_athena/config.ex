@@ -91,7 +91,8 @@ defmodule ExAthena.Config do
     gemini: ExAthena.Providers.ReqLLM,
     openrouter: ExAthena.Providers.ReqLLM,
     mock: ExAthena.Providers.Mock,
-    req_llm: ExAthena.Providers.ReqLLM
+    req_llm: ExAthena.Providers.ReqLLM,
+    claude_code: ExAthena.Providers.ClaudeCode
   }
 
   # Map the ExAthena provider atom → the `req_llm` provider tag that belongs
