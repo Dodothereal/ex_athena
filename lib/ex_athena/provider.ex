@@ -45,5 +45,14 @@ defmodule ExAthena.Provider do
   """
   @callback capabilities(opts :: keyword()) :: Capabilities.t()
 
-  @optional_callbacks [stream: 3, capabilities: 1]
+  @doc """
+  Lists the model identifiers this provider can serve, for UI selection.
+
+  Returns `{:ok, [model_string]}` or `{:error, reason}`. Providers that cannot
+  enumerate their models (the model is free-form) simply omit this callback; the
+  UI then falls back to a free-text model input.
+  """
+  @callback list_models() :: {:ok, [String.t()]} | {:error, term()}
+
+  @optional_callbacks [stream: 3, capabilities: 1, list_models: 0]
 end

@@ -10,6 +10,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     {"llama.cpp", "llamacpp"},
     {"Ollama", "ollama"},
     {"Claude / Anthropic", "claude"},
+    {"Claude Code", "claude_code"},
     {"OpenAI-compatible", "openai_compatible"},
     {"Gemini", "gemini"}
   ]
@@ -266,7 +267,9 @@ defmodule ExAthena.Web.Live.ChatLive do
   def handle_event("set_provider", %{"value" => provider}, socket) do
     model = default_model(provider)
     send(self(), {:load_models, provider})
-    {:noreply, assign(socket, provider: provider, model: model, available_models: [])}
+
+    {:noreply,
+     assign(socket, provider: provider, model: model, available_models: [], models_loading: true)}
   end
 
   def handle_event("set_model", %{"value" => model}, socket) do
@@ -476,7 +479,14 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_info({:models_loaded, models}, socket) do
-    {:noreply, assign(socket, available_models: models, models_loading: false)}
+    # If the current model isn't one the provider reports, select the first one
+    # so we never send a stale/foreign model id (e.g. an Ollama name to Claude).
+    model =
+      if socket.assigns.model in models or models == [],
+        do: socket.assigns.model,
+        else: List.first(models)
+
+    {:noreply, assign(socket, available_models: models, models_loading: false, model: model)}
   end
 
   def handle_info({:athena, {:content, text}}, socket) do
@@ -764,11 +774,13 @@ defmodule ExAthena.Web.Live.ChatLive do
 
         <div class="sidebar-section">
           <label class="field-label">Provider</label>
-          <select class="field-select" phx-change="set_provider" name="value">
-            <option :for={{label, val} <- @providers} value={val} selected={@provider == val}>
-              {label}
-            </option>
-          </select>
+          <form phx-change="set_provider">
+            <select class="field-select" name="value">
+              <option :for={{label, val} <- @providers} value={val} selected={@provider == val}>
+                {label}
+              </option>
+            </select>
+          </form>
         </div>
 
         <div class="sidebar-section">
@@ -782,9 +794,11 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="field-loading">fetching models…</div>
           <% else %>
             <%= if @available_models != [] do %>
-              <select class="field-select" phx-change="set_model" name="value">
-                <option :for={m <- @available_models} value={m} selected={@model == m}>{m}</option>
-              </select>
+              <form phx-change="set_model">
+                <select class="field-select" name="value">
+                  <option :for={m <- @available_models} value={m} selected={@model == m}>{m}</option>
+                </select>
+              </form>
             <% else %>
               <input
                 class="field-input"
@@ -800,11 +814,13 @@ defmodule ExAthena.Web.Live.ChatLive do
 
         <div class="sidebar-section">
           <label class="field-label">Mode</label>
-          <select class="field-select" phx-change="set_mode" name="value">
-            <option :for={{label, val} <- @modes} value={val} selected={@mode == val}>
-              {label}
-            </option>
-          </select>
+          <form phx-change="set_mode">
+            <select class="field-select" name="value">
+              <option :for={{label, val} <- @modes} value={val} selected={@mode == val}>
+                {label}
+              </option>
+            </select>
+          </form>
         </div>
 
         <div class="sidebar-section sidebar-actions">
@@ -1833,6 +1849,13 @@ defmodule ExAthena.Web.Live.ChatLive do
     opts = if base_url, do: [base_url: base_url], else: []
 
     case Ollama.list_models(opts) do
+      {:ok, models} -> models
+      _ -> []
+    end
+  end
+
+  defp fetch_models("claude_code") do
+    case ExAthena.Providers.ClaudeCode.list_models() do
       {:ok, models} -> models
       _ -> []
     end

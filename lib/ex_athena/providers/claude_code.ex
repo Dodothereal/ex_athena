@@ -38,6 +38,45 @@ defmodule ExAthena.Providers.ClaudeCode do
   def capabilities(_opts), do: capabilities()
 
   @impl ExAthena.Provider
+  def list_models, do: list_models(model_source())
+
+  @doc """
+  Like `list_models/0`, but with an explicit `ExAthena.Providers.ClaudeCode.ModelSource`.
+
+  Maps the CLI's reported models down to a sorted, de-duplicated list of model
+  identifier strings (dropping blanks), which is what the UI dropdown needs.
+  """
+  @spec list_models(module()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_models(source) when is_atom(source) do
+    case source.supported_models() do
+      {:ok, infos} when is_list(infos) ->
+        models =
+          infos
+          |> Enum.map(&model_value/1)
+          |> Enum.reject(&(&1 in [nil, ""]))
+          |> Enum.uniq()
+          |> Enum.sort()
+
+        {:ok, models}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp model_value(%{value: v}), do: v
+  defp model_value(%{"value" => v}), do: v
+  defp model_value(_), do: nil
+
+  defp model_source do
+    Application.get_env(
+      :ex_athena,
+      :claude_code_model_source,
+      ExAthena.Providers.ClaudeCode.SDKModelSource
+    )
+  end
+
+  @impl ExAthena.Provider
   def query(%Request{} = request, opts) do
     with :ok <- ensure_dep() do
       case ClaudeCode.query(flatten_prompt(request), build_opts(request, opts)) do
