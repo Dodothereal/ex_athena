@@ -92,7 +92,8 @@ defmodule ExAthena.Config do
     openrouter: ExAthena.Providers.ReqLLM,
     mock: ExAthena.Providers.Mock,
     req_llm: ExAthena.Providers.ReqLLM,
-    claude_code: ExAthena.Providers.ClaudeCode
+    claude_code: ExAthena.Providers.ClaudeCode,
+    exo: ExAthena.Providers.ReqLLM
   }
 
   # Map the ExAthena provider atom → the `req_llm` provider tag that belongs
@@ -110,7 +111,8 @@ defmodule ExAthena.Config do
     claude: "anthropic",
     anthropic: "anthropic",
     gemini: "google",
-    openrouter: "openai"
+    openrouter: "openai",
+    exo: "openai"
   }
 
   # Provider atoms that talk to a local OpenAI-compatible server. These
@@ -119,7 +121,8 @@ defmodule ExAthena.Config do
   #    allows missing API keys (unauthenticated local deployments).
   @local_openai_compatible_backends %{
     ollama: :ollama,
-    llamacpp: :llamacpp
+    llamacpp: :llamacpp,
+    exo: :exo
   }
 
   @doc """

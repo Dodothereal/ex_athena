@@ -378,6 +378,7 @@ defmodule ExAthena.Providers.ReqLLM do
   # ignore it, so substitute a placeholder when the caller didn't supply one.
   defp resolve_api_key(nil, :ollama), do: "ollama"
   defp resolve_api_key(nil, :llamacpp), do: "llamacpp"
+  defp resolve_api_key(nil, :exo), do: "exo"
   defp resolve_api_key(key, _backend), do: key
 
   # ── Response mapping ──────────────────────────────────────────────
