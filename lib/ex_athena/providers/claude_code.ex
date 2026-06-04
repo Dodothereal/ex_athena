@@ -169,7 +169,7 @@ defmodule ExAthena.Providers.ClaudeCode do
       system_prompt: request.system_prompt,
       cwd: opts[:cwd],
       allowed_tools: opts[:allowed_tools],
-      permission_mode: opts[:permission_mode],
+      permission_mode: opts[:permission_mode] || phase_to_mode(opts[:phase]),
       max_turns: opts[:max_iterations] || opts[:max_turns],
       add_dir: opts[:add_dir],
       resume: opts[:resume],
@@ -178,6 +178,15 @@ defmodule ExAthena.Providers.ClaudeCode do
     |> Keyword.merge(List.wrap(request.provider_opts))
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
+
+  # Map ex_athena's permission phase → claude_code's permission mode. The CLI is
+  # an autonomous agent working in an isolated worktree, so the default is
+  # `:accept_edits` (apply file edits without prompting); read-only phases stay
+  # in `:plan`.
+  defp phase_to_mode(:plan), do: :plan
+  defp phase_to_mode(:bypass_permissions), do: :bypass_permissions
+  defp phase_to_mode(:accept_edits), do: :accept_edits
+  defp phase_to_mode(_), do: :accept_edits
 
   defp ensure_dep do
     if Code.ensure_loaded?(ClaudeCode) do
