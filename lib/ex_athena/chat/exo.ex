@@ -36,6 +36,14 @@ defmodule ExAthena.Chat.Exo do
     end
   end
 
+  @doc """
+  Guarantees `model` has an active instance in the exo cluster, placing one
+  if absent and polling until it registers.
+
+  Options: `:base_url`, `:poll_interval_ms` (default 250), `:timeout_ms`
+  (default 10_000). The timeout is approximate (a lower bound): each poll adds
+  up to one HTTP round-trip beyond the deadline.
+  """
   @spec ensure_instance(String.t(), keyword()) ::
           :ok
           | {:error,
@@ -46,14 +54,20 @@ defmodule ExAthena.Chat.Exo do
   def ensure_instance(model, opts \\ []) when is_binary(model) do
     base = opts |> Keyword.get(:base_url, configured_base_url()) |> strip_v1_suffix()
 
-    case instance_active?(base, model) do
-      {:ok, true} -> :ok
-      {:ok, false} -> place_and_await(base, model, opts)
-      {:error, _} = err -> err
-    end
+    # Serialize concurrent callers per model within this node: both could
+    # otherwise observe "absent" and double-place (/place_instance is not
+    # idempotent). Callers in other OS processes can still race; acceptable
+    # for a single-user local server.
+    :global.trans({{__MODULE__, model}, self()}, fn ->
+      case fetch_instance_presence(base, model) do
+        {:ok, true} -> :ok
+        {:ok, false} -> place_and_await(base, model, opts)
+        {:error, _} = err -> err
+      end
+    end)
   end
 
-  defp instance_active?(base, model) do
+  defp fetch_instance_presence(base, model) do
     case Req.get(base <> "/state/instances", receive_timeout: @timeout_ms, retry: false) do
       {:ok, %Req.Response{status: 200, body: body}} -> decode_instance_presence(body, model)
       {:ok, %Req.Response{status: status}} -> {:error, {:http, status}}
@@ -109,7 +123,7 @@ defmodule ExAthena.Chat.Exo do
   end
 
   defp await_instance(base, model, interval, deadline) do
-    case instance_active?(base, model) do
+    case fetch_instance_presence(base, model) do
       {:ok, true} ->
         :ok
 

@@ -130,7 +130,7 @@ defmodule ExAthena.Chat.ExoTest do
 
     test "places an instance and polls until it appears",
          %{bypass: bypass, base_url: base_url} do
-      {:ok, agent} = Agent.start_link(fn -> false end)
+      agent = start_supervised!({Agent, fn -> false end})
 
       Bypass.expect(bypass, "GET", "/state/instances", fn conn ->
         body = if Agent.get(agent, & &1), do: instances_body(@model), else: %{}
