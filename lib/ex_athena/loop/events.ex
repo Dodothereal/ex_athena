@@ -37,8 +37,10 @@ defmodule ExAthena.Loop.Events do
       emitted; the Result carries the finish_reason.
   """
 
+  alias ExAthena.Loop.FenceFilter
   alias ExAthena.Messages.{ToolCall, ToolResult}
   alias ExAthena.Result
+  alias ExAthena.Streaming.Event
 
   @type t ::
           {:content, String.t()}
@@ -74,5 +76,138 @@ defmodule ExAthena.Loop.Events do
   def emit(callback, event) when is_function(callback, 1) do
     callback.(event)
     :ok
+  end
+
+  @doc """
+  Build a `{callback, counters}` pair that translates provider-side
+  `ExAthena.Streaming.Event` structs into host-side Loop event tuples.
+
+  Providers speak `%Streaming.Event{}` structs; host UIs speak flat Loop
+  tuples like `{:content, text}` and `{:thinking, text}`. This callback
+  bridges the two so modes can wire a provider stream directly to an
+  `on_event` callback without manually pattern-matching every event type.
+
+  The returned `counters` (an `:counters` table with 2 slots) track how many
+  text/thinking deltas have been forwarded:
+
+    * Slot 1 — text delta count
+    * Slot 2 — thinking delta count
+
+  Modes use these counters to suppress their end-of-turn full-text emission
+  when streaming deltas have already been delivered to the host, avoiding
+  duplicate content.
+
+  ## Mapping
+
+    * `:text_delta` with binary data → increments slot 1, emits `{:content, t}`
+    * `:thinking_delta` with binary data → increments slot 2, emits `{:thinking, t}`
+    * `:tool_call_end` when `forward_tool_events: true` → emits `{:tool_call, data}`
+    * `:tool_result` when `forward_tool_events: true` → emits `{:tool_result, data}`
+    * All other events (`:start`, `:stop`, `:usage`, `:error`,
+      `:tool_call_start`, `:tool_call_delta`, and tool events when forwarding
+      is off) → `:ok`, nothing emitted, counters untouched
+
+  `:usage` is intentionally dropped here because modes emit it once from the
+  final `Response` struct, which has complete accounting. `:tool_call_start`
+  and `:tool_call_delta` are dropped because hosts receive complete tool
+  events via `:tool_call`.
+
+  ## Options
+
+    * `:forward_tool_events` (boolean, default `false`) — when `true`, forwards
+      `:tool_call_end` and `:tool_result` events to the host callback.
+    * `:filter_tool_fences` (boolean, default `false`) — when `true`, text
+      deltas are run through `ExAthena.Loop.FenceFilter` so `~~~tool_call`
+      fenced blocks (the TextTagged protocol used by non-native-tool-call
+      providers) never reach the host as visible `{:content, _}` text; the
+      loop surfaces the parsed calls as `{:tool_call, _}` events instead.
+      `{:content, visible}` is emitted only when the filtered text is
+      non-empty, but counter slot 1 still increments on every raw text
+      delta — the end-of-turn full-text suppression must stay armed because
+      the full `response.text` may also contain fences. On `:stop` the
+      filter is flushed and any held tail is emitted as `{:content, tail}`
+      (`:stop` itself remains untranslated). Filter state lives in the
+      process dictionary under a per-callback unique key; this relies on
+      the provider invoking the callback synchronously from a single
+      process (mock, req_llm, and claude_code all reduce the stream
+      in-process). `:thinking_delta` is never filtered.
+
+  ## Examples
+
+      parent = self()
+      on_event = fn event -> send(parent, {:evt, event}) end
+      {cb, counters} = Events.provider_stream_callback(on_event)
+      cb.(%Streaming.Event{type: :text_delta, data: "hello"})
+      # => {:content, "hello"} emitted; :counters.get(counters, 1) == 1
+
+  """
+  @spec provider_stream_callback((t() -> term()) | nil) ::
+          {(Event.t() -> :ok), :counters.counters_ref()}
+  def provider_stream_callback(on_event), do: provider_stream_callback(on_event, [])
+
+  @spec provider_stream_callback((t() -> term()) | nil, keyword()) ::
+          {(Event.t() -> :ok), :counters.counters_ref()}
+  def provider_stream_callback(on_event, opts) do
+    counters = :counters.new(2, [])
+    forward_tools = Keyword.get(opts, :forward_tool_events, false)
+
+    # Fence-filter state is threaded through the process dictionary because
+    # the callback is 1-arity (no state slot). Safe: every provider invokes
+    # the callback synchronously from a single process. The key is unique
+    # per callback instance so concurrent loops in one process can't clash.
+    fence_key =
+      if Keyword.get(opts, :filter_tool_fences, false),
+        do: {__MODULE__, :fence_filter, make_ref()}
+
+    callback = fn
+      %Event{type: :text_delta, data: t} when is_binary(t) ->
+        :counters.add(counters, 1, 1)
+        emit_text(on_event, t, fence_key)
+
+      %Event{type: :thinking_delta, data: t} when is_binary(t) ->
+        :counters.add(counters, 2, 1)
+        emit(on_event, {:thinking, t})
+
+      %Event{type: :tool_call_end, data: tc} when forward_tools ->
+        emit(on_event, {:tool_call, tc})
+
+      %Event{type: :tool_result, data: tr} when forward_tools ->
+        emit(on_event, {:tool_result, tr})
+
+      %Event{type: :stop} when fence_key != nil ->
+        flush_fence_filter(on_event, fence_key)
+
+      %Event{} ->
+        :ok
+    end
+
+    {callback, counters}
+  end
+
+  # Unfiltered path: forward the raw delta.
+  defp emit_text(on_event, text, nil), do: emit(on_event, {:content, text})
+
+  # Filtered path: strip ~~~tool_call fences; emit only non-empty residue.
+  defp emit_text(on_event, text, fence_key) do
+    filter = Process.get(fence_key) || FenceFilter.new()
+    {filter, visible} = FenceFilter.push(filter, text)
+    Process.put(fence_key, filter)
+
+    if visible == "", do: :ok, else: emit(on_event, {:content, visible})
+  end
+
+  # End of stream: release any held text that never became a fence, then
+  # drop the per-stream filter state from the process dictionary.
+  defp flush_fence_filter(on_event, fence_key) do
+    case Process.delete(fence_key) do
+      nil ->
+        :ok
+
+      filter ->
+        case FenceFilter.flush(filter) do
+          "" -> :ok
+          tail -> emit(on_event, {:content, tail})
+        end
+    end
   end
 end

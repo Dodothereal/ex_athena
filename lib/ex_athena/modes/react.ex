@@ -6,9 +6,11 @@ defmodule ExAthena.Modes.ReAct do
 
     1. Build a Request from current messages + tools + system prompt.
     2. Call the provider — uses `stream/3` when the loop was started with
-       `on_event:` set (so partial token deltas flow to the caller in
-       real time), falls back to one-shot `query/2` when no event
-       callback is registered.
+       `on_event:` set, translating provider `%Streaming.Event{}` deltas
+       into Loop tuples (`{:content, chunk}`, `{:thinking, chunk}`) so
+       they reach the caller in real time; falls back to one-shot
+       `query/2` when no event callback is registered. When deltas
+       streamed, the end-of-turn full-text emission is suppressed.
     3. Extract tool calls (native, or TextTagged fallback via
        `ExAthena.ToolCalls`).
     4. If no tool calls: emit `{:content, text}`, set `finish_reason:
@@ -75,12 +77,21 @@ defmodule ExAthena.Modes.ReAct do
         conversation_id: Map.get(state.meta, :conversation_id)
       )
 
+    {stream_cb, counters} = maybe_stream_callback(state)
+
     case Telemetry.span([:ex_athena, :chat], chat_meta, fn ->
-           query_or_stream(state, request)
+           query_or_stream(state, request, stream_cb)
          end) do
       {:ok, response} ->
         # Accumulate usage + cost before considering termination.
         state = fold_usage(state, response)
+
+        # When deltas already streamed to the host this turn, suppress the
+        # end-of-turn full-text/full-thinking emission to avoid duplicates.
+        # Counter-based (not static) because providers may export stream/3
+        # yet emit zero deltas — those still need the final emission.
+        streamed_text? = counters != nil and :counters.get(counters, 1) > 0
+        streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0
 
         case ExAthena.ToolCalls.extract(
                %{tool_calls: response.tool_calls, text: response.text},
@@ -88,8 +99,10 @@ defmodule ExAthena.Modes.ReAct do
              ) do
           {:ok, []} ->
             # Terminal: model returned plain text with no tool calls.
-            maybe_emit_thinking(state.on_event, response)
-            Events.emit(state.on_event, {:content, response.text || ""})
+            unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
+
+            unless streamed_text?,
+              do: Events.emit(state.on_event, {:content, response.text || ""})
 
             state =
               %{
@@ -101,8 +114,10 @@ defmodule ExAthena.Modes.ReAct do
             {:halt, state}
 
           {:ok, tool_calls} ->
-            maybe_emit_thinking(state.on_event, response)
-            Events.emit(state.on_event, {:content, response.text || ""})
+            unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
+
+            unless streamed_text?,
+              do: Events.emit(state.on_event, {:content, response.text || ""})
 
             assistant_msg = Messages.assistant(response.text, tool_calls)
             state = %{state | messages: state.messages ++ [assistant_msg]}
@@ -388,21 +403,41 @@ defmodule ExAthena.Modes.ReAct do
 
   # ── Provider dispatch: query vs stream ────────────────────────────
 
-  # When the caller registered `on_event`, stream the provider response and
-  # forward `:text_delta` events to it in real time. Otherwise fall back to
-  # a cheaper one-shot `query/2`.
-  defp query_or_stream(%State{on_event: nil} = state, request) do
-    state.provider_mod.query(request, state.provider_opts)
-  end
-
-  defp query_or_stream(%State{on_event: on_event} = state, request)
+  # When the caller registered `on_event` and the provider supports
+  # streaming, build a translating callback (provider `%Streaming.Event{}`
+  # structs → Loop tuples like `{:content, chunk}`) plus a counters ref
+  # tracking how many text/thinking deltas were forwarded, so do_iterate
+  # can suppress the duplicate end-of-turn emission. Returns {nil, nil}
+  # when streaming doesn't apply, which routes to one-shot `query/2`.
+  #
+  # Native-tool-call providers get execution-time {:tool_call} events from
+  # the loop itself; non-native ones (e.g. claude_code with CLI-internal
+  # tools) have no other source, so forward stream-level tool events. The
+  # same non-native providers speak the TextTagged protocol — their tool
+  # calls arrive as `~~~tool_call` fences inside the text deltas — so also
+  # filter those fences out of the visible {:content, _} stream (the loop
+  # surfaces the parsed calls as {:tool_call, _} events when it runs them).
+  defp maybe_stream_callback(%State{on_event: on_event} = state)
        when is_function(on_event, 1) do
     if function_exported?(state.provider_mod, :stream, 3) do
-      state.provider_mod.stream(request, on_event, state.provider_opts)
+      non_native = not (state.capabilities[:native_tool_calls] || false)
+
+      Events.provider_stream_callback(on_event,
+        forward_tool_events: non_native,
+        filter_tool_fences: non_native
+      )
     else
-      state.provider_mod.query(request, state.provider_opts)
+      {nil, nil}
     end
   end
+
+  defp maybe_stream_callback(_state), do: {nil, nil}
+
+  defp query_or_stream(state, request, nil),
+    do: state.provider_mod.query(request, state.provider_opts)
+
+  defp query_or_stream(state, request, stream_cb),
+    do: state.provider_mod.stream(request, stream_cb, state.provider_opts)
 
   defp stringify(value) when is_binary(value), do: value
   defp stringify(value), do: inspect(value, pretty: true, limit: :infinity)

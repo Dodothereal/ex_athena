@@ -20,6 +20,7 @@ defmodule ExAthena.Streaming do
             | :tool_call_start
             | :tool_call_delta
             | :tool_call_end
+            | :tool_result
             | :usage
             | :stop
             | :error
@@ -50,6 +51,10 @@ defmodule ExAthena.Streaming do
   @doc "Emit a final tool-call event with the complete ToolCall."
   def tool_call_end(callback, index, tool_call),
     do: emit(callback, %Event{type: :tool_call_end, index: index, data: tool_call})
+
+  @doc "Emit a completed tool-result event (providers whose runtime executes tools internally, e.g. Claude Code)."
+  def tool_result(callback, tool_result),
+    do: emit(callback, %Event{type: :tool_result, data: tool_result})
 
   @doc "Emit a usage-accounting event."
   def usage(callback, usage) when is_map(usage),

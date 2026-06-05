@@ -67,6 +67,7 @@ defmodule ExAthena.Providers.Mock do
         {:ok,
          %Response{
            text: text,
+           thinking: Keyword.get(mock, :thinking),
            tool_calls: Keyword.get(mock, :tool_calls, []),
            finish_reason: :stop,
            model: request.model,

@@ -644,81 +644,63 @@ defmodule ExAthena.Chat.Tui.StateTest do
     end
   end
 
-  describe "append_loop_event/2 — streaming events" do
-    test ":text_delta routes content to stream_buffer and <think> body to thinking buffer" do
+  describe "append_loop_event/2 — streaming chunk tuples" do
+    test "{:content, chunk} routes content to stream_buffer and <think> body to thinking buffer" do
       state =
         Session.new()
         |> State.new()
-        |> State.append_loop_event(%ExAthena.Streaming.Event{
-          type: :text_delta,
-          data: "<think>plan</think>Hello"
-        })
+        |> State.append_loop_event({:content, "<think>plan</think>Hello"})
 
       assert state.stream_buffer == "Hello"
       assert state.details_stream_buffer == "Hello"
       assert state.details_thinking_buffer == "plan"
-      assert state.streamed_this_turn? == true
     end
 
-    test ":thinking_delta routes directly to thinking buffer" do
+    test "{:thinking, chunk} routes directly to thinking buffer" do
       state =
         Session.new()
         |> State.new()
-        |> State.append_loop_event(%ExAthena.Streaming.Event{type: :thinking_delta, data: "abc"})
+        |> State.append_loop_event({:thinking, "abc"})
 
       assert state.details_thinking_buffer == "abc"
-      assert state.streamed_this_turn? == true
+      assert state.stream_buffer == ""
     end
 
-    test "end-of-turn {:content, text} is suppressed when streaming already happened" do
+    test "a <think> tag split across two {:content, chunks} still parses" do
       state =
         Session.new()
         |> State.new()
-        |> State.append_loop_event(%ExAthena.Streaming.Event{type: :text_delta, data: "Hi"})
-        |> State.append_loop_event({:content, "Hi"})
+        |> State.append_loop_event({:content, "before <thi"})
+        |> State.append_loop_event({:content, "nk>inside</think>after"})
 
-      # Buffer wasn't doubled.
-      assert state.stream_buffer == "Hi"
+      assert state.stream_buffer == "before after"
+      assert state.details_stream_buffer == "before after"
+      assert state.details_thinking_buffer == "inside"
     end
 
-    test "reset_stream_state/1 clears the parser + dedup flag" do
+    test "consecutive {:content, chunks} all accumulate (no dedupe drops)" do
       state =
         Session.new()
         |> State.new()
-        |> State.append_loop_event(%ExAthena.Streaming.Event{type: :text_delta, data: "<thi"})
+        |> State.append_loop_event({:content, "Hel"})
+        |> State.append_loop_event({:content, "lo"})
+        |> State.append_loop_event({:content, " world"})
+
+      assert state.stream_buffer == "Hello world"
+      assert state.details_stream_buffer == "Hello world"
+    end
+
+    test "reset_stream_state/1 clears the parser" do
+      state =
+        Session.new()
+        |> State.new()
+        |> State.append_loop_event({:content, "<thi"})
 
       assert state.stream_parser.pending == "<thi"
-      assert state.streamed_this_turn? == true
 
       state = State.reset_stream_state(state)
       assert state.stream_parser.pending == ""
-      assert state.streamed_this_turn? == false
-    end
-  end
-
-  describe "split_thinking_blocks/1" do
-    test "extracts a single <think>…</think> block" do
-      assert {"my reasoning", "the answer"} =
-               State.split_thinking_blocks("<think>my reasoning</think>the answer")
-    end
-
-    test "joins multiple blocks with newlines" do
-      assert {"a\nb", "rest"} =
-               State.split_thinking_blocks("<think>a</think> <think>b</think> rest")
-    end
-
-    test "supports <thinking> as well as <think>" do
-      assert {"reasoning", "answer"} =
-               State.split_thinking_blocks("<thinking>reasoning</thinking>answer")
-    end
-
-    test "spans newlines inside the block" do
-      input = "<think>line 1\nline 2</think>final"
-      assert {"line 1\nline 2", "final"} = State.split_thinking_blocks(input)
-    end
-
-    test "is a passthrough when no tags are present" do
-      assert {"", "plain answer"} = State.split_thinking_blocks("plain answer")
+      assert state.stream_parser.mode == :outside
     end
   end
 

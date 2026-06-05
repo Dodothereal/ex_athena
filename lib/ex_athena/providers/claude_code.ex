@@ -98,12 +98,12 @@ defmodule ExAthena.Providers.ClaudeCode do
   @impl ExAthena.Provider
   def stream(%Request{} = request, callback, opts) when is_function(callback, 1) do
     with :ok <- ensure_dep(),
-         {:ok, session} <- ClaudeCode.start_link(build_opts(request, opts)) do
+         {:ok, session} <- ClaudeCode.start_link(stream_opts(request, opts)) do
       try do
         acc =
           session
           |> ClaudeCode.stream(flatten_prompt(request))
-          |> Enum.reduce(%{result: nil, thinking: []}, fn message, acc ->
+          |> Enum.reduce(%{result: nil, thinking: [], partials?: false}, fn message, acc ->
             handle_message(message, callback, acc)
           end)
 
@@ -124,14 +124,50 @@ defmodule ExAthena.Providers.ClaudeCode do
 
   # ── streaming message handling ───────────────────────────────────
 
-  defp handle_message(%ClaudeCode.Message.AssistantMessage{message: %{content: content}}, cb, acc)
-       when is_list(content) do
+  # Public (but undocumented) so tests can drive the SDK-message → Streaming
+  # event mapping directly without standing up a CLI session.
+
+  # Partial messages (include_partial_messages: true) stream character-level
+  # text/thinking deltas. Seeing one sets `partials?`, which suppresses the
+  # re-emission of the same content from the subsequent complete
+  # AssistantMessage (deltas always precede it on the wire).
+  @doc false
+  def handle_message(%ClaudeCode.Message.PartialAssistantMessage{} = partial, cb, acc) do
+    case ClaudeCode.Message.PartialAssistantMessage.extract_text(partial) do
+      {:ok, text} ->
+        Streaming.text_delta(cb, text)
+        %{acc | partials?: true}
+
+      :error ->
+        case ClaudeCode.Message.PartialAssistantMessage.extract_thinking(partial) do
+          {:ok, t} ->
+            Streaming.thinking_delta(cb, t)
+            %{acc | partials?: true, thinking: [t | acc.thinking]}
+
+          :error ->
+            acc
+        end
+    end
+  end
+
+  def handle_message(%ClaudeCode.Message.AssistantMessage{message: %{content: content}}, cb, acc)
+      when is_list(content) do
     Enum.reduce(content, acc, fn
-      %ClaudeCode.Content.TextBlock{text: t}, a when is_binary(t) ->
+      # Tool inputs are not reconstructible from text/thinking deltas, so tool
+      # calls are always surfaced from the complete message.
+      %ClaudeCode.Content.ToolUseBlock{} = b, a ->
+        tool_call = %ExAthena.Messages.ToolCall{id: b.id, name: b.name, arguments: b.input}
+        Streaming.tool_call_end(cb, nil, tool_call)
+        a
+
+      # Text/thinking fallback for CLIs without partial-message support; when
+      # deltas streamed, skip to avoid doubling (incl. Response.thinking).
+      %ClaudeCode.Content.TextBlock{text: t}, %{partials?: false} = a when is_binary(t) ->
         Streaming.text_delta(cb, t)
         a
 
-      %ClaudeCode.Content.ThinkingBlock{thinking: t}, a when is_binary(t) ->
+      %ClaudeCode.Content.ThinkingBlock{thinking: t}, %{partials?: false} = a
+      when is_binary(t) ->
         Streaming.thinking_delta(cb, t)
         %{a | thinking: [t | a.thinking]}
 
@@ -140,12 +176,42 @@ defmodule ExAthena.Providers.ClaudeCode do
     end)
   end
 
-  defp handle_message(%ClaudeCode.Message.ResultMessage{} = r, cb, acc) do
+  # The CLI executes tools itself and reports their outputs as UserMessages
+  # carrying ToolResultBlocks. Surface those so hosts can render tool activity.
+  def handle_message(%ClaudeCode.Message.UserMessage{message: %{content: content}}, cb, acc)
+      when is_list(content) do
+    Enum.each(content, fn
+      %ClaudeCode.Content.ToolResultBlock{} = b ->
+        Streaming.tool_result(cb, %ExAthena.Messages.ToolResult{
+          tool_call_id: b.tool_use_id,
+          content: flatten_result_content(b.content),
+          is_error: b.is_error
+        })
+
+      _other ->
+        :ok
+    end)
+
+    acc
+  end
+
+  def handle_message(%ClaudeCode.Message.ResultMessage{} = r, cb, acc) do
     Streaming.usage(cb, usage(r))
     %{acc | result: r}
   end
 
-  defp handle_message(_other, _cb, acc), do: acc
+  def handle_message(_other, _cb, acc), do: acc
+
+  defp flatten_result_content(content) when is_binary(content), do: content
+
+  defp flatten_result_content(content) when is_list(content) do
+    Enum.map_join(content, fn
+      %ClaudeCode.Content.TextBlock{text: t} when is_binary(t) -> t
+      other -> inspect(other)
+    end)
+  end
+
+  defp flatten_result_content(content), do: inspect(content)
 
   # Accumulated thinking deltas are prepended, so reverse to restore order.
   defp thinking_text(%{thinking: []}), do: nil
@@ -210,9 +276,20 @@ defmodule ExAthena.Providers.ClaudeCode do
 
   defp message_text(_), do: nil
 
+  # stream/3 turns on partial messages by default for character-level deltas.
+  # `put_new` runs after build_opts merged Request.provider_opts, so callers
+  # can opt out via `provider_opts: [include_partial_messages: false]`.
+  @doc false
+  def stream_opts(%Request{} = request, opts) do
+    request
+    |> build_opts(opts)
+    |> Keyword.put_new(:include_partial_messages, true)
+  end
+
   # Map the supported subset of ex_athena opts → claude_code session opts. Extra
   # claude_code-specific options can be threaded via Request.provider_opts.
-  defp build_opts(%Request{} = request, opts) do
+  @doc false
+  def build_opts(%Request{} = request, opts) do
     [
       model: request.model,
       system_prompt: request.system_prompt,

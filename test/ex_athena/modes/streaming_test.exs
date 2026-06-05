@@ -1,8 +1,10 @@
 defmodule ExAthena.Modes.StreamingTest do
   @moduledoc """
   Verifies that the ReAct mode dispatches to `provider_mod.stream/3` when
-  the caller registered an `on_event` callback, so per-token `:text_delta`
-  deltas reach the caller in real time.
+  the caller registered an `on_event` callback, translating provider
+  `%Streaming.Event{}` deltas into Loop tuples (`{:content, chunk}`,
+  `{:thinking, chunk}`) — and that the end-of-turn full-text emission is
+  suppressed when deltas already streamed (but kept when they didn't).
   """
   use ExUnit.Case, async: true
 
@@ -16,13 +18,12 @@ defmodule ExAthena.Modes.StreamingTest do
     {:ok, dir: dir}
   end
 
-  test "forwards provider text_delta events to on_event in order", %{dir: dir} do
+  defp collecting_on_event do
     test_pid = self()
+    fn event -> send(test_pid, {:event, event}) end
+  end
 
-    on_event = fn event ->
-      send(test_pid, {:event, event})
-    end
-
+  test "forwards provider deltas as {:content, chunk} tuples in order", %{dir: dir} do
     assert {:ok, %Result{finish_reason: :stop}} =
              Loop.run("hi",
                provider: :mock,
@@ -34,14 +35,125 @@ defmodule ExAthena.Modes.StreamingTest do
                ],
                cwd: dir,
                tools: [],
-               on_event: on_event
+               on_event: collecting_on_event()
              )
 
-    # Per-token deltas should arrive before the final :content event.
-    assert_receive {:event, %Event{type: :text_delta, data: "hel"}}
-    assert_receive {:event, %Event{type: :text_delta, data: "lo "}}
-    assert_receive {:event, %Event{type: :text_delta, data: "world"}}
+    # assert_receive consumes mailbox messages in order, so binding the
+    # chunk (rather than matching a literal) proves delta ordering.
+    assert_receive {:event, {:content, chunk1}}
+    assert_receive {:event, {:content, chunk2}}
+    assert_receive {:event, {:content, chunk3}}
+    assert [chunk1, chunk2, chunk3] == ["hel", "lo ", "world"]
+
+    # Raw provider stream events must never leak to the host callback.
+    refute_received {:event, %Event{}}
+  end
+
+  test "suppresses the end-of-turn full content when text deltas streamed", %{dir: dir} do
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [text: "hello world"],
+               mock_events: [
+                 %Event{type: :text_delta, data: "hel"},
+                 %Event{type: :text_delta, data: "lo "},
+                 %Event{type: :text_delta, data: "world"}
+               ],
+               cwd: dir,
+               tools: [],
+               on_event: collecting_on_event()
+             )
+
+    refute_received {:event, {:content, "hello world"}}
+  end
+
+  test "still emits final {:content, full} when the stream produced no deltas", %{dir: dir} do
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [text: "hello world"],
+               mock_events: [],
+               cwd: dir,
+               tools: [],
+               on_event: collecting_on_event()
+             )
+
     assert_receive {:event, {:content, "hello world"}}
+  end
+
+  test "forwards thinking deltas and suppresses end-of-turn full thinking", %{dir: dir} do
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [text: "hello world", thinking: "deep thought"],
+               mock_events: [
+                 %Event{type: :thinking_delta, data: "deep "},
+                 %Event{type: :thinking_delta, data: "thought"},
+                 %Event{type: :text_delta, data: "hello world"}
+               ],
+               cwd: dir,
+               tools: [],
+               on_event: collecting_on_event()
+             )
+
+    assert_receive {:event, {:thinking, "deep "}}
+    assert_receive {:event, {:thinking, "thought"}}
+    refute_received {:event, {:thinking, "deep thought"}}
+  end
+
+  test "still emits final {:thinking, full} when the stream produced no thinking deltas", %{
+    dir: dir
+  } do
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [text: "hello world", thinking: "deep thought"],
+               mock_events: [],
+               cwd: dir,
+               tools: [],
+               on_event: collecting_on_event()
+             )
+
+    assert_receive {:event, {:thinking, "deep thought"}}
+  end
+
+  test "filters ~~~tool_call fences from streamed text for non-native providers", %{dir: dir} do
+    # Non-native providers (TextTagged protocol) emit tool calls as text
+    # fences inside the delta stream. The host must only see the clean
+    # narrative text; the fence markup must never leak as {:content, _}.
+    # Mock declares native_tool_calls: true, so override via the
+    # `capabilities:` opt (merged over provider capabilities by the loop).
+    events = [
+      %Event{type: :text_delta, data: "Let me check.\n"},
+      %Event{type: :text_delta, data: "~~~tool"},
+      %Event{type: :text_delta, data: "_call\n{\"name\":\"bash\",\"arguments\":{}}"},
+      %Event{type: :text_delta, data: "\n~~~"},
+      %Event{type: :text_delta, data: "\nDone."}
+    ]
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [text: "Let me check.\nDone."],
+               mock_events: events,
+               capabilities: %{native_tool_calls: false},
+               cwd: dir,
+               tools: [],
+               on_event: collecting_on_event()
+             )
+
+    chunks = collect_content_chunks()
+    assert Enum.join(chunks) == "Let me check.\n\nDone."
+    refute Enum.any?(chunks, &(&1 =~ "~~~"))
+    refute Enum.any?(chunks, &(&1 =~ "tool_call"))
+  end
+
+  defp collect_content_chunks(acc \\ []) do
+    receive do
+      {:event, {:content, chunk}} -> collect_content_chunks([chunk | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 
   test "falls back to query/2 when on_event is nil", %{dir: dir} do
