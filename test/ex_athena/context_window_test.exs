@@ -347,7 +347,7 @@ defmodule ExAthena.ContextWindowTest do
   end
 
   describe "non-local providers" do
-    test "returns :error when openai_compatible_backend is not :ollama or :llamacpp" do
+    test "returns :error when openai_compatible_backend is not a local backend" do
       assert :error =
                ContextWindow.lookup(
                  openai_compatible_backend: :openai,

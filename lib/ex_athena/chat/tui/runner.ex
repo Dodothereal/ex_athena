@@ -83,7 +83,12 @@ defmodule ExAthena.Chat.Tui.Runner do
   @spec select_initial_model(String.t(), {:ok, [String.t()]} | {:error, term()}) ::
           {:ok, String.t()}
           | {:fallback, String.t()}
-          | {:error, :no_models | :ollama_unreachable | :llamacpp_unreachable | term()}
+          | {:error,
+             :no_models
+             | :ollama_unreachable
+             | :llamacpp_unreachable
+             | :exo_unreachable
+             | term()}
   def select_initial_model(_desired, {:ok, []}), do: {:error, :no_models}
 
   def select_initial_model(desired, {:ok, [_ | _] = installed}) do
@@ -102,6 +107,7 @@ defmodule ExAthena.Chat.Tui.Runner do
   end
 
   defp provider_base_url_defaults(:llamacpp), do: {:llamacpp, "http://localhost:8080"}
+  defp provider_base_url_defaults(:exo), do: {:exo, "http://localhost:52415"}
   defp provider_base_url_defaults(_), do: {:ollama, "http://localhost:11434"}
 
   defp apply_provider_spec_extra_headers(opts, provider) when is_atom(provider) do

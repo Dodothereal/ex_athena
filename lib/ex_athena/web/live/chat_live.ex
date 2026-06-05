@@ -1,7 +1,7 @@
 defmodule ExAthena.Web.Live.ChatLive do
   use Phoenix.LiveView
 
-  alias ExAthena.Chat.{LlamaCpp, Ollama}
+  alias ExAthena.Chat.{Exo, LlamaCpp, Ollama}
   alias ExAthena.Messages
   alias ExAthena.Messages.ContentPart
   alias ExAthena.Web.Sessions
@@ -9,6 +9,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   @providers [
     {"llama.cpp", "llamacpp"},
     {"Ollama", "ollama"},
+    {"EXO", "exo"},
     {"Claude / Anthropic", "claude"},
     {"Claude Code", "claude_code"},
     {"OpenAI-compatible", "openai_compatible"},
@@ -1854,6 +1855,16 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
+  defp fetch_models("exo") do
+    base_url = Application.get_env(:ex_athena, :exo, [])[:base_url]
+    opts = if base_url, do: [base_url: base_url], else: []
+
+    case Exo.list_models(opts) do
+      {:ok, models} -> models
+      _ -> []
+    end
+  end
+
   defp fetch_models("claude_code") do
     case ExAthena.Providers.ClaudeCode.list_models() do
       {:ok, models} -> models
@@ -1880,6 +1891,11 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp apply_base_url(opts, "ollama") do
     configured = Application.get_env(:ex_athena, :ollama, [])[:base_url]
     Keyword.put_new(opts, :base_url, configured || "http://localhost:11434")
+  end
+
+  defp apply_base_url(opts, "exo") do
+    configured = Application.get_env(:ex_athena, :exo, [])[:base_url]
+    Keyword.put_new(opts, :base_url, configured || "http://localhost:52415")
   end
 
   defp apply_base_url(opts, _), do: opts
