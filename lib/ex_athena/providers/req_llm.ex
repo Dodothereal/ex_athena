@@ -82,7 +82,8 @@ defmodule ExAthena.Providers.ReqLLM do
   def query(%Request{} = request, opts) do
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
-         {:ok, req_opts} <- build_opts(request, opts) do
+         {:ok, req_opts} <- build_opts(request, opts),
+         :ok <- ensure_exo_instance(request, opts) do
       log_request(:query, model_spec, request, messages, req_opts)
 
       case ReqLLM.generate_text(model_spec, messages, req_opts) do
@@ -102,7 +103,8 @@ defmodule ExAthena.Providers.ReqLLM do
   def stream(%Request{} = request, callback, opts) when is_function(callback, 1) do
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
-         {:ok, req_opts} <- build_opts(request, opts) do
+         {:ok, req_opts} <- build_opts(request, opts),
+         :ok <- ensure_exo_instance(request, opts) do
       log_request(:stream, model_spec, request, messages, req_opts)
 
       case ReqLLM.stream_text(model_spec, messages, req_opts) do
@@ -380,6 +382,59 @@ defmodule ExAthena.Providers.ReqLLM do
   defp resolve_api_key(nil, :llamacpp), do: "llamacpp"
   defp resolve_api_key(nil, :exo), do: "exo"
   defp resolve_api_key(key, _backend), do: key
+
+  # exo requires an active instance per model before chat requests succeed
+  # (404 "No instance found for model …" otherwise). Activate it pre-flight;
+  # ExAthena.Chat.Exo checks before placing because /place_instance is not
+  # idempotent. Other backends skip this entirely. Keyword.take keeps the
+  # ensure_instance opts contract explicit (no unrelated provider opts leak).
+  defp ensure_exo_instance(%Request{} = request, opts) do
+    if Keyword.get(opts, :openai_compatible_backend) == :exo do
+      model = raw_model_id(request, opts)
+      exo_opts = Keyword.take(opts, [:base_url, :poll_interval_ms, :timeout_ms])
+
+      case ExAthena.Chat.Exo.ensure_instance(model, exo_opts) do
+        :ok ->
+          :ok
+
+        {:error, :exo_unreachable} ->
+          {:error,
+           Error.new(:transport, "exo is unreachable at the configured base_url",
+             provider: :req_llm,
+             raw: :exo_unreachable
+           )}
+
+        {:error, reason} ->
+          {:error,
+           Error.new(
+             :server_error,
+             "exo has no active instance for #{model} (#{inspect(reason)})",
+             provider: :req_llm,
+             raw: reason
+           )}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp raw_model_id(%Request{model: model}, opts) when is_binary(model) and model != "",
+    do: strip_tag_prefix(model, Keyword.get(opts, :req_llm_provider_tag))
+
+  defp raw_model_id(_request, opts),
+    do: strip_tag_prefix(Keyword.get(opts, :model), Keyword.get(opts, :req_llm_provider_tag))
+
+  # Models may arrive tag-prefixed ("openai:mlx-community/..."); exo's API
+  # wants the bare id.
+  defp strip_tag_prefix(model, tag) when is_binary(model) and is_binary(tag) do
+    prefix = tag <> ":"
+
+    if String.starts_with?(model, prefix),
+      do: String.replace_prefix(model, prefix, ""),
+      else: model
+  end
+
+  defp strip_tag_prefix(model, _tag), do: model
 
   # ── Response mapping ──────────────────────────────────────────────
 
