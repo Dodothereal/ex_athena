@@ -8,12 +8,13 @@ defmodule ExAthena.ContextWindow do
 
   @ollama_default "http://localhost:11434"
   @llamacpp_default "http://localhost:8080"
+  @exo_default "http://localhost:52415"
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   @spec lookup(keyword()) :: {:ok, pos_integer()} | :error
   def lookup(opts) do
-    with backend when backend in [:ollama, :llamacpp] <-
+    with backend when backend in [:ollama, :llamacpp, :exo] <-
            Keyword.get(opts, :openai_compatible_backend),
          model_raw when is_binary(model_raw) and model_raw != "" <-
            Keyword.get(opts, :model) do
@@ -93,6 +94,7 @@ defmodule ExAthena.ContextWindow do
 
   defp do_fetch(:ollama, base_url, model), do: fetch_ollama(base_url, model)
   defp do_fetch(:llamacpp, base_url, _model), do: fetch_llamacpp(base_url)
+  defp do_fetch(:exo, base_url, model), do: fetch_exo(base_url, model)
 
   defp fetch_ollama(base_url, model) do
     url = strip_openai_suffix(base_url) <> "/api/show"
@@ -139,11 +141,34 @@ defmodule ExAthena.ContextWindow do
 
   defp extract_ollama_context(_), do: :error
 
+  defp fetch_exo(base_url, model) do
+    url = strip_openai_suffix(base_url) <> "/v1/models"
+
+    case Req.get(url, receive_timeout: @timeout_ms, retry: false) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        extract_exo_context(body, model)
+
+      _ ->
+        :error
+    end
+  end
+
+  # exo model cards carry `context_length`; 0 means unknown.
+  defp extract_exo_context(%{"data" => cards}, model) when is_list(cards) do
+    Enum.find_value(cards, :error, fn
+      %{"id" => ^model, "context_length" => ctx} when is_integer(ctx) and ctx > 0 -> {:ok, ctx}
+      _ -> nil
+    end)
+  end
+
+  defp extract_exo_context(_, _), do: :error
+
   defp resolve_base_url(opts, backend) do
     default =
       case backend do
         :ollama -> configured_ollama_url()
         :llamacpp -> configured_llamacpp_url()
+        :exo -> configured_exo_url()
       end
 
     strip_openai_suffix(Keyword.get(opts, :base_url, default))
@@ -159,6 +184,12 @@ defmodule ExAthena.ContextWindow do
     :ex_athena
     |> Application.get_env(:llamacpp, [])
     |> Keyword.get(:base_url, @llamacpp_default)
+  end
+
+  defp configured_exo_url do
+    :ex_athena
+    |> Application.get_env(:exo, [])
+    |> Keyword.get(:base_url, @exo_default)
   end
 
   defp strip_openai_suffix(url) when is_binary(url) do

@@ -276,6 +276,76 @@ defmodule ExAthena.ContextWindowTest do
     end
   end
 
+  describe "exo runtime fetch" do
+    test "returns context_length from the matching model card",
+         %{bypass: bypass, base_url: base_url} do
+      model = "mlx-community/exo-ctx-#{System.unique_integer([:positive])}"
+
+      Bypass.expect_once(bypass, "GET", "/v1/models", fn conn ->
+        body =
+          Jason.encode!(%{
+            "object" => "list",
+            "data" => [
+              %{"id" => "mlx-community/other", "context_length" => 4_096},
+              %{"id" => model, "context_length" => 131_072}
+            ]
+          })
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert {:ok, 131_072} =
+               ContextWindow.lookup(
+                 openai_compatible_backend: :exo,
+                 model: model,
+                 base_url: base_url
+               )
+    end
+
+    test "returns :error when the card has context_length 0",
+         %{bypass: bypass, base_url: base_url} do
+      model = "mlx-community/exo-zero-#{System.unique_integer([:positive])}"
+
+      Bypass.expect_once(bypass, "GET", "/v1/models", fn conn ->
+        body = Jason.encode!(%{"data" => [%{"id" => model, "context_length" => 0}]})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert :error =
+               ContextWindow.lookup(
+                 openai_compatible_backend: :exo,
+                 model: model,
+                 base_url: base_url
+               )
+    end
+
+    test "returns :error when the model is not in the catalog",
+         %{bypass: bypass, base_url: base_url} do
+      model = "mlx-community/exo-missing-#{System.unique_integer([:positive])}"
+
+      Bypass.expect_once(bypass, "GET", "/v1/models", fn conn ->
+        body =
+          Jason.encode!(%{"data" => [%{"id" => "mlx-community/other", "context_length" => 8}]})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert :error =
+               ContextWindow.lookup(
+                 openai_compatible_backend: :exo,
+                 model: model,
+                 base_url: base_url
+               )
+    end
+  end
+
   describe "non-local providers" do
     test "returns :error when openai_compatible_backend is not :ollama or :llamacpp" do
       assert :error =
