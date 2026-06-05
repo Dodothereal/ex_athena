@@ -20,8 +20,8 @@ defmodule ExAthena.Providers.ReqLLMExoTest do
       openai_compatible_backend: :exo,
       req_llm_provider_tag: "openai",
       base_url: "http://localhost:#{bypass.port}",
-      poll_interval_ms: 10,
-      timeout_ms: 50
+      exo_poll_interval_ms: 10,
+      exo_instance_timeout_ms: 50
     ]
 
     {:ok, bypass: bypass, request: request, opts: opts}
@@ -90,6 +90,28 @@ defmodule ExAthena.Providers.ReqLLMExoTest do
 
     assert {:ok, %Response{} = response} = Adapter.query(request, opts)
     assert response.text == "Hello!"
+  end
+
+  test "generic timeout_ms does not extend the instance-await deadline",
+       %{bypass: bypass, request: request, opts: opts} do
+    Bypass.expect(bypass, "GET", "/state/instances", fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, Jason.encode!(%{}))
+    end)
+
+    Bypass.expect_once(bypass, "POST", "/place_instance", fn conn ->
+      Plug.Conn.resp(conn, 200, Jason.encode!(%{"message" => "Command received."}))
+    end)
+
+    # A huge *request* timeout must not become the poll budget: with the
+    # 50ms exo_instance_timeout_ms still in effect this returns quickly.
+    opts = Keyword.put(opts, :timeout_ms, :timer.hours(24))
+
+    {elapsed_us, result} = :timer.tc(fn -> Adapter.query(request, opts) end)
+
+    assert {:error, %Error{}} = result
+    assert elapsed_us < 5_000_000
   end
 
   test "non-exo backends skip the pre-flight entirely",

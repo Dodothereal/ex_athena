@@ -386,12 +386,21 @@ defmodule ExAthena.Providers.ReqLLM do
   # exo requires an active instance per model before chat requests succeed
   # (404 "No instance found for model …" otherwise). Activate it pre-flight;
   # ExAthena.Chat.Exo checks before placing because /place_instance is not
-  # idempotent. Other backends skip this entirely. Keyword.take keeps the
-  # ensure_instance opts contract explicit (no unrelated provider opts leak).
+  # idempotent. Other backends skip this entirely. Only an explicit allowlist
+  # of opts is forwarded (no unrelated provider opts leak).
   defp ensure_exo_instance(%Request{} = request, opts) do
     if Keyword.get(opts, :openai_compatible_backend) == :exo do
       model = raw_model_id(request, opts)
-      exo_opts = Keyword.take(opts, [:base_url, :poll_interval_ms, :timeout_ms])
+
+      # :timeout_ms in provider opts is the *request* timeout (UIs set it to
+      # hours); the instance-await deadline must stay independent, so only
+      # exo-namespaced keys override Chat.Exo's defaults (250 ms / 10 s).
+      exo_opts =
+        Keyword.take(opts, [:base_url]) ++
+          take_renamed(opts,
+            exo_poll_interval_ms: :poll_interval_ms,
+            exo_instance_timeout_ms: :timeout_ms
+          )
 
       case ExAthena.Chat.Exo.ensure_instance(model, exo_opts) do
         :ok ->
@@ -416,6 +425,10 @@ defmodule ExAthena.Providers.ReqLLM do
     else
       :ok
     end
+  end
+
+  defp take_renamed(opts, mapping) do
+    for {from, to} <- mapping, {:ok, value} <- [Keyword.fetch(opts, from)], do: {to, value}
   end
 
   defp raw_model_id(%Request{model: model}, opts) when is_binary(model) and model != "",

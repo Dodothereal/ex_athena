@@ -1065,7 +1065,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
       do: "llama.cpp server not running. Start it with: llama-server --model path/to/model.gguf"
 
     defp unreachable_message(:exo),
-      do: "exo is not reachable at http://localhost:52415. Start it with: exo"
+      do: "exo is not reachable. Start it with: exo"
 
     defp unreachable_message(_),
       do: "Ollama not running. Start it with: ollama serve"
