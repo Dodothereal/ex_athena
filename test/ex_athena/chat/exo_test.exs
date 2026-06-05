@@ -8,6 +8,20 @@ defmodule ExAthena.Chat.ExoTest do
     {:ok, bypass: bypass, base_url: "http://localhost:#{bypass.port}"}
   end
 
+  @model "mlx-community/Llama-3.2-1B-Instruct-4bit"
+
+  defp instances_body(model, tag \\ "MlxRingInstance") do
+    %{
+      "11111111-aaaa-bbbb-cccc-000000000001" => %{
+        tag => %{
+          "instanceId" => "11111111-aaaa-bbbb-cccc-000000000001",
+          "shardAssignments" => %{"modelId" => model, "runnerToShard" => %{}},
+          "hostsByNode" => %{}
+        }
+      }
+    }
+  end
+
   describe "list_models/1" do
     test "returns downloaded model ids sorted alphabetically on a 200 response",
          %{bypass: bypass, base_url: base_url} do
@@ -86,6 +100,102 @@ defmodule ExAthena.Chat.ExoTest do
       end)
 
       assert {:ok, ["x"]} = Exo.list_models([])
+    end
+  end
+
+  describe "ensure_instance/2" do
+    test "returns :ok without placing when an instance is already active",
+         %{bypass: bypass, base_url: base_url} do
+      # Only GET /state/instances is expected; any POST /place_instance would
+      # make Bypass fail the test as an unexpected request.
+      Bypass.expect_once(bypass, "GET", "/state/instances", fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(instances_body(@model)))
+      end)
+
+      assert :ok = Exo.ensure_instance(@model, base_url: base_url)
+    end
+
+    test "recognizes MlxJacclInstance-tagged instances",
+         %{bypass: bypass, base_url: base_url} do
+      Bypass.expect_once(bypass, "GET", "/state/instances", fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(instances_body(@model, "MlxJacclInstance")))
+      end)
+
+      assert :ok = Exo.ensure_instance(@model, base_url: base_url)
+    end
+
+    test "places an instance and polls until it appears",
+         %{bypass: bypass, base_url: base_url} do
+      {:ok, agent} = Agent.start_link(fn -> false end)
+
+      Bypass.expect(bypass, "GET", "/state/instances", fn conn ->
+        body = if Agent.get(agent, & &1), do: instances_body(@model), else: %{}
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(body))
+      end)
+
+      Bypass.expect_once(bypass, "POST", "/place_instance", fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        assert %{"model_id" => @model} = Jason.decode!(raw)
+        Agent.update(agent, fn _ -> true end)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{"message" => "Command received."}))
+      end)
+
+      assert :ok =
+               Exo.ensure_instance(@model,
+                 base_url: base_url,
+                 poll_interval_ms: 10,
+                 timeout_ms: 1_000
+               )
+    end
+
+    test "returns {:error, :exo_instance_unavailable} when the instance never appears",
+         %{bypass: bypass, base_url: base_url} do
+      Bypass.expect(bypass, "GET", "/state/instances", fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{}))
+      end)
+
+      Bypass.expect_once(bypass, "POST", "/place_instance", fn conn ->
+        Plug.Conn.resp(conn, 200, Jason.encode!(%{"message" => "Command received."}))
+      end)
+
+      assert {:error, :exo_instance_unavailable} =
+               Exo.ensure_instance(@model,
+                 base_url: base_url,
+                 poll_interval_ms: 10,
+                 timeout_ms: 50
+               )
+    end
+
+    test "returns {:error, :exo_unreachable} when the connection is refused" do
+      assert {:error, :exo_unreachable} =
+               Exo.ensure_instance(@model, base_url: "http://127.0.0.1:1")
+    end
+
+    test "returns {:error, {:http, status}} when place_instance fails",
+         %{bypass: bypass, base_url: base_url} do
+      Bypass.expect_once(bypass, "GET", "/state/instances", fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(%{}))
+      end)
+
+      Bypass.expect_once(bypass, "POST", "/place_instance", fn conn ->
+        Plug.Conn.resp(conn, 400, Jason.encode!(%{"error" => "Insufficient memory"}))
+      end)
+
+      assert {:error, {:http, 400}} = Exo.ensure_instance(@model, base_url: base_url)
     end
   end
 end
