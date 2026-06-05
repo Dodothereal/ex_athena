@@ -25,7 +25,7 @@
 - Create: `test/ex_athena/chat/exo_test.exs`
 - Create: `lib/ex_athena/chat/exo.ex`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `test/ex_athena/chat/exo_test.exs` (mirrors `test/ex_athena/chat/ollama_test.exs`):
 
@@ -124,12 +124,12 @@ defmodule ExAthena.Chat.ExoTest do
 end
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/ex_athena/chat/exo_test.exs --seed 0`
 Expected: FAIL — `module ExAthena.Chat.Exo is not available`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `lib/ex_athena/chat/exo.ex`:
 
@@ -196,12 +196,12 @@ defmodule ExAthena.Chat.Exo do
 end
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `mix test test/ex_athena/chat/exo_test.exs --seed 0`
 Expected: 6 tests, 0 failures
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 mix format lib/ex_athena/chat/exo.ex test/ex_athena/chat/exo_test.exs
@@ -223,7 +223,7 @@ NOT idempotent (creates duplicate instances), so we must check
 uses, so polling state (instead of parsing the `/instance/await` SSE stream) is
 equivalent and far simpler.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append inside `ExAthena.Chat.ExoTest`. NOTE: ExUnit forbids defining functions
 inside `describe` blocks — `@model` and `instances_body/2` go at the module
@@ -343,12 +343,12 @@ level (right after the `setup` block), the tests inside a new describe.
   end
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/ex_athena/chat/exo_test.exs --seed 0`
 Expected: 6 new failures — `function ExAthena.Chat.Exo.ensure_instance/2 is undefined`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `lib/ex_athena/chat/exo.ex`, extend the `@moduledoc` and add below `list_models/1`:
 
@@ -457,12 +457,12 @@ Add the functions:
   end
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `mix test test/ex_athena/chat/exo_test.exs --seed 0`
 Expected: 12 tests, 0 failures
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 mix format lib/ex_athena/chat/exo.ex test/ex_athena/chat/exo_test.exs
@@ -482,7 +482,7 @@ exo's `/v1/models` cards carry `context_length`. Note: lookups are cached in a
 global ETS table keyed by `{backend, base_url, model}` — tests must use unique
 model names (existing pattern in this test file).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append inside `ExAthena.ContextWindowTest` (after the existing describe blocks):
 
@@ -557,12 +557,12 @@ Append inside `ExAthena.ContextWindowTest` (after the existing describe blocks):
   end
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/ex_athena/context_window_test.exs --seed 0`
 Expected: the 3 new tests FAIL (lookup returns `:error` for the success case because the `:exo` backend is rejected by the guard — the first test fails, the other two pass vacuously; that's fine, the first test is the driver)
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `lib/ex_athena/context_window.ex`:
 
@@ -641,12 +641,12 @@ to:
   end
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `mix test test/ex_athena/context_window_test.exs --seed 0`
 Expected: all tests pass (existing + 3 new)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 mix format lib/ex_athena/context_window.ex test/ex_athena/context_window_test.exs
@@ -665,7 +665,7 @@ git commit -m "feat: discover exo context windows via /v1/models cards"
 When `openai_compatible_backend: :exo`, ensure the instance before dispatching.
 One hook covers web UI, TUI, and programmatic use.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `test/ex_athena/providers/req_llm_exo_test.exs`:
 
@@ -798,12 +798,12 @@ end
 
 (`%ExAthena.Response{}` has a `:text` field — verified in `lib/ex_athena/response.ex:14`.)
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/ex_athena/providers/req_llm_exo_test.exs --seed 0`
 Expected: test 1 FAILS (no pre-flight exists, so the query goes straight to `/v1/chat/completions`, which Bypass rejects as unexpected). Tests 2 and 3 may already pass — that's expected; test 1 drives the change.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `lib/ex_athena/providers/req_llm.ex`:
 
@@ -884,12 +884,12 @@ In `lib/ex_athena/providers/req_llm.ex`:
   defp strip_tag_prefix(model, _tag), do: model
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `mix test test/ex_athena/providers/req_llm_exo_test.exs test/ex_athena/providers/req_llm_test.exs --seed 0`
 Expected: all pass (new file + no regressions in existing adapter tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 mix format lib/ex_athena/providers/req_llm.ex test/ex_athena/providers/req_llm_exo_test.exs
@@ -909,7 +909,7 @@ No LiveView test infrastructure exists in this repo (no `test/ex_athena/web/`);
 these are 3-line mirrors of existing untested clauses whose logic lives in the
 fully-tested `Chat.Exo`. Verify by compile + existing suite + manual check.
 
-- [ ] **Step 1: Update the alias and provider dropdown**
+- [x] **Step 1: Update the alias and provider dropdown**
 
 In `lib/ex_athena/web/live/chat_live.ex`, change:
 
@@ -937,7 +937,7 @@ and add the dropdown entry after `{"Ollama", "ollama"}`:
   ]
 ```
 
-- [ ] **Step 2: Add the fetch_models clause**
+- [x] **Step 2: Add the fetch_models clause**
 
 After the `fetch_models("ollama")` clause (before `fetch_models("claude_code")`):
 
@@ -953,7 +953,7 @@ After the `fetch_models("ollama")` clause (before `fetch_models("claude_code")`)
   end
 ```
 
-- [ ] **Step 3: Add the apply_base_url clause**
+- [x] **Step 3: Add the apply_base_url clause**
 
 After the `apply_base_url(opts, "ollama")` clause (before the catch-all `apply_base_url(opts, _)`):
 
@@ -964,7 +964,7 @@ After the `apply_base_url(opts, "ollama")` clause (before the catch-all `apply_b
   end
 ```
 
-- [ ] **Step 4: Update the TUI runner**
+- [x] **Step 4: Update the TUI runner**
 
 In `lib/ex_athena/chat/tui/runner.ex`:
 
@@ -990,12 +990,12 @@ In `lib/ex_athena/chat/tui/runner.ex`:
              | term()}
 ```
 
-- [ ] **Step 5: Compile and run the full suite**
+- [x] **Step 5: Compile and run the full suite**
 
 Run: `mix compile --warnings-as-errors && mix test --seed 0`
 Expected: clean compile, all tests pass
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 mix format lib/ex_athena/web/live/chat_live.ex lib/ex_athena/chat/tui/runner.ex
@@ -1007,12 +1007,12 @@ git commit -m "feat: add exo to web provider dropdown and TUI defaults"
 
 ### Task 6: Final verification
 
-- [ ] **Step 1: Format check + full suite**
+- [x] **Step 1: Format check + full suite**
 
 Run: `mix format --check-formatted && mix compile --force --warnings-as-errors && mix test --seed 0`
 Expected: no formatting diffs, clean compile, all tests pass
 
-- [ ] **Step 2: Manual verification (user has exo running locally)**
+- [x] **Step 2: Manual verification (user has exo running locally)**
 
 The dev server is already running (`mix athena.web --log`, logs in
 `log/phoenix_output.log`). Phoenix hot-reloads code changes. In the browser at
@@ -1024,7 +1024,7 @@ the ExAthena tab:
    the first message auto-activates it (slower first token while weights load).
 3. Check `log/phoenix_output.log` for errors.
 
-- [ ] **Step 3: Update the spec status**
+- [x] **Step 3: Update the spec status**
 
 In `docs/superpowers/specs/2026-06-05-exo-provider-design.md`, change
 `**Status:** Approved` to `**Status:** Implemented`, then:

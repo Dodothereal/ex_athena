@@ -1,7 +1,7 @@
 # exo Provider — Design
 
 **Date:** 2026-06-05
-**Status:** Approved
+**Status:** Implemented
 
 ## Goal
 
