@@ -28,7 +28,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     use ExRatatui.App
 
-    alias ExAthena.Chat.{Commands, LlamaCpp, Ollama, Session}
+    alias ExAthena.Chat.{Commands, Exo, LlamaCpp, Ollama, Session}
     alias ExAthena.Chat.Tui.{Runner, State, View}
     alias ExAthena.Tools
     alias ExRatatui.Event
@@ -604,7 +604,8 @@ if Code.ensure_loaded?(ExRatatui.App) do
         {:ok, models} ->
           {:noreply, State.open_popup(state, {:model, models})}
 
-        {:error, reason} when reason in [:ollama_unreachable, :llamacpp_unreachable] ->
+        {:error, reason}
+        when reason in [:ollama_unreachable, :llamacpp_unreachable, :exo_unreachable] ->
           append_and_noreply(state, {:error, unreachable_message(state.session.provider)})
 
         {:error, reason} ->
@@ -1039,6 +1040,8 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     defp list_models_for(%{provider: :llamacpp}), do: LlamaCpp.list_models([])
 
+    defp list_models_for(%{provider: :exo}), do: Exo.list_models([])
+
     defp list_models_for(%{provider: provider}) do
       with pid when not is_nil(pid) <- Process.whereis(ExAthena.ProviderRegistry),
            {:ok, %ExAthena.ProviderSpec{model_discovery: disc} = spec}
@@ -1052,11 +1055,17 @@ if Code.ensure_loaded?(ExRatatui.App) do
     defp no_models_message(:llamacpp),
       do: "No models loaded. Start one with: llama-server --model path/to/model.gguf"
 
+    defp no_models_message(:exo),
+      do: "No models downloaded in the exo cluster. Download one via the exo dashboard."
+
     defp no_models_message(_),
       do: "No models installed. Pull one with: ollama pull llama3.1"
 
     defp unreachable_message(:llamacpp),
       do: "llama.cpp server not running. Start it with: llama-server --model path/to/model.gguf"
+
+    defp unreachable_message(:exo),
+      do: "exo is not reachable at http://localhost:52415. Start it with: exo"
 
     defp unreachable_message(_),
       do: "Ollama not running. Start it with: ollama serve"
@@ -1073,6 +1082,14 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     defp reconcile_initial_session(%Session{provider: :llamacpp} = session) do
       case Runner.select_initial_model(session.model, LlamaCpp.list_models([])) do
+        {:ok, _} -> session
+        {:fallback, model} -> Session.set_model(session, model)
+        {:error, _} -> session
+      end
+    end
+
+    defp reconcile_initial_session(%Session{provider: :exo} = session) do
+      case Runner.select_initial_model(session.model, Exo.list_models([])) do
         {:ok, _} -> session
         {:fallback, model} -> Session.set_model(session, model)
         {:error, _} -> session
