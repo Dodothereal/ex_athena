@@ -100,16 +100,21 @@ defmodule ExAthena.Providers.ClaudeCode do
     with :ok <- ensure_dep(),
          {:ok, session} <- ClaudeCode.start_link(build_opts(request, opts)) do
       try do
-        result =
+        acc =
           session
           |> ClaudeCode.stream(flatten_prompt(request))
-          |> Enum.reduce(nil, fn message, acc -> handle_message(message, callback, acc) end)
+          |> Enum.reduce(%{result: nil, thinking: []}, fn message, acc ->
+            handle_message(message, callback, acc)
+          end)
 
-        Streaming.stop(callback, finish_reason(result))
+        Streaming.stop(callback, finish_reason(acc.result))
 
-        case result do
-          %ClaudeCode.Message.ResultMessage{} = r -> {:ok, to_response(r, request)}
-          _ -> {:ok, %Response{text: "", finish_reason: :stop, provider: :claude_code}}
+        case acc.result do
+          %ClaudeCode.Message.ResultMessage{} = r ->
+            {:ok, to_response(r, request, thinking_text(acc))}
+
+          _ ->
+            {:ok, %Response{text: "", finish_reason: :stop, provider: :claude_code}}
         end
       after
         ClaudeCode.stop(session)
@@ -121,32 +126,37 @@ defmodule ExAthena.Providers.ClaudeCode do
 
   defp handle_message(%ClaudeCode.Message.AssistantMessage{message: %{content: content}}, cb, acc)
        when is_list(content) do
-    Enum.each(content, fn
-      %ClaudeCode.Content.TextBlock{text: t} when is_binary(t) ->
+    Enum.reduce(content, acc, fn
+      %ClaudeCode.Content.TextBlock{text: t}, a when is_binary(t) ->
         Streaming.text_delta(cb, t)
+        a
 
-      %ClaudeCode.Content.ThinkingBlock{thinking: t} when is_binary(t) ->
+      %ClaudeCode.Content.ThinkingBlock{thinking: t}, a when is_binary(t) ->
         Streaming.thinking_delta(cb, t)
+        %{a | thinking: [t | a.thinking]}
 
-      _ ->
-        :ok
+      _, a ->
+        a
     end)
-
-    acc
   end
 
-  defp handle_message(%ClaudeCode.Message.ResultMessage{} = r, cb, _acc) do
+  defp handle_message(%ClaudeCode.Message.ResultMessage{} = r, cb, acc) do
     Streaming.usage(cb, usage(r))
-    r
+    %{acc | result: r}
   end
 
   defp handle_message(_other, _cb, acc), do: acc
 
+  # Accumulated thinking deltas are prepended, so reverse to restore order.
+  defp thinking_text(%{thinking: []}), do: nil
+  defp thinking_text(%{thinking: parts}), do: parts |> Enum.reverse() |> Enum.join("")
+
   # ── mapping ──────────────────────────────────────────────────────
 
-  defp to_response(%ClaudeCode.Message.ResultMessage{} = r, %Request{} = request) do
+  defp to_response(%ClaudeCode.Message.ResultMessage{} = r, %Request{} = request, thinking \\ nil) do
     %Response{
       text: r.result,
+      thinking: thinking,
       tool_calls: [],
       finish_reason: finish_reason(r),
       usage: usage(r),
