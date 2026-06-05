@@ -39,8 +39,9 @@ defmodule ExAthena.MixProject do
       {:telemetry, "~> 1.3"},
       # Local fork: parses unknown CLI system-message subtypes (e.g.
       # "thinking_tokens") into a Generic struct instead of erroring. Tracks the
-      # open PR on the fork until it lands upstream.
-      {:claude_code, path: "/Users/pshoukry/work/open/claude_code", optional: true},
+      # open PR on the fork until it lands upstream. Non-optional so consumers
+      # (atum) get the :claude_code provider without depending on it directly.
+      {:claude_code, path: "/Users/pshoukry/work/open/claude_code"},
       {:igniter, "~> 0.6", optional: true},
       # Optional — only needed for the interactive TUI (`mix athena.chat`) and the
       # web UI (`mix athena.web`). The core agent loop never starts them, so library
