@@ -38,7 +38,11 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   @behaviour ExAthena.Tool
 
-  @default_max_iterations 10
+  # One tool call ≈ one iteration on local models — 10 turns starved real
+  # exploration tasks (observed: error_max_turns at 10 with the worker mid-
+  # task). Match the kernel's default; the worker's no-progress guard is the
+  # runaway protection.
+  @default_max_iterations 25
 
   @impl true
   def name, do: "spawn_agent"
@@ -103,13 +107,14 @@ defmodule ExAthena.Tools.SpawnAgent do
     }
   end
 
-  # Task brief for strict spawns (orchestrate mode). Only the two truly
-  # essential fields are REQUIRED — small local models reliably produce
-  # objective/expected_output but consistently drop boundaries (observed
-  # live: identical rejected calls repeated verbatim, turning the guardrail
-  # into a wall). The other two get runtime defaults when omitted.
-  @required_brief ~w(objective expected_output)
+  # Task brief for strict spawns (orchestrate mode). NOTHING is rejected —
+  # live testing showed every rejection class just burns turns (small models
+  # repeat the identical invalid call verbatim instead of repairing). Every
+  # missing field gets a runtime default; the brief is enrichment when the
+  # model provides it, never a wall.
   @brief_defaults %{
+    "expected_output" =>
+      "a self-contained summary (max 300 words) of findings, decisions, and files changed",
     "tool_guidance" => "Use any available tools as needed.",
     "boundaries" => "Do only this step; do not start or modify anything outside its scope."
   }
@@ -117,21 +122,13 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   @impl true
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
-    cond do
+    if Map.get(ctx.assigns || %{}, :subagent?, false) do
       # Depth-1 rail (Claude Code's own rule): workers finish their step and
       # report back — they never spawn further workers.
-      Map.get(ctx.assigns || %{}, :subagent?, false) ->
-        {:error,
-         "nested subagents are not allowed (depth 1): finish this step yourself and report back"}
-
-      missing = strict_brief_missing(args, ctx) ->
-        {:error,
-         "spawn_agent requires a task brief; missing: #{Enum.join(missing, ", ")}. " <>
-           "Provide at least objective and expected_output so the worker can succeed " <>
-           "without seeing this conversation."}
-
-      true ->
-        do_execute(fill_brief_defaults(args, ctx), prompt, ctx)
+      {:error,
+       "nested subagents are not allowed (depth 1): finish this step yourself and report back"}
+    else
+      do_execute(fill_brief_defaults(args, ctx), prompt, ctx)
     end
   end
 
@@ -289,22 +286,18 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp maybe_put(kw, _key, nil), do: kw
   defp maybe_put(kw, key, value), do: Keyword.put(kw, key, value)
 
-  # Strict-brief validation (orchestrate mode sets assigns[:strict_spawn]).
-  # Returns the list of missing/blank REQUIRED fields, or nil when fine.
-  defp strict_brief_missing(args, ctx) do
-    if Map.get(ctx.assigns || %{}, :strict_spawn, false) do
-      case Enum.filter(@required_brief, fn f -> blank?(Map.get(args, f)) end) do
-        [] -> nil
-        missing -> missing
-      end
-    end
-  end
-
-  # In strict mode, omitted optional brief fields get runtime defaults so
-  # the worker contract stays complete without forcing a small model to
-  # produce every field.
+  # In strict mode, every omitted brief field gets a runtime default so the
+  # worker contract stays complete without forcing a small model to produce
+  # every field. The objective falls back to the prompt itself.
   defp fill_brief_defaults(args, ctx) do
     if Map.get(ctx.assigns || %{}, :strict_spawn, false) do
+      args =
+        if blank?(Map.get(args, "objective")) do
+          Map.put(args, "objective", truncate_result(Map.get(args, "prompt", ""), 200))
+        else
+          args
+        end
+
       Enum.reduce(@brief_defaults, args, fn {field, default}, acc ->
         if blank?(Map.get(acc, field)), do: Map.put(acc, field, default), else: acc
       end)

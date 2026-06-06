@@ -258,7 +258,6 @@ defmodule ExAthena.Modes.Orchestrate do
       "boundaries" => "do only this step; do not start other todos",
       "todo" => content,
       "max_result_chars" => 2_000,
-      "max_iterations" => 15,
       "timeout_ms" => 1_800_000
     }
 

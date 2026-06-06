@@ -2161,17 +2161,28 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   cursor: pointer;
   user-select: none;
   font-size: 12.5px;
-  list-style: none;
 }
 
-.ov-task-head::before {
-  content: "▸";
+.ov-task-arrow {
   color: var(--muted);
   font-size: 10px;
   transition: transform 0.15s;
 }
 
-.ov-task[open] > .ov-task-head::before { transform: rotate(90deg); }
+.ov-task--open .ov-task-arrow { transform: rotate(90deg); }
+
+.ov-transcript-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.ov-transcript-toggle:hover { color: var(--accent); }
 
 .ov-task-title { flex: 1; }
 .ov-task--completed .ov-task-title { text-decoration: line-through; color: var(--muted); }

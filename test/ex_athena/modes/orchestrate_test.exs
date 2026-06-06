@@ -290,26 +290,30 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert state.max_iterations == 40
   end
 
-  test "strict spawn briefs: missing fields are rejected with a model-visible error", %{dir: dir} do
+  test "a spawn with ONLY a prompt gets a fully defaulted brief (nothing is rejected)", %{
+    dir: dir
+  } do
+    test_pid = self()
+
     responses = [
       %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
       %Response{
         text: "delegating",
         tool_calls: [
-          %ToolCall{id: "t1", name: "spawn_agent", arguments: %{"prompt" => "just do it"}}
+          %ToolCall{id: "t1", name: "spawn_agent", arguments: %{"prompt" => "just do the step"}}
         ],
         finish_reason: :tool_calls,
         provider: :mock
       },
-      %Response{
-        text: "ok I'll fix the brief",
-        tool_calls: [],
-        finish_reason: :stop,
-        provider: :mock
-      }
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
     ]
 
-    assert {:ok, %Result{} = result} =
+    sub_responder = fn request ->
+      send(test_pid, {:worker_prompt, List.last(request.messages).content})
+      %Response{text: "worker done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
              Loop.run("go",
                provider: :mock,
                mock: [responder: scripted(responses)],
@@ -320,18 +324,18 @@ defmodule ExAthena.Modes.OrchestrateTest do
                assigns: %{
                  spawn_agent_opts: [
                    provider: :mock,
-                   mock: [text: "never runs"],
+                   mock: [responder: sub_responder],
                    tools: [],
                    memory: false
                  ]
                }
              )
 
-    [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
-    [tr] = tool_msg.tool_results
-    assert tr.is_error
-    assert tr.content =~ "objective"
-    assert tr.content =~ "expected_output"
+    assert_receive {:worker_prompt, text}
+    # Objective defaults from the prompt; the rest from runtime defaults.
+    assert text =~ "Objective: just do the step"
+    assert text =~ "self-contained summary"
+    assert text =~ "only this step"
   end
 
   test "a brief missing only boundaries/tool_guidance is auto-filled and the spawn proceeds",
@@ -401,9 +405,9 @@ defmodule ExAthena.Modes.OrchestrateTest do
 
     todos_args = %{"todos" => [%{"content" => "explore the repo", "status" => "pending"}]}
 
-    # A spawn missing the REQUIRED objective/expected_output fields — always
-    # rejected; the model repeats it verbatim (observed live behavior).
-    bad_spawn = %ToolCall{id: "bad", name: "spawn_agent", arguments: %{"prompt" => "go explore"}}
+    # A spawn with no prompt at all — the one shape that still fails; the
+    # model repeats it verbatim (observed live behavior).
+    bad_spawn = %ToolCall{id: "bad", name: "spawn_agent", arguments: %{}}
 
     responder = fn _request ->
       :counters.add(counter, 1, 1)

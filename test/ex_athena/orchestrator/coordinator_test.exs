@@ -105,6 +105,60 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       GenServer.stop(pid)
     end
 
+    test "a worker without an explicit todo link is fuzzily attached to the matching task" do
+      sid = unique_sid()
+      {:ok, pid} = Coordinator.start_for(sid)
+
+      Coordinator.notify(pid, :main, {:todos,
+       [
+         %{
+           "content" =>
+             "Explore repository structure to identify patterns for services, products, and blog posts",
+           "status" => "in_progress"
+         },
+         %{"content" => "Publish the blog post", "status" => "pending"}
+       ]})
+
+      # The model spawned without `todo:` — only the prompt hints which task.
+      Coordinator.notify(pid, "sub-a", {:agent_meta,
+       %{
+         prompt:
+           "Explore the repository structure to identify how services, products, and blog posts are organized.",
+         name: nil,
+         linked_todo: nil
+       }})
+
+      Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-a", prompt: "explore"}})
+
+      {:ok, snap} = Coordinator.snapshot(sid)
+      [agent] = snap.agents
+      assert agent.linked_todo =~ "Explore repository structure"
+
+      # …and runtime-derived completion works through the fuzzy link too.
+      Coordinator.notify(pid, :main, {:subagent_result, %{id: "sub-a", text: "done"}})
+      {:ok, snap} = Coordinator.snapshot(sid)
+      assert [%{status: :completed}, %{status: :pending}] = snap.main.todos
+
+      GenServer.stop(pid)
+    end
+
+    test "an unrelated worker prompt stays unlinked" do
+      sid = unique_sid()
+      {:ok, pid} = Coordinator.start_for(sid)
+
+      Coordinator.notify(pid, :main, {:todos, [%{"content" => "Publish the blog post", "status" => "pending"}]})
+
+      Coordinator.notify(pid, "sub-b", {:agent_meta, %{prompt: "Compute fibonacci numbers quickly", name: nil, linked_todo: nil}})
+
+      Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-b", prompt: "fib"}})
+
+      {:ok, snap} = Coordinator.snapshot(sid)
+      [agent] = snap.agents
+      assert agent.linked_todo == nil
+
+      GenServer.stop(pid)
+    end
+
     test "subscribe/2 returns the snapshot and then streams batched updates" do
       sid = unique_sid()
       {:ok, pid} = Coordinator.start_for(sid)
