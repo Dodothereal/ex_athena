@@ -244,7 +244,11 @@ defmodule ExAthena.Tools.SpawnAgent do
              "Re-delegate with a narrower or clearer brief, building on those findings."}
 
         {:ok, {:ok, %{text: text} = sub_result}} ->
-          text = truncate_result(text || "", Map.get(args, "max_result_chars"))
+          # A worker that ends via the finish tool has its output in
+          # `deliverable`, not `text` — without the fallback its
+          # contribution arrives empty (note: "" is truthy, hence blank?).
+          text = if blank?(text), do: deliverable_text(sub_result) || "", else: text
+          text = truncate_result(text, Map.get(args, "max_result_chars"))
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
           _ =
@@ -403,6 +407,9 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp attribute_events(sub_opts, _sub_id, ctx, _args, _agent_def) do
     Keyword.put(sub_opts, :assigns, Map.put(ctx.assigns, :subagent?, true))
   end
+
+  defp deliverable_text(%ExAthena.Result{deliverable: d}) when is_binary(d) and d != "", do: d
+  defp deliverable_text(_), do: nil
 
   # Salvage an unfinished worker's learnings: its conclusions ledger (and
   # any final text) as a compact digest the orchestrator can build on.

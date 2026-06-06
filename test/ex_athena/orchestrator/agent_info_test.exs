@@ -55,14 +55,39 @@ defmodule ExAthena.Orchestrator.AgentInfoTest do
       assert info.current_action == nil
     end
 
-    test "content and thinking accumulate in the bounded transcript tail" do
+    test "consecutive thinking/content deltas COALESCE into one entry (chat-like)" do
+      info =
+        new()
+        |> AgentInfo.apply_event({:thinking, "what "})
+        |> AgentInfo.apply_event({:thinking, "a "})
+        |> AgentInfo.apply_event({:thinking, "blog"})
+        |> AgentInfo.apply_event({:content, "Here's "})
+        |> AgentInfo.apply_event({:content, "the plan"})
+
+      assert [{:thinking, "what a blog"}, {:content, "Here's the plan"}] = info.transcript_tail
+    end
+
+    test "a tool call breaks the coalescing run" do
+      info =
+        new()
+        |> AgentInfo.apply_event({:thinking, "before"})
+        |> AgentInfo.apply_event({:tool_call, %ToolCall{id: "t", name: "read", arguments: %{}}})
+        |> AgentInfo.apply_event({:thinking, "after"})
+
+      assert [{:thinking, "before"}, {:tool_call, _}, {:thinking, "after"}] = info.transcript_tail
+    end
+
+    test "the transcript tail stays bounded by entry count" do
       info =
         Enum.reduce(1..50, new(), fn i, acc ->
-          AgentInfo.apply_event(acc, {:content, "chunk #{i}"})
+          acc
+          |> AgentInfo.apply_event(
+            {:tool_call, %ToolCall{id: "t#{i}", name: "read", arguments: %{"n" => i}}}
+          )
+          |> AgentInfo.apply_event({:content, "chunk #{i}"})
         end)
 
       assert length(info.transcript_tail) <= 30
-      # Newest entries survive the bound.
       assert {:content, "chunk 50"} = List.last(info.transcript_tail)
     end
 

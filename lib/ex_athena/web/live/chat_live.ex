@@ -100,6 +100,9 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Server-owned: the 100 ms snapshot patches would strip a native
         # <details open> the user toggled client-side.
         ov_expanded: MapSet.new(),
+        # Expanded chat thinking blocks (keyed by detail entry id) — same
+        # morphdom problem: streaming re-renders strip user-toggled state.
+        chat_expanded: MapSet.new(),
         gpu_stats: nil,
         # Git diff output (rendered in the Git tab)
         git_diff: nil,
@@ -315,14 +318,11 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("ov_toggle", %{"key" => key}, socket) do
-    expanded = socket.assigns.ov_expanded
+    {:noreply, assign(socket, ov_expanded: toggle_member(socket.assigns.ov_expanded, key))}
+  end
 
-    expanded =
-      if MapSet.member?(expanded, key),
-        do: MapSet.delete(expanded, key),
-        else: MapSet.put(expanded, key)
-
-    {:noreply, assign(socket, ov_expanded: expanded)}
+  def handle_event("chat_toggle", %{"key" => key}, socket) do
+    {:noreply, assign(socket, chat_expanded: toggle_member(socket.assigns.chat_expanded, key))}
   end
 
   def handle_event("set_queue_slots", %{"value" => value}, socket) do
@@ -1061,6 +1061,7 @@ defmodule ExAthena.Web.Live.ChatLive do
             :for={msg <- @messages}
             msg={msg}
             details_stream={@details_stream}
+            chat_expanded={@chat_expanded}
           />
 
           <%= if @streaming do %>
@@ -1068,6 +1069,7 @@ defmodule ExAthena.Web.Live.ChatLive do
               details_stream={@details_stream}
               msg_id={@pending_assistant_msg_id}
               current_action={@current_action}
+              chat_expanded={@chat_expanded}
             />
           <% end %>
 
@@ -1266,7 +1268,13 @@ defmodule ExAthena.Web.Live.ChatLive do
       <%= if @items == [] do %>
         <div class="msg-body md" id={"md-#{@msg.id}"} phx-hook="MarkdownRender" data-raw={@msg.text}></div>
       <% else %>
-        <.assistant_item :for={item <- @items} item={item} streaming={false} live={false} />
+        <.assistant_item
+          :for={item <- @items}
+          item={item}
+          streaming={false}
+          live={false}
+          chat_expanded={@chat_expanded}
+        />
       <% end %>
       <%= if @msg.status do %>
         <div class="msg-footer">
@@ -1301,6 +1309,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         item={item}
         streaming={true}
         live={idx == @last_idx}
+        chat_expanded={@chat_expanded}
       />
       <div class="msg-body" style="white-space: pre-wrap"><span class="cursor">▋</span></div>
     </div>
@@ -1308,18 +1317,25 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   # Reasoning content: streams in an OPEN block while it is the newest entry
-  # of the in-progress turn, then auto-collapses to a <details> once the
-  # model moves on (text/tool arrives) or the run finalizes.
+  # of the in-progress turn, then auto-collapses once the model moves on.
+  # Expansion afterwards is SERVER-owned (chat_expanded) — streaming
+  # re-renders would strip a user-toggled native <details open>.
   defp assistant_item(%{item: {:thinking, e}} = assigns) do
-    assigns = assign(assigns, :e, e)
+    key = "think:#{e.id}"
+
+    assigns =
+      assigns
+      |> assign(:e, e)
+      |> assign(:key, key)
+      |> assign(:open?, assigns.live or MapSet.member?(assigns.chat_expanded, key))
 
     ~H"""
-    <details class="msg-thinking" open={@live}>
-      <summary class="msg-thinking-summary">
-        thinking<span :if={@live} class="msg-thinking-live">…</span>
-      </summary>
-      <div class="msg-thinking-body">{@e.payload.text}</div>
-    </details>
+    <div class="msg-thinking">
+      <button class="msg-thinking-summary" phx-click="chat_toggle" phx-value-key={@key}>
+        {if @open?, do: "▾", else: "▸"} thinking<span :if={@live} class="msg-thinking-live">…</span>
+      </button>
+      <div :if={@open?} class="msg-thinking-body">{@e.payload.text}</div>
+    </div>
     """
   end
 
@@ -1796,10 +1812,7 @@ defmodule ExAthena.Web.Live.ChatLive do
                 :if={MapSet.member?(@expanded, "transcript:#{agent.id}")}
                 class="ov-transcript-body"
               >
-                <div :for={{kind, text} <- agent.transcript_tail} class="ov-transcript-entry">
-                  <span class={["ov-transcript-kind", "ov-transcript-kind--#{kind}"]}>{kind}</span>
-                  <pre class="ov-transcript-text">{text}</pre>
-                </div>
+                <.ov_agent_chat tail={agent.transcript_tail} />
               </div>
             </div>
           <% end %>
@@ -1899,15 +1912,49 @@ defmodule ExAthena.Web.Live.ChatLive do
       <div :if={@info.transcript_tail != []} class="ov-focus-section">
         <div class="ov-focus-label">context (last {length(@info.transcript_tail)} events)</div>
         <div class="ov-transcript-body ov-transcript-body--full">
-          <div :for={{kind, text} <- @info.transcript_tail} class="ov-transcript-entry">
-            <span class={["ov-transcript-kind", "ov-transcript-kind--#{kind}"]}>{kind}</span>
-            <pre class="ov-transcript-text">{text}</pre>
-          </div>
+          <.ov_agent_chat tail={@info.transcript_tail} />
         </div>
       </div>
     </div>
     """
   end
+
+  # Chat-style rendering of an agent's transcript tail — visually mirrors
+  # the main chat: purple thinking blocks, tool rows pairing call → result,
+  # plain text paragraphs. Deltas are pre-coalesced by AgentInfo.
+  defp ov_agent_chat(assigns) do
+    assigns = assign(assigns, :blocks, transcript_blocks(assigns.tail))
+
+    ~H"""
+    <div class="ov-chat">
+      <%= for block <- @blocks do %>
+        <%= case block do %>
+          <% {:thinking, text} -> %>
+            <div class="ov-chat-thinking">{text}</div>
+          <% {:tool, call, result} -> %>
+            <div class="ov-chat-tool">
+              <span class="ov-chat-tool-call">→ {call}</span>
+              <span :if={result} class="ov-chat-tool-result">← {result}</span>
+            </div>
+          <% {:error, text} -> %>
+            <div class="ov-chat-error">⚠ {text}</div>
+          <% {_kind, text} -> %>
+            <div class="ov-chat-text">{text}</div>
+        <% end %>
+      <% end %>
+    </div>
+    """
+  end
+
+  # Pair each tool call with its immediately-following result, chat-row style.
+  defp transcript_blocks([{:tool_call, call}, {:tool_result, result} | rest]),
+    do: [{:tool, call, result} | transcript_blocks(rest)]
+
+  defp transcript_blocks([{:tool_call, call} | rest]),
+    do: [{:tool, call, nil} | transcript_blocks(rest)]
+
+  defp transcript_blocks([{kind, text} | rest]), do: [{kind, text} | transcript_blocks(rest)]
+  defp transcript_blocks([]), do: []
 
   # Snapshot ids are :main (atom) or subagent id strings; phx-value always
   # arrives as a string.
@@ -1984,10 +2031,7 @@ defmodule ExAthena.Web.Live.ChatLive do
             {if @transcript_open?, do: "▾", else: "▸"} transcript ({length(@info.transcript_tail)})
           </button>
           <div :if={@transcript_open?} class="ov-transcript-body">
-            <div :for={{kind, text} <- @info.transcript_tail} class="ov-transcript-entry">
-              <span class={["ov-transcript-kind", "ov-transcript-kind--#{kind}"]}>{kind}</span>
-              <pre class="ov-transcript-text">{text}</pre>
-            </div>
+            <.ov_agent_chat tail={@info.transcript_tail} />
           </div>
         </div>
       <% end %>
@@ -2552,6 +2596,10 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp maybe_put_model(opts, m) when is_binary(m) and m != "", do: Keyword.put(opts, :model, m)
   defp maybe_put_model(opts, _), do: opts
+
+  defp toggle_member(set, key) do
+    if MapSet.member?(set, key), do: MapSet.delete(set, key), else: MapSet.put(set, key)
+  end
 
   # Current request-queue slot cap for the (string) provider selection.
   defp current_queue_slots(provider) when is_binary(provider) do

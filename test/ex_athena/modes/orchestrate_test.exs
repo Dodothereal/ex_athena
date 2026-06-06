@@ -732,6 +732,104 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert tr.content =~ "ran read"
   end
 
+  test "calling a phase-unavailable builtin redirects the model to delegate", %{dir: dir} do
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      # Executing phase: the model hallucinates `read` (observed live —
+      # planning allowed it, executing doesn't).
+      %Response{
+        text: "let me peek",
+        tool_calls: [%ToolCall{id: "t1", name: "read", arguments: %{"path" => "x.ex"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{
+        text: "ok, delegating instead",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    ]
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate
+             )
+
+    [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
+    [tr] = tool_msg.tool_results
+    assert tr.is_error
+    assert tr.content =~ "read"
+    assert tr.content =~ "spawn_agent"
+  end
+
+  test "a worker that finishes via the finish tool contributes its deliverable", %{dir: dir} do
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{
+              "prompt" => "examine the file",
+              "objective" => "examine services.ex",
+              "expected_output" => "the pattern summary"
+            }
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    # Worker ends by calling finish with a deliverable and NO final text.
+    sub_responder = fn _request ->
+      %Response{
+        text: "",
+        tool_calls: [
+          %ToolCall{
+            id: "f1",
+            name: "finish",
+            arguments: %{"deliverable" => "NimblePublisher pattern: priv markdown + module"}
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      }
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [ExAthena.Tools.Finish],
+                   memory: false
+                 ]
+               }
+             )
+
+    [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
+    [tr] = tool_msg.tool_results
+    refute tr.is_error
+    assert tr.content =~ "NimblePublisher pattern"
+  end
+
   test "depth-1: a subagent cannot spawn further subagents", %{dir: dir} do
     ctx =
       ExAthena.ToolContext.new(

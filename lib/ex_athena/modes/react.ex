@@ -286,7 +286,7 @@ defmodule ExAthena.Modes.ReAct do
 
     case Tools.find(state.tool_specs, call.name) do
       nil ->
-        result = Messages.tool_result(call.id, "unknown tool: #{call.name}", true)
+        result = Messages.tool_result(call.id, unknown_tool_error(call.name, state), true)
         state = bump_mistake(state)
         Parallel.emit_result_events(state, call, result)
         {result, state}
@@ -577,6 +577,27 @@ defmodule ExAthena.Modes.ReAct do
 
   defp stringify(value) when is_binary(value), do: value
   defp stringify(value), do: inspect(value, pretty: true, limit: :infinity)
+
+  # A bare "unknown tool" gives small models nothing to act on — when the
+  # name is a real builtin that just isn't in THIS loop's toolset (e.g. an
+  # orchestrator hallucinating `read`), redirect to delegation instead of
+  # letting it retry into the mistake cap.
+  defp unknown_tool_error(name, state) do
+    known_builtin? = Enum.any?(ExAthena.Tools.builtins(), &(&1.name() == name))
+    can_delegate? = Tools.find(state.tool_specs, "spawn_agent") != nil
+
+    cond do
+      known_builtin? and can_delegate? ->
+        "tool '#{name}' is not available to you — delegate this step to a worker " <>
+          "via spawn_agent instead (workers have the full toolset)."
+
+      known_builtin? ->
+        "tool '#{name}' is not available in this phase."
+
+      true ->
+        "unknown tool: #{name}"
+    end
+  end
 
   # ── Skill auto-load via [skill: name] sentinel ────────────────────
 

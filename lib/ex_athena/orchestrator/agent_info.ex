@@ -33,6 +33,8 @@ defmodule ExAthena.Orchestrator.AgentInfo do
 
   @transcript_max_entries 30
   @transcript_entry_max_chars 400
+  # Coalesced thinking/content blocks may grow much larger than tool rows.
+  @transcript_text_max_chars 4_000
   @conclusions_cap 50
   @summary_max_chars 160
 
@@ -307,8 +309,26 @@ defmodule ExAthena.Orchestrator.AgentInfo do
     end
   end
 
+  # Streaming deltas arrive word-by-word — consecutive thinking/content
+  # chunks COALESCE into one chat-like block instead of one row per delta.
+  # Tool entries always stand alone (they break a text run).
+  defp append_transcript(info, {kind, text}) when kind in [:thinking, :content] do
+    case List.last(info.transcript_tail) do
+      {^kind, prev} ->
+        merged = truncate(prev <> text, @transcript_text_max_chars)
+        tail = List.replace_at(info.transcript_tail, -1, {kind, merged})
+        %{info | transcript_tail: tail}
+
+      _ ->
+        push_transcript(info, {kind, truncate(text, @transcript_text_max_chars)})
+    end
+  end
+
   defp append_transcript(info, {kind, text}) do
-    entry = {kind, truncate(text, @transcript_entry_max_chars)}
+    push_transcript(info, {kind, truncate(text, @transcript_entry_max_chars)})
+  end
+
+  defp push_transcript(info, entry) do
     tail = Enum.take(info.transcript_tail ++ [entry], -@transcript_max_entries)
     %{info | transcript_tail: tail}
   end
