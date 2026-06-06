@@ -2055,3 +2055,87 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   border: none;
   padding: 0;
 }
+
+/* ── Inline thinking blocks in the chat pane ─────────────────────────── */
+
+.msg-thinking {
+  margin: 4px 0;
+  border-left: 2px solid var(--border-light);
+  padding-left: 10px;
+}
+
+.msg-thinking-summary {
+  font-size: 11px;
+  color: #c084fc;
+  cursor: pointer;
+  user-select: none;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.msg-thinking-summary:hover { filter: brightness(1.2); }
+
+.msg-thinking-live { animation: pulse 1.2s ease-in-out infinite; }
+
+.msg-thinking-body {
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ── Agent focus view (Overview) ─────────────────────────────────────── */
+
+.ov-agent-head--clickable { cursor: pointer; }
+.ov-agent-head--clickable:hover .ov-agent-name { color: var(--accent); }
+
+.ov-focus {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px;
+}
+
+.ov-focus-back {
+  align-self: flex-start;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.ov-focus-back:hover { color: var(--accent); border-color: var(--accent); }
+
+.ov-focus-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ov-focus-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.ov-focus-text { font-size: 12.5px; line-height: 1.45; }
+
+.ov-conclusions--full {
+  max-height: 240px;
+  overflow-y: auto;
+  border-top: none;
+  padding-top: 0;
+}
+
+.ov-transcript-body--full { max-height: 420px; }

@@ -103,10 +103,17 @@ defmodule ExAthena.Tools.SpawnAgent do
     }
   end
 
-  # The four-field task brief required when the orchestrator runs with
-  # strict spawns (Anthropic's highest-payoff delegation guardrail): a
-  # worker only succeeds when its brief is self-contained.
-  @brief_fields ~w(objective expected_output tool_guidance boundaries)
+  # Task brief for strict spawns (orchestrate mode). Only the two truly
+  # essential fields are REQUIRED — small local models reliably produce
+  # objective/expected_output but consistently drop boundaries (observed
+  # live: identical rejected calls repeated verbatim, turning the guardrail
+  # into a wall). The other two get runtime defaults when omitted.
+  @required_brief ~w(objective expected_output)
+  @brief_defaults %{
+    "tool_guidance" => "Use any available tools as needed.",
+    "boundaries" => "Do only this step; do not start or modify anything outside its scope."
+  }
+  @brief_fields @required_brief ++ Map.keys(@brief_defaults)
 
   @impl true
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
@@ -119,12 +126,12 @@ defmodule ExAthena.Tools.SpawnAgent do
 
       missing = strict_brief_missing(args, ctx) ->
         {:error,
-         "spawn_agent requires a complete task brief; missing: #{Enum.join(missing, ", ")}. " <>
-           "Provide objective, expected_output, tool_guidance, and boundaries so the worker " <>
-           "can succeed without seeing this conversation."}
+         "spawn_agent requires a task brief; missing: #{Enum.join(missing, ", ")}. " <>
+           "Provide at least objective and expected_output so the worker can succeed " <>
+           "without seeing this conversation."}
 
       true ->
-        do_execute(args, prompt, ctx)
+        do_execute(fill_brief_defaults(args, ctx), prompt, ctx)
     end
   end
 
@@ -267,13 +274,26 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp maybe_put(kw, key, value), do: Keyword.put(kw, key, value)
 
   # Strict-brief validation (orchestrate mode sets assigns[:strict_spawn]).
-  # Returns the list of missing/blank brief fields, or nil when fine.
+  # Returns the list of missing/blank REQUIRED fields, or nil when fine.
   defp strict_brief_missing(args, ctx) do
     if Map.get(ctx.assigns || %{}, :strict_spawn, false) do
-      case Enum.filter(@brief_fields, fn f -> blank?(Map.get(args, f)) end) do
+      case Enum.filter(@required_brief, fn f -> blank?(Map.get(args, f)) end) do
         [] -> nil
         missing -> missing
       end
+    end
+  end
+
+  # In strict mode, omitted optional brief fields get runtime defaults so
+  # the worker contract stays complete without forcing a small model to
+  # produce every field.
+  defp fill_brief_defaults(args, ctx) do
+    if Map.get(ctx.assigns || %{}, :strict_spawn, false) do
+      Enum.reduce(@brief_defaults, args, fn {field, default}, acc ->
+        if blank?(Map.get(acc, field)), do: Map.put(acc, field, default), else: acc
+      end)
+    else
+      args
     end
   end
 

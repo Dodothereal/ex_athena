@@ -88,7 +88,7 @@ defmodule ExAthena.Loop.State do
           ctx: ToolContext.t() | nil,
           on_event: (term() -> term()) | nil,
           budget: Budget.t() | nil,
-          max_iterations: non_neg_integer(),
+          max_iterations: non_neg_integer() | :infinity,
           max_consecutive_mistakes: non_neg_integer(),
           max_budget_usd: float() | nil,
           max_unproductive_iterations: non_neg_integer(),

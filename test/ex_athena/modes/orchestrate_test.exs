@@ -104,7 +104,8 @@ defmodule ExAthena.Modes.OrchestrateTest do
   test "the orchestrator keeps only coordination + read-only tools (no bash/write/edit)", %{
     dir: dir
   } do
-    tool_specs = ExAthena.Tools.resolve(tools: ExAthena.Tools.builtins())
+    tool_specs =
+      ExAthena.Tools.resolve(tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser])
 
     {:ok, state} =
       ExAthena.Modes.Orchestrate.init(%ExAthena.Loop.State{
@@ -117,18 +118,99 @@ defmodule ExAthena.Modes.OrchestrateTest do
 
     names = Enum.map(state.tool_specs, & &1.name)
 
-    # Coordination + read-only investigation stays…
-    assert "todo_write" in names
-    assert "spawn_agent" in names
-    assert "finish" in names
-    assert "read" in names
+    # Coordination tools ONLY — no specialist tools on the supervisor
+    # (LangGraph rule, no exceptions): even read/glob/grep let a small model
+    # burn all its iterations on self-investigation instead of delegating.
+    assert Enum.sort(names) == Enum.sort(~w(todo_write spawn_agent finish ask_user))
+  end
 
-    # …but the supervisor gets NO specialist/mutating tools (LangGraph
-    # supervisor rule) — that's what workers are for.
-    refute "bash" in names
-    refute "write" in names
-    refute "edit" in names
-    refute "apply_patch" in names
+  test "auto-delegation: pending todos + 2 spawn-less turns → the runtime spawns the worker",
+       %{dir: dir} do
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    todos_args = %{
+      "todos" => [
+        %{"content" => "write the blog post", "status" => "pending"},
+        %{"content" => "publish it", "status" => "pending"}
+      ]
+    }
+
+    responder = fn request ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      send(test_pid, {:main_request, n, request.messages})
+
+      case n do
+        1 ->
+          %Response{text: "the plan", tool_calls: [], finish_reason: :stop, provider: :mock}
+
+        n when n in [2, 3] ->
+          # Two executing turns that write todos but never delegate.
+          %Response{
+            text: "Organizing todos.",
+            tool_calls: [
+              %ToolCall{id: "t#{n}", name: "todo_write", arguments: todos_args}
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{
+            text: "done\nCONCLUSION: integrated worker output.",
+            tool_calls: [],
+            finish_reason: :stop,
+            provider: :mock
+          }
+      end
+    end
+
+    sub_responder = fn _request ->
+      %Response{
+        text: "Worker finished the blog post.",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    end
+
+    on_event = fn ev -> send(test_pid, {:event, ev}) end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               on_event: on_event,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    # The runtime (not the model) delegated the first pending todo.
+    assert_receive {:event, {:subagent_spawn, %{prompt: prompt}}}
+    assert prompt =~ "write the blog post"
+    assert_receive {:event, {:subagent_result, %{text: "Worker finished the blog post."}}}
+
+    # The worker's summary was injected back into the orchestrator's context.
+    assert_receive {:main_request, 4, msgs}
+
+    assert Enum.any?(msgs, fn
+             %{role: :user, content: c} when is_binary(c) ->
+               c =~ "orchestration runtime" and c =~ "Worker finished the blog post."
+
+             _ ->
+               false
+           end)
   end
 
   test "fan-out is capped at the provider's queue slots", %{dir: dir} do
@@ -148,7 +230,31 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert state.max_concurrency == 1
     assert state.ctx.assigns[:strict_spawn] == true
     assert state.ctx.assigns[:subagent_prompt_suffix] =~ "CONCLUSION"
-    assert state.mode_state == %{phase: :planning}
+    assert state.mode_state.phase == :planning
+  end
+
+  test "orchestrate is uncapped by default but respects an explicit max_iterations", %{dir: dir} do
+    base = %ExAthena.Loop.State{
+      max_iterations: 25,
+      meta: %{provider_atom: :mock},
+      ctx: ExAthena.ToolContext.new(cwd: dir, assigns: %{}),
+      request_template: %ExAthena.Request{messages: [], system_prompt: nil}
+    }
+
+    # Default cap (caller passed nothing) → unlimited; the remaining guards
+    # (no-progress, mistakes, budget, host Stop) bound the run instead.
+    {:ok, state} = ExAthena.Modes.Orchestrate.init(base)
+    assert state.max_iterations == :infinity
+
+    # Caller explicitly asked for a cap → honored.
+    explicit = %{
+      base
+      | max_iterations: 40,
+        meta: Map.put(base.meta, :explicit_max_iterations?, true)
+    }
+
+    {:ok, state} = ExAthena.Modes.Orchestrate.init(explicit)
+    assert state.max_iterations == 40
   end
 
   test "strict spawn briefs: missing fields are rejected with a model-visible error", %{dir: dir} do
@@ -193,6 +299,138 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert tr.is_error
     assert tr.content =~ "objective"
     assert tr.content =~ "expected_output"
+  end
+
+  test "a brief missing only boundaries/tool_guidance is auto-filled and the spawn proceeds",
+       %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{
+              "prompt" => "explore the repo",
+              "objective" => "map the repo structure",
+              "expected_output" => "a summary of directory patterns"
+              # boundaries + tool_guidance omitted — Qwen3.5-class models
+              # consistently drop them; the runtime fills defaults.
+            }
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{
+        text: "done\nCONCLUSION: integrated.",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    ]
+
+    sub_responder = fn request ->
+      send(test_pid, {:worker_prompt, List.last(request.messages).content})
+      %Response{text: "worker done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    assert_receive {:worker_prompt, text}
+    assert text =~ "map the repo structure"
+    # The runtime-filled default boundary made it into the worker brief.
+    assert text =~ "only this step"
+  end
+
+  test "failed spawn attempts do not count as delegation for the watchdog", %{dir: dir} do
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    todos_args = %{"todos" => [%{"content" => "explore the repo", "status" => "pending"}]}
+
+    # A spawn missing the REQUIRED objective/expected_output fields — always
+    # rejected; the model repeats it verbatim (observed live behavior).
+    bad_spawn = %ToolCall{id: "bad", name: "spawn_agent", arguments: %{"prompt" => "go explore"}}
+
+    responder = fn _request ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock}
+
+        2 ->
+          %Response{
+            text: "Trying to delegate. Attempt one.",
+            tool_calls: [
+              %ToolCall{id: "t2", name: "todo_write", arguments: todos_args},
+              bad_spawn
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        3 ->
+          %Response{
+            text: "Trying to delegate. Attempt two.",
+            tool_calls: [%{bad_spawn | id: "bad2"}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    sub_responder = fn _request ->
+      %Response{text: "Worker explored the repo.", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    on_event = fn ev -> send(test_pid, {:event, ev}) end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               on_event: on_event,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    # Despite two (failed) spawn attempts, the watchdog still rescued the
+    # pending todo with a real worker.
+    assert_receive {:event, {:subagent_result, %{text: "Worker explored the repo."}}}
   end
 
   test "depth-1: a subagent cannot spawn further subagents", %{dir: dir} do

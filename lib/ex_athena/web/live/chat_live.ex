@@ -94,6 +94,8 @@ defmodule ExAthena.Web.Live.ChatLive do
         # incoming updates to the current run.
         orchestrator: nil,
         orchestrator_sid: nil,
+        # Agent id (as string) whose focus view is open in Overview; nil = tree.
+        overview_focus: nil,
         gpu_stats: nil,
         # Git diff output (rendered in the Git tab)
         git_diff: nil,
@@ -298,6 +300,14 @@ defmodule ExAthena.Web.Live.ChatLive do
        # The resume id belongs to the previous provider's conversation.
        provider_session_id: nil
      )}
+  end
+
+  def handle_event("focus_agent", %{"id" => id}, socket) do
+    {:noreply, assign(socket, overview_focus: id)}
+  end
+
+  def handle_event("unfocus_agent", _params, socket) do
+    {:noreply, assign(socket, overview_focus: nil)}
   end
 
   def handle_event("set_queue_slots", %{"value" => value}, socket) do
@@ -1081,7 +1091,11 @@ defmodule ExAthena.Web.Live.ChatLive do
               <% :overview -> %>
                 <div class="details-tab-body">
                   <%= if @orchestrator do %>
-                    <.overview_panel orchestrator={@orchestrator} gpu={@gpu_stats} />
+                    <.overview_panel
+                      orchestrator={@orchestrator}
+                      gpu={@gpu_stats}
+                      focus={@overview_focus}
+                    />
                   <% else %>
                     <div class="details-empty">
                       <div class="details-empty-title">Overview</div>
@@ -1236,7 +1250,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       <%= if @items == [] do %>
         <div class="msg-body md" id={"md-#{@msg.id}"} phx-hook="MarkdownRender" data-raw={@msg.text}></div>
       <% else %>
-        <.assistant_item :for={item <- @items} item={item} streaming={false} />
+        <.assistant_item :for={item <- @items} item={item} streaming={false} live={false} />
       <% end %>
       <%= if @msg.status do %>
         <div class="msg-footer">
@@ -1248,7 +1262,12 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp streaming_message(assigns) do
-    assigns = assign(assigns, :items, message_items(assigns.details_stream, assigns.msg_id))
+    items = message_items(assigns.details_stream, assigns.msg_id)
+
+    assigns =
+      assigns
+      |> assign(:items, items)
+      |> assign(:last_idx, length(items) - 1)
 
     ~H"""
     <div class="msg msg--assistant msg--streaming">
@@ -1261,9 +1280,30 @@ defmodule ExAthena.Web.Live.ChatLive do
           </span>
         <% end %>
       </div>
-      <.assistant_item :for={item <- @items} item={item} streaming={true} />
+      <.assistant_item
+        :for={{item, idx} <- Enum.with_index(@items)}
+        item={item}
+        streaming={true}
+        live={idx == @last_idx}
+      />
       <div class="msg-body" style="white-space: pre-wrap"><span class="cursor">▋</span></div>
     </div>
+    """
+  end
+
+  # Reasoning content: streams in an OPEN block while it is the newest entry
+  # of the in-progress turn, then auto-collapses to a <details> once the
+  # model moves on (text/tool arrives) or the run finalizes.
+  defp assistant_item(%{item: {:thinking, e}} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <details class="msg-thinking" open={@live}>
+      <summary class="msg-thinking-summary">
+        thinking<span :if={@live} class="msg-thinking-live">…</span>
+      </summary>
+      <div class="msg-thinking-body">{@e.payload.text}</div>
+    </details>
     """
   end
 
@@ -1611,32 +1651,131 @@ defmodule ExAthena.Web.Live.ChatLive do
   # ---------------------------------------------------------------------------
 
   defp overview_panel(assigns) do
+    assigns = assign(assigns, :focused, find_agent(assigns.orchestrator, assigns.focus))
+
     ~H"""
     <div class="ov-panel">
-      <%= if @gpu do %>
-        <div class="ov-gpu">
-          <span class="ov-gpu-provider">{@gpu.provider}</span>
-          <span class="ov-gpu-slots">{@gpu.depth}/{@gpu.max} slots</span>
-          <%= if @gpu.waiting > 0 do %>
-            <span class="ov-gpu-waiting">{@gpu.waiting} waiting</span>
-          <% end %>
-        </div>
-      <% end %>
+      <%= if @focus do %>
+        <.agent_focus info={@focused} focus_id={@focus} />
+      <% else %>
+        <%= if @gpu do %>
+          <div class="ov-gpu">
+            <span class="ov-gpu-provider">{@gpu.provider}</span>
+            <span class="ov-gpu-slots">{@gpu.depth}/{@gpu.max} slots</span>
+            <%= if @gpu.waiting > 0 do %>
+              <span class="ov-gpu-waiting">{@gpu.waiting} waiting</span>
+            <% end %>
+          </div>
+        <% end %>
 
-      <%= if action = working_on(@orchestrator) do %>
-        <div class="ov-working">⚡ {action}</div>
-      <% end %>
+        <%= if action = working_on(@orchestrator) do %>
+          <div class="ov-working">⚡ {action}</div>
+        <% end %>
 
-      <.ov_agent_card info={@orchestrator.main} main={true} />
-      <.ov_agent_card :for={agent <- @orchestrator.agents} info={agent} main={false} />
+        <.ov_agent_card info={@orchestrator.main} main={true} />
+        <.ov_agent_card :for={agent <- @orchestrator.agents} info={agent} main={false} />
+      <% end %>
     </div>
     """
+  end
+
+  # Focus view: one agent's full observable state — its own context. Looked
+  # up fresh from the live snapshot every render so it keeps updating.
+  defp agent_focus(%{info: nil} = assigns) do
+    ~H"""
+    <div class="ov-focus">
+      <button class="ov-focus-back" phx-click="unfocus_agent">← all agents</button>
+      <div class="details-empty">
+        <div class="details-empty-sub">Agent {@focus_id} is no longer available.</div>
+      </div>
+    </div>
+    """
+  end
+
+  defp agent_focus(assigns) do
+    ~H"""
+    <div class="ov-focus">
+      <button class="ov-focus-back" phx-click="unfocus_agent">← all agents</button>
+
+      <div class="ov-agent-head">
+        <span class="ov-agent-name">{@info.name || @info.id}</span>
+        <span class={["ov-badge", "ov-badge--#{@info.status}"]}>{badge_label(@info.status)}</span>
+      </div>
+
+      <div :if={@info.prompt_summary} class="ov-focus-section">
+        <div class="ov-focus-label">task</div>
+        <div class="ov-focus-text">{@info.prompt_summary}</div>
+      </div>
+
+      <div :if={@info.linked_todo} class="ov-focus-section">
+        <div class="ov-focus-label">linked todo</div>
+        <div class="ov-focus-text">{@info.linked_todo}</div>
+      </div>
+
+      <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
+
+      <div :if={@info.todos != []} class="ov-focus-section">
+        <div class="ov-focus-label">sub-tasks</div>
+        <div class="ov-todos">
+          <div :for={todo <- @info.todos} class={["ov-todo", "ov-todo--#{todo.status}"]}>
+            <span class="ov-todo-marker">{todo_marker(todo.status)}</span>
+            <span class="ov-todo-text">{todo.content}</span>
+          </div>
+        </div>
+      </div>
+
+      <div :if={@info.conclusions != []} class="ov-focus-section">
+        <div class="ov-focus-label">conclusions ({length(@info.conclusions)})</div>
+        <div class="ov-conclusions ov-conclusions--full">
+          <div
+            :for={c <- @info.conclusions}
+            class={["ov-conclusion", c.source != :stated && "ov-conclusion--derived"]}
+          >
+            <span class="ov-conclusion-iter">#{c.iteration}</span>
+            {c.text}
+          </div>
+        </div>
+      </div>
+
+      <div class="ov-agent-footer">
+        iter {@info.iteration} · {@info.usage.input_tokens}/{@info.usage.output_tokens} tok
+        <%= if @info.cost_usd do %>
+          · ${format_cost(@info.cost_usd)}
+        <% end %>
+      </div>
+
+      <div :if={@info.transcript_tail != []} class="ov-focus-section">
+        <div class="ov-focus-label">context (last {length(@info.transcript_tail)} events)</div>
+        <div class="ov-transcript-body ov-transcript-body--full">
+          <div :for={{kind, text} <- @info.transcript_tail} class="ov-transcript-entry">
+            <span class={["ov-transcript-kind", "ov-transcript-kind--#{kind}"]}>{kind}</span>
+            <pre class="ov-transcript-text">{text}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # Snapshot ids are :main (atom) or subagent id strings; phx-value always
+  # arrives as a string.
+  defp find_agent(%{main: main, agents: agents}, focus_id) do
+    cond do
+      focus_id == nil -> nil
+      focus_id == "main" -> main
+      true -> Enum.find(agents, &(to_string(&1.id) == focus_id))
+    end
   end
 
   defp ov_agent_card(assigns) do
     ~H"""
     <div class={["ov-agent", !@main && "ov-agent--sub"]}>
-      <div class="ov-agent-head">
+      <div
+        class="ov-agent-head ov-agent-head--clickable"
+        phx-click="focus_agent"
+        phx-value-id={to_string(@info.id)}
+        title="Open this agent's context"
+      >
         <span class="ov-agent-name">
           {@info.name || @info.id} <span :if={@main} class="ov-agent-role">orchestrator</span>
         </span>
@@ -1820,6 +1959,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        details_stream: [user_detail | socket.assigns.details_stream],
        orchestrator: initial_snapshot,
        orchestrator_sid: run_sid,
+       overview_focus: nil,
        gpu_stats: gpu_stats(provider),
        error: nil
      )}

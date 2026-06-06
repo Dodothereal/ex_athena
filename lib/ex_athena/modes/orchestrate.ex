@@ -65,13 +65,19 @@ defmodule ExAthena.Modes.Orchestrate do
     summary.
   """
 
-  # The orchestrator gets coordination + read-only investigation tools ONLY
-  # (LangGraph supervisor rule: no specialist tools on the supervisor).
-  # Mutating/specialist work (bash, write, edit, patch, lsp, web) belongs to
-  # workers — this is what stops small local models from burning their
-  # iterations on direct exploration instead of delegating. It also shrinks
-  # the tool-schema prompt for weak models.
-  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user read glob grep plan_mode)
+  # The orchestrator gets coordination tools ONLY — no specialist tools on
+  # the supervisor, NO exceptions (LangGraph supervisor rule). Live testing
+  # showed even read/glob/grep let a small local model burn every iteration
+  # on self-investigation instead of delegating. Any inspection now costs a
+  # worker spawn, which is the point. It also shrinks the tool-schema
+  # prompt for weak models.
+  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user)
+
+  # Auto-delegation watchdog: with pending todos, after this many
+  # consecutive turns without a spawn_agent call the runtime delegates the
+  # first pending todo itself (deterministic rail — prompts alone don't
+  # bind small models).
+  @max_turns_without_spawn 2
 
   @impl true
   def init(%State{} = state) do
@@ -89,13 +95,23 @@ defmodule ExAthena.Modes.Orchestrate do
     {:ok,
      %{
        state
-       | mode_state: %{phase: :planning},
+       | mode_state: %{phase: :planning, todos: [], turns_without_spawn: 0},
+         # Uncapped by design (user-directed): the orchestrator runs until
+         # the todos are done. The no-progress guard, mistake counter,
+         # budget cap, and the host's stop control bound the run. An
+         # explicitly passed cap is honored.
+         max_iterations: orchestrator_iterations(state),
          max_concurrency: min(state.max_concurrency, slot_cap(state)),
          tool_specs: Enum.filter(state.tool_specs, &(&1.name in @orchestrator_tools)),
          ctx: %{state.ctx | assigns: assigns},
          request_template: request_template
      }}
   end
+
+  defp orchestrator_iterations(%State{meta: %{explicit_max_iterations?: true}} = state),
+    do: state.max_iterations
+
+  defp orchestrator_iterations(_state), do: :infinity
 
   @impl true
   def productivity_signal(prev_state, new_state),
@@ -133,7 +149,12 @@ defmodule ExAthena.Modes.Orchestrate do
         state = fold_usage(state, response)
         new_messages = state.messages ++ [ExAthena.Messages.assistant(response.text || "")]
 
-        {:continue, %{state | messages: new_messages, mode_state: %{phase: :executing}}}
+        {:continue,
+         %{
+           state
+           | messages: new_messages,
+             mode_state: %{state.mode_state | phase: :executing}
+         }}
 
       {:error, %ExAthena.Error{kind: :context_length_exceeded}} ->
         {:error, :error_prompt_too_long}
@@ -144,12 +165,104 @@ defmodule ExAthena.Modes.Orchestrate do
   end
 
   def iterate(%State{mode_state: %{phase: :executing}} = state) do
-    ExAthena.Modes.ReAct.iterate(state)
+    prev_count = length(state.messages)
+
+    case ExAthena.Modes.ReAct.iterate(state) do
+      {:continue, new_state} -> watchdog(new_state, prev_count)
+      other -> other
+    end
   end
 
   def iterate(%State{} = state) do
     ExAthena.Modes.ReAct.iterate(state)
   end
+
+  # ── Auto-delegation watchdog ──────────────────────────────────────
+
+  # Track the latest todo list and whether the model delegated this turn;
+  # after @max_turns_without_spawn spawn-less turns with pending todos, the
+  # RUNTIME delegates the first pending todo (jido directive style: the
+  # decision stays observable, the effect is executed by code).
+  defp watchdog(state, prev_count) do
+    calls =
+      state.messages
+      |> Enum.drop(prev_count)
+      |> Enum.flat_map(fn
+        %{role: :assistant, tool_calls: tcs} when is_list(tcs) -> tcs
+        _ -> []
+      end)
+
+    todos =
+      calls
+      |> Enum.filter(&(&1.name == "todo_write"))
+      |> List.last()
+      |> case do
+        nil -> state.mode_state[:todos] || []
+        tc -> List.wrap(tc.arguments["todos"])
+      end
+
+    spawned? = Enum.any?(calls, &(&1.name == "spawn_agent"))
+    turns = if spawned?, do: 0, else: (state.mode_state[:turns_without_spawn] || 0) + 1
+
+    pending =
+      Enum.filter(todos, fn t ->
+        field(t, :status) in [nil, "pending", "in_progress"]
+      end)
+
+    if pending != [] and turns >= @max_turns_without_spawn do
+      state = auto_delegate(state, hd(pending))
+      {:continue, put_watch(state, todos, 0)}
+    else
+      {:continue, put_watch(state, todos, turns)}
+    end
+  end
+
+  defp put_watch(state, todos, turns) do
+    %{
+      state
+      | mode_state: Map.merge(state.mode_state, %{todos: todos, turns_without_spawn: turns})
+    }
+  end
+
+  defp auto_delegate(state, todo) do
+    content = field(todo, :content) || "the next pending step"
+
+    args = %{
+      "prompt" => "Complete this step of a larger task: #{content}",
+      "objective" => content,
+      "expected_output" =>
+        "a self-contained summary (max 300 words) of findings, decisions, and files changed",
+      "tool_guidance" =>
+        "use any available tools (read, glob, grep, bash, write, edit) as needed",
+      "boundaries" => "do only this step; do not start other todos",
+      "todo" => content,
+      "max_result_chars" => 2_000,
+      "max_iterations" => 15,
+      "timeout_ms" => 1_800_000
+    }
+
+    ctx = %{
+      state.ctx
+      | tool_call_id: "auto_delegate_#{System.unique_integer([:positive])}"
+    }
+
+    note =
+      case ExAthena.Tools.SpawnAgent.execute(args, ctx) do
+        {:ok, text, _ui} ->
+          "[orchestration runtime] You did not delegate, so the runtime delegated the " <>
+            ~s(pending todo "#{content}" to a worker. Worker summary:\n#{text}\n) <>
+            "Update your todo list, then delegate the next pending todo with spawn_agent."
+
+        {:error, reason} ->
+          "[orchestration runtime] Auto-delegation of \"#{content}\" failed: " <>
+            "#{inspect(reason)}. Revise the plan or delegate it yourself with spawn_agent."
+      end
+
+    %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
+  end
+
+  defp field(map, key) when is_map(map),
+    do: Map.get(map, key) || Map.get(map, to_string(key))
 
   # ── Internal ──────────────────────────────────────────────────────
 

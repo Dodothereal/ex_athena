@@ -36,7 +36,10 @@ defmodule ExAthena.Loop do
     * `:allowed_tools`, `:disallowed_tools`, `:can_use_tool` — see
       `ExAthena.Permissions`.
     * `:hooks` — see `ExAthena.Hooks`.
-    * `:max_iterations` (default 25) — hard iteration cap.
+    * `:max_iterations` (default 25) — hard iteration cap. Pass `:infinity`
+      to disable it (the no-progress guard, mistake counter, and budget cap
+      still bound the run). The `:orchestrate` mode defaults to `:infinity`
+      unless an explicit cap is passed.
     * `:max_consecutive_mistakes` (default 3) — counter threshold at
       which the loop terminates with `:error_consecutive_mistakes`.
     * `:max_unproductive_iterations` (default 3) — consecutive-iteration
@@ -120,7 +123,10 @@ defmodule ExAthena.Loop do
         |> Map.put(:halted_reason, reason)
         |> set_finish_reason(:error_halted)
 
-      state.iterations >= state.max_iterations ->
+      # :infinity disables the cap (orchestrate mode default) — the
+      # no-progress guard, mistake counter, budget cap, and the host's stop
+      # control bound the run instead.
+      is_integer(state.max_iterations) and state.iterations >= state.max_iterations ->
         state
         |> set_finish_reason(:error_max_turns)
 
@@ -692,6 +698,9 @@ defmodule ExAthena.Loop do
           # recited back to the model at the request tail each turn.
           |> Map.put(:conclusions, conclusions?)
           |> Map.put(:ledger, [])
+          # Whether the caller explicitly chose an iteration cap — modes that
+          # default to :infinity (orchestrate) must honor an explicit choice.
+          |> Map.put(:explicit_max_iterations?, Keyword.has_key?(opts, :max_iterations))
           |> maybe_put_halt(ups_halt)
       }
 

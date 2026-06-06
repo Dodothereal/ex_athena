@@ -74,6 +74,41 @@ defmodule ExAthena.LoopTest do
     assert result.iterations == 0
   end
 
+  test "max_iterations: :infinity never trips the iteration cap", %{dir: dir} do
+    File.write!(Path.join(dir, "f.txt"), "x")
+    counter = :counters.new(1, [:atomics])
+
+    # 30 productive tool turns (varied args → fingerprint changes) — more
+    # than the default cap of 25 — then a terminal answer.
+    responder = fn _request ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+
+      if n <= 30 do
+        %Response{
+          text: "step #{n}\nCONCLUSION: did step #{n}.",
+          tool_calls: [%ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "f#{n}.txt"}}],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      else
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    assert {:ok, result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read],
+               max_iterations: :infinity
+             )
+
+    assert result.finish_reason == :stop
+    assert result.iterations == 30
+  end
+
   test "result carries the provider session id when the provider reports one", %{dir: dir} do
     responses = [
       %Response{

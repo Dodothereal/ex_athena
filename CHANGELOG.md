@@ -41,6 +41,16 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Tightened the no-progress signal: blank or repeated assistant text no
   longer counts as productivity (local reasoning models often emit a bare
   `" "` while re-issuing identical tool calls).
+- **Orchestrate runs are uncapped** (`max_iterations: :infinity` unless the
+  caller passes an explicit cap; the kernel now supports `:infinity`). The
+  no-progress guard, mistake counter, budget cap, and host stop control
+  bound the run instead. The orchestrator's toolset is coordination-only
+  (`todo_write`/`spawn_agent`/`finish`/`ask_user` — no specialist tools on
+  the supervisor), and an **auto-delegation watchdog** enforces
+  one-worker-per-task: after 2 spawn-less turns with pending todos, the
+  runtime spawns a worker for the first pending todo itself and feeds the
+  summary back. Clicking an agent card in the web Overview opens its focus
+  view (own task, sub-todos, full conclusions, usage, bounded transcript).
 
 ### Fixed
 
