@@ -47,6 +47,11 @@ defmodule ExAthena.ToolCalls do
           {:ok, [ToolCall.t()]} | {:error, term()}
   def extract(response, capabilities \\ %{})
 
+  # Self-contained agents (e.g. the Claude Code CLI) run their own tools and
+  # own the loop. Their text may mention or even echo `~~~tool_*` fences, but
+  # the loop must never parse or execute them — the turn is terminal.
+  def extract(_response, %{self_contained_tools: true}), do: {:ok, []}
+
   def extract(%{tool_calls: [_ | _] = calls}, _caps) when is_list(calls) do
     Native.parse(calls)
   end

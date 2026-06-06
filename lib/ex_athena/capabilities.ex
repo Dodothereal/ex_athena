@@ -11,6 +11,12 @@ defmodule ExAthena.Capabilities do
 
   @type t :: %{
           optional(:native_tool_calls) => boolean(),
+          # Provider is a self-contained agent (e.g. the Claude Code CLI):
+          # it runs its own tools and owns the reasoning loop. When true, the
+          # loop skips text-tagged prompt augmentation and never parses/executes
+          # tool calls from the response — the turn is terminal and the text is
+          # the final answer.
+          optional(:self_contained_tools) => boolean(),
           optional(:streaming) => boolean(),
           optional(:json_mode) => boolean(),
           optional(:structured_output) => boolean(),

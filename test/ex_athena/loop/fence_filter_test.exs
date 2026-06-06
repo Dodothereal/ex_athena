@@ -103,4 +103,52 @@ defmodule ExAthena.Loop.FenceFilterTest do
     chunks = ["~~~tool_call \t", " \n{\"name\":\"x\"}\n~~~", "done"]
     assert visible(chunks) == "done"
   end
+
+  # ── tool_result fences (models roleplaying the result side) ──────────
+
+  test "whole tool_result fence in one chunk is removed" do
+    chunk = "before\n~~~tool_result\n[read]\nfile contents...\n~~~\nafter"
+    assert visible([chunk]) == "before\n\nafter"
+  end
+
+  test "tool_result fence split across many chunks is removed" do
+    chunks = [
+      "before\n",
+      "~~~to",
+      "ol_re",
+      "sult\n[read]\nlots of",
+      " file lines",
+      "\n~~~",
+      "\nafter"
+    ]
+
+    assert visible(chunks) == "before\n\nafter"
+  end
+
+  test "open marker split exactly at the shared ~~~tool_ prefix is removed" do
+    chunks = ["a\n~~~tool_", "result\nbody\n~~~\nb"]
+    assert visible(chunks) == "a\n\nb"
+  end
+
+  test "literal tool_result marker prefix that never completes is emitted intact" do
+    assert visible(["see ~~~tool_resulting code"]) == "see ~~~tool_resulting code"
+  end
+
+  test "flush swallows an unterminated tool_result fence" do
+    {state, out} = run_chunks(["x\n~~~tool_result\nhalf a dump"])
+    assert out == "x\n"
+    assert FenceFilter.flush(state) == ""
+  end
+
+  test "mixed stream: a tool_call fence then a tool_result fence both removed" do
+    chunks = [
+      "intro\n",
+      "~~~tool_call\n{\"name\":\"read\"}\n~~~",
+      "\nmiddle\n",
+      "~~~tool_result\n[read]\ndata\n~~~",
+      "\noutro"
+    ]
+
+    assert visible(chunks) == "intro\n\nmiddle\n\noutro"
+  end
 end

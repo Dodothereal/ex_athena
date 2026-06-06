@@ -24,6 +24,12 @@ defmodule ExAthena.Providers.ClaudeCode do
   def capabilities do
     %{
       native_tool_calls: false,
+      # The Claude Code CLI is a complete agent: it runs its own tools and
+      # owns the reasoning loop. ex_athena must NOT teach it the text-tagged
+      # tool protocol nor execute tools for it — its tool activity streams to
+      # hosts as tool events and its result text is the final answer. This
+      # flag tells the loop to skip prompt augmentation and tool extraction.
+      self_contained_tools: true,
       streaming: true,
       json_mode: true,
       structured_output: true,

@@ -394,6 +394,11 @@ defmodule ExAthena.Modes.ReAct do
   defp effective_system_prompt(%State{capabilities: %{native_tool_calls: true}} = state),
     do: state.request_template.system_prompt
 
+  # Self-contained agents (Claude Code CLI) own their tool loop — never inject
+  # the text-tagged protocol, or they roleplay both sides and echo fences.
+  defp effective_system_prompt(%State{capabilities: %{self_contained_tools: true}} = state),
+    do: state.request_template.system_prompt
+
   defp effective_system_prompt(state) do
     ExAthena.ToolCalls.augment_system_prompt(
       state.request_template.system_prompt,

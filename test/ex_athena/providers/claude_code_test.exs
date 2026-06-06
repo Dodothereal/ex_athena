@@ -12,6 +12,9 @@ defmodule ExAthena.Providers.ClaudeCodeTest do
 
     # The CLI runs its own tools, so ex_athena must not execute tools for it.
     refute caps.native_tool_calls
+    # And it's a self-contained agent: the loop skips prompt augmentation and
+    # tool extraction entirely.
+    assert caps.self_contained_tools
     assert caps.streaming
     assert caps.supports_resume
     # claude_code exposes no temperature knob.

@@ -157,6 +157,34 @@ defmodule ExAthena.ToolCallsTest do
       assert {:ok, []} = ToolCalls.extract(%{tool_calls: nil, text: "just text"})
     end
 
+    test "self_contained_tools short-circuits even with a tool_call fence in text" do
+      response = %{
+        tool_calls: nil,
+        text: "~~~tool_call\n{\"name\": \"t\", \"arguments\": {}}\n~~~"
+      }
+
+      assert {:ok, []} = ToolCalls.extract(response, %{self_contained_tools: true})
+    end
+
+    test "self_contained_tools short-circuits even with structured tool_calls present" do
+      response = %{
+        tool_calls: [
+          %{
+            "type" => "function",
+            "id" => "1",
+            "function" => %{"name" => "t", "arguments" => "{}"}
+          }
+        ],
+        text: ""
+      }
+
+      assert {:ok, []} =
+               ToolCalls.extract(response, %{
+                 native_tool_calls: false,
+                 self_contained_tools: true
+               })
+    end
+
     test "falls back to RawJson when native was claimed and text has bare JSON" do
       response = %{
         tool_calls: nil,

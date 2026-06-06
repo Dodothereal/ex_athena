@@ -1,25 +1,29 @@
 defmodule ExAthena.Loop.FenceFilter do
   @moduledoc """
-  Pure streaming filter that removes `~~~tool_call ... ~~~` fenced blocks
-  from chunked assistant text.
+  Pure streaming filter that removes `~~~tool_call ... ~~~` and
+  `~~~tool_result ... ~~~` fenced blocks from chunked assistant text.
 
   Non-native-tool-call providers emit tool calls as text fences (the
   `ExAthena.ToolCalls.TextTagged` protocol, `~~~tool_call\\s*\\n ... \\n~~~`).
-  When their output streams to hosts as `{:content, chunk}` deltas, the raw
-  fence markup would leak into the visible transcript — the loop already
-  surfaces the parsed calls as `{:tool_call, ...}` events, so the fences
-  must be filtered out of the text stream.
+  Some models additionally roleplay the *result* side, echoing
+  `~~~tool_result` fences (often with invented tool output) into their
+  visible text. When this output streams to hosts as `{:content, chunk}`
+  deltas, the raw fence markup leaks into the transcript — the loop already
+  surfaces real tool activity as `{:tool_call, ...}` / `{:tool_result, ...}`
+  events, so both fence kinds must be stripped from the text stream.
 
   Chunks may split a marker at any byte boundary, so the filter holds the
   longest chunk tail that could still become a marker as *pending* text:
 
-    * Outside a fence, a tail like `"~~"` or `"~~~tool_c"` (any strict
-      prefix of `~~~tool_call`) is held instead of emitted. A complete
-      `~~~tool_call` is also held while only optional whitespace follows —
-      the open marker is `~~~tool_call\\s*\\n` (mirroring the TextTagged
-      regex), so until the newline arrives we can't tell a fence from
-      literal text like `~~~tool_caller`. If a non-whitespace char arrives
-      first, the held text is released as visible.
+    * Outside a fence, a tail like `"~~"`, `"~~~tool_"` (shared by both
+      markers), `"~~~tool_c"` (only `~~~tool_call`), or `"~~~tool_r"` (only
+      `~~~tool_result`) — any strict prefix of *either* open marker — is
+      held instead of emitted. A complete `~~~tool_call` / `~~~tool_result`
+      is also held while only optional whitespace follows — the open marker
+      is `<marker>\\s*\\n` (mirroring the TextTagged regex), so until the
+      newline arrives we can't tell a fence from literal text like
+      `~~~tool_caller`. If a non-whitespace char arrives first, the held
+      text is released as visible.
     * Inside a fence, everything is swallowed until the close marker
       `\\n~~~`; a tail like `"\\n~"` is held the same way.
 
@@ -28,7 +32,7 @@ defmodule ExAthena.Loop.FenceFilter do
   entirely (half a fence is still tool markup, and showing it is worse).
   """
 
-  @open_marker "~~~tool_call"
+  @open_markers ["~~~tool_call", "~~~tool_result"]
   @close_marker "\n~~~"
 
   @opaque state :: {:outside, binary()} | {:inside, binary()}
@@ -61,8 +65,12 @@ defmodule ExAthena.Loop.FenceFilter do
   defp scan(mode, "", acc), do: {{mode, ""}, acc}
 
   defp scan(:outside, buffer, acc) do
-    case :binary.match(buffer, @open_marker) do
+    # `:binary.match/2` with a pattern list returns the earliest match; the
+    # two markers diverge after the shared `~~~tool_` prefix so they can never
+    # start at the same position, leaving no ambiguity over which matched.
+    case :binary.match(buffer, @open_markers) do
       {i, len} ->
+        marker = binary_part(buffer, i, len)
         before = binary_part(buffer, 0, i)
         rest = binary_part(buffer, i + len, byte_size(buffer) - i - len)
 
@@ -74,16 +82,16 @@ defmodule ExAthena.Loop.FenceFilter do
           # Marker seen but only (possibly empty) whitespace after it so
           # far — can't tell fence from literal text until more arrives.
           :partial ->
-            {{:outside, @open_marker <> rest}, [acc, before]}
+            {{:outside, marker <> rest}, [acc, before]}
 
           # Non-whitespace before any newline (e.g. `~~~tool_caller`):
           # not a fence — release and keep scanning from the offender.
           {:no, ws, remainder} ->
-            scan(:outside, remainder, [acc, before, @open_marker, ws])
+            scan(:outside, remainder, [acc, before, marker, ws])
         end
 
       :nomatch ->
-        {held, emit} = hold_partial_suffix(buffer, @open_marker)
+        {held, emit} = hold_partial_suffix(buffer, @open_markers)
         {{:outside, held}, [acc, emit]}
     end
   end
@@ -113,17 +121,20 @@ defmodule ExAthena.Loop.FenceFilter do
 
   defp consume_marker_tail(rest, ws), do: {:no, ws, rest}
 
-  # Split `buffer` into `{held, emit}` where `held` is the longest suffix
-  # of `buffer` that is a strict prefix of `marker` (it may complete into
-  # the marker on the next chunk); everything before it is safe to emit.
-  defp hold_partial_suffix(buffer, marker) do
-    max_n = min(byte_size(marker) - 1, byte_size(buffer))
+  # Split `buffer` into `{held, emit}` where `held` is the longest suffix of
+  # `buffer` that is a strict prefix of `marker` — or, given a list of markers,
+  # of *any* of them (it may complete into a marker on the next chunk);
+  # everything before it is safe to emit.
+  defp hold_partial_suffix(buffer, markers) do
+    markers = List.wrap(markers)
+    longest = markers |> Enum.map(&byte_size/1) |> Enum.max()
+    max_n = min(longest - 1, byte_size(buffer))
 
     held =
       Enum.reduce_while(max_n..1//-1, "", fn n, _ ->
         suffix = binary_part(buffer, byte_size(buffer) - n, n)
 
-        if String.starts_with?(marker, suffix),
+        if Enum.any?(markers, &String.starts_with?(&1, suffix)),
           do: {:halt, suffix},
           else: {:cont, ""}
       end)

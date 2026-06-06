@@ -236,6 +236,56 @@ defmodule ExAthena.LoopTest do
     refute (sp || "") =~ "~~~tool_call"
   end
 
+  test "capabilities: %{self_contained_tools: true} does NOT inject the preamble", %{dir: dir} do
+    test_pid = self()
+
+    responder = fn request ->
+      send(test_pid, {:system_prompt, request.system_prompt})
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, _} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [],
+               # self_contained implies non-native, but must still skip augmentation.
+               capabilities: %{native_tool_calls: false, self_contained_tools: true}
+             )
+
+    assert_receive {:system_prompt, sp}
+    refute (sp || "") =~ "~~~tool_call"
+  end
+
+  test "capabilities: %{self_contained_tools: true} treats a fenced tool call in text as final",
+       %{dir: dir} do
+    File.write!(Path.join(dir, "hello.txt"), "hello world")
+
+    responder = fn _request ->
+      %Response{
+        text: "~~~tool_call\n{\"name\": \"read\", \"arguments\": {\"path\": \"hello.txt\"}}\n~~~",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    end
+
+    assert {:ok, result} =
+             Loop.run("read hello.txt",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read],
+               capabilities: %{native_tool_calls: false, self_contained_tools: true}
+             )
+
+    # The fence is the agent's own transcript, not a call for ex_athena to run:
+    # the turn terminates immediately, no tool is executed.
+    assert result.iterations == 0
+    refute Enum.any?(result.messages, &match?(%{role: :tool}, &1))
+  end
+
   test "capabilities override: fenced tool call in text is parsed and dispatched", %{dir: dir} do
     File.write!(Path.join(dir, "hello.txt"), "hello world")
 
