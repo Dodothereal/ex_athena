@@ -229,7 +229,10 @@ defmodule ExAthena.Tools.SpawnAgent do
           # Surface the failure digest on the agent's Overview entry too.
           case Map.get(ctx.assigns || %{}, :agent_event_sink) do
             sink when is_function(sink, 2) ->
-              sink.(sub_id, {:result_note, "did not finish (#{sub_result.finish_reason}):\n#{digest}"})
+              sink.(
+                sub_id,
+                {:result_note, "did not finish (#{sub_result.finish_reason}):\n#{digest}"}
+              )
 
             _ ->
               :ok

@@ -17,6 +17,12 @@ defmodule ExAthena.Modes.OrchestrateTest do
     {:ok, dir: dir}
   end
 
+  defp schema_names(tools) do
+    Enum.map(tools || [], fn t ->
+      t[:name] || t["name"] || get_in(t, [:function, :name]) || get_in(t, ["function", "name"])
+    end)
+  end
+
   defp scripted(responses) do
     counter = :counters.new(1, [:atomics])
 
@@ -67,7 +73,7 @@ defmodule ExAthena.Modes.OrchestrateTest do
              )
 
     assert_receive {:planning_request, request}
-    names = Enum.map(request.tools || [], fn t -> t[:name] || t["name"] end)
+    names = schema_names(request.tools)
 
     # Quick exploration AND delegated exploration are allowed while planning…
     assert "read" in names
@@ -119,7 +125,7 @@ defmodule ExAthena.Modes.OrchestrateTest do
 
     assert_receive {:exec_request, request}
     # Executing phase restored the coordination toolset + execution addendum.
-    names = Enum.map(request.tools || [], fn t -> t[:name] || t["name"] end)
+    names = schema_names(request.tools)
     assert "spawn_agent" in names
     refute "read" in names
     assert request.system_prompt =~ "spawn_agent"

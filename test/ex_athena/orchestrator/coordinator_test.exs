@@ -86,7 +86,12 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       {:ok, pid} = Coordinator.start_for(sid)
 
       Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-x", prompt: "explore"}})
-      Coordinator.notify(pid, "sub-x", {:result_note, "did not finish (error_max_turns): - found services dir"})
+
+      Coordinator.notify(
+        pid,
+        "sub-x",
+        {:result_note, "did not finish (error_max_turns): - found services dir"}
+      )
 
       {:ok, snap} = Coordinator.snapshot(sid)
       [agent] = snap.agents

@@ -1781,6 +1781,28 @@ defmodule ExAthena.Web.Live.ChatLive do
               </div>
             </div>
           <% end %>
+
+          <%!-- The worker's thinking + actions, right here in the task. --%>
+          <%= if agent.transcript_tail != [] do %>
+            <div class="ov-transcript">
+              <button
+                class="ov-transcript-toggle"
+                phx-click="ov_toggle"
+                phx-value-key={"transcript:#{agent.id}"}
+              >
+                {if MapSet.member?(@expanded, "transcript:#{agent.id}"), do: "▾", else: "▸"} thinking & actions ({length(agent.transcript_tail)})
+              </button>
+              <div
+                :if={MapSet.member?(@expanded, "transcript:#{agent.id}")}
+                class="ov-transcript-body"
+              >
+                <div :for={{kind, text} <- agent.transcript_tail} class="ov-transcript-entry">
+                  <span class={["ov-transcript-kind", "ov-transcript-kind--#{kind}"]}>{kind}</span>
+                  <pre class="ov-transcript-text">{text}</pre>
+                </div>
+              </div>
+            </div>
+          <% end %>
         </div>
       </div>
     </div>

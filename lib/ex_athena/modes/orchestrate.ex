@@ -25,8 +25,7 @@ defmodule ExAthena.Modes.Orchestrate do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.Loop.{Events, State}
-  alias ExAthena.RequestQueue
+  alias ExAthena.Loop.State
 
   @planning_addendum """
   ## Planning phase
@@ -312,28 +311,19 @@ defmodule ExAthena.Modes.Orchestrate do
   defp append_prompt("", addendum), do: addendum
   defp append_prompt(existing, addendum), do: existing <> "\n\n" <> addendum
 
-  defp planning_call(state, request, nil),
-    do: state.provider_mod.query(request, state.provider_opts)
-
-  defp planning_call(state, request, stream_cb),
-    do: state.provider_mod.stream(request, stream_cb, state.provider_opts)
-
-  defp fold_usage(state, response) do
-    budget = state.budget || ExAthena.Budget.new()
-    cost = extract_cost(response.usage)
-
-    if response.usage do
-      Events.emit(state.on_event, {:usage, response.usage})
-    end
-
-    %{state | budget: ExAthena.Budget.add(budget, response.usage, cost)}
+  # Planning runs ReAct with a swapped toolset/prompt — the executing
+  # versions (set in init) are restored on every returned state.
+  defp restore_executing(new_state, %State{tool_specs: specs, request_template: template}) do
+    %{new_state | tool_specs: specs, request_template: template}
   end
 
-  defp extract_cost(nil), do: nil
-
-  defp extract_cost(usage) when is_map(usage) do
-    Map.get(usage, :total_cost) || Map.get(usage, "total_cost")
+  # The tool-free plan turn set finish_reason :stop — clear it and switch
+  # phases so the run continues into execution.
+  defp to_executing(state) do
+    %{
+      state
+      | mode_state: Map.put(state.mode_state, :phase, :executing),
+        meta: Map.delete(state.meta, :finish_reason)
+    }
   end
-
-  defp extract_cost(_), do: nil
 end
