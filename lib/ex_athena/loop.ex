@@ -483,6 +483,7 @@ defmodule ExAthena.Loop do
       model: state.request_template && state.request_template.model,
       provider: state.provider_mod,
       session_id: state.meta[:provider_session_id],
+      conclusions: state.meta[:ledger] || [],
       telemetry: %{},
       no_progress_snapshot: state.no_progress_snapshot
     }

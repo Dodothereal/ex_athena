@@ -109,9 +109,28 @@ defmodule ExAthena.Loop.Parallel do
         {:cont, {:ok, acc ++ [{call_id, result}], fold_deltas(state, deltas)}}
 
       {:exit, {reason, _}}, {:ok, acc, state} ->
-        # One task crashed or timed out — surface as an error result for the
+        # One task crashed — surface as an error result for the
         # corresponding call but don't halt. The kernel converts it to a
         # tool-error replay message.
+        err_result =
+          Messages.tool_result("unknown", "parallel task failed: #{inspect(reason)}", true)
+
+        {:cont, {:ok, acc ++ [{nil, err_result}], state}}
+
+      {:exit, :timeout}, {:ok, acc, state} ->
+        # `on_timeout: :kill_task` yields a BARE :timeout (not the
+        # {reason, stack} crash shape) — a tool exceeding tool_timeout_ms
+        # must become an error result, never a run crash.
+        err_result =
+          Messages.tool_result(
+            "unknown",
+            "parallel tool call timed out after #{state.tool_timeout_ms || 60_000}ms",
+            true
+          )
+
+        {:cont, {:ok, acc ++ [{nil, err_result}], state}}
+
+      {:exit, reason}, {:ok, acc, state} ->
         err_result =
           Messages.tool_result("unknown", "parallel task failed: #{inspect(reason)}", true)
 

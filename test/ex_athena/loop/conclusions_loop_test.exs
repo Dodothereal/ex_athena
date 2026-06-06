@@ -301,6 +301,35 @@ defmodule ExAthena.Loop.ConclusionsLoopTest do
     refute message_text(ledger2) =~ "change strategy"
   end
 
+  test "the Result carries the run's conclusions ledger", %{dir: dir} do
+    File.write!(Path.join(dir, "f.txt"), "x")
+
+    responses = [
+      %Response{
+        text: "CONCLUSION: found the config.",
+        tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "f.txt"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{
+        text: "done\nCONCLUSION: all wired up.",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    ]
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read]
+             )
+
+    assert Enum.map(result.conclusions, & &1.text) == ["found the config.", "all wired up."]
+  end
+
   defp ledger_message?(%{content: content}) when is_binary(content),
     do: content =~ "[progress ledger"
 

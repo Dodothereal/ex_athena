@@ -73,6 +73,10 @@ defmodule ExAthena.Result do
             model: nil,
             provider: nil,
             session_id: nil,
+            # Per-iteration conclusions ledger (see ExAthena.Conclusions) —
+            # lets callers (e.g. SpawnAgent) salvage what a run learned even
+            # when it terminated with an error.
+            conclusions: [],
             telemetry: %{},
             no_progress_snapshot: nil
 
@@ -91,6 +95,7 @@ defmodule ExAthena.Result do
           model: String.t() | nil,
           provider: atom() | module() | nil,
           session_id: String.t() | nil,
+          conclusions: [map()],
           telemetry: map(),
           no_progress_snapshot: [Message.t()] | nil
         }

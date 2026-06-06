@@ -47,11 +47,14 @@ defmodule ExAthena.Tools.SpawnAgent do
   @impl true
   def name, do: "spawn_agent"
 
-  # Subagents are independent loops; the request queue serializes their
-  # provider calls on scarce GPU slots, so spawning several in one turn is
-  # safe — Parallel.run caps concurrency via state.max_concurrency.
+  # Workers run SERIALLY within a turn: the concurrent path would subject a
+  # spawn to the per-tool timeout (tool_timeout_ms, default 60s) and kill
+  # legitimate multi-minute workers mid-task (observed live as a run crash).
+  # SpawnAgent manages its own generous timeout via Task.yield, and on
+  # single-slot local providers concurrent workers would serialize at the
+  # GPU gate anyway. Revisit per-tool timeouts if multi-slot fan-out lands.
   @impl true
-  def parallel_safe?, do: true
+  def parallel_safe?, do: false
 
   @impl true
   def description,
@@ -223,8 +226,8 @@ defmodule ExAthena.Tools.SpawnAgent do
 
           {:error,
            "worker did not finish (#{sub_result.finish_reason}). " <>
-             "Partial output: #{sub_result.text || "(none)"}. " <>
-             "Re-delegate with a narrower or clearer brief."}
+             "What it learned before stopping:\n#{conclusions_digest(sub_result)}\n" <>
+             "Re-delegate with a narrower or clearer brief, building on those findings."}
 
         {:ok, {:ok, %{text: text} = sub_result}} ->
           text = truncate_result(text || "", Map.get(args, "max_result_chars"))
@@ -385,6 +388,23 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp attribute_events(sub_opts, _sub_id, ctx, _args, _agent_def) do
     Keyword.put(sub_opts, :assigns, Map.put(ctx.assigns, :subagent?, true))
+  end
+
+  # Salvage an unfinished worker's learnings: its conclusions ledger (and
+  # any final text) as a compact digest the orchestrator can build on.
+  defp conclusions_digest(%ExAthena.Result{} = sub_result) do
+    lines =
+      sub_result.conclusions
+      |> Enum.take(-5)
+      |> Enum.map(fn c -> "- #{c.text}" end)
+
+    text = String.trim(sub_result.text || "")
+    lines = if text != "", do: lines ++ ["- #{truncate_result(text, 300)}"], else: lines
+
+    case lines do
+      [] -> "(nothing recorded)"
+      _ -> Enum.join(lines, "\n")
+    end
   end
 
   defp truncate_result(text, max) when is_integer(max) and max > 0 do

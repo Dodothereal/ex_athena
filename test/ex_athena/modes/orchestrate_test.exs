@@ -667,6 +667,9 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert tr.is_error
     assert tr.content =~ "did not finish"
     assert tr.content =~ "error_no_progress"
+    # The worker's learnings survive the failure: its conclusions ledger is
+    # digested into the error so the orchestrator keeps the knowledge.
+    assert tr.content =~ "ran read"
   end
 
   test "depth-1: a subagent cannot spawn further subagents", %{dir: dir} do
