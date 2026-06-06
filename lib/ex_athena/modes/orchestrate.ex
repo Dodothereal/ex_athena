@@ -184,10 +184,10 @@ defmodule ExAthena.Modes.Orchestrate do
   # RUNTIME delegates the first pending todo (jido directive style: the
   # decision stays observable, the effect is executed by code).
   defp watchdog(state, prev_count) do
+    new_msgs = Enum.drop(state.messages, prev_count)
+
     calls =
-      state.messages
-      |> Enum.drop(prev_count)
-      |> Enum.flat_map(fn
+      Enum.flat_map(new_msgs, fn
         %{role: :assistant, tool_calls: tcs} when is_list(tcs) -> tcs
         _ -> []
       end)
@@ -201,7 +201,19 @@ defmodule ExAthena.Modes.Orchestrate do
         tc -> List.wrap(tc.arguments["todos"])
       end
 
-    spawned? = Enum.any?(calls, &(&1.name == "spawn_agent"))
+    # Only a SUCCESSFUL spawn counts as delegation — live testing showed a
+    # model repeating an invalid spawn call verbatim every turn, which must
+    # not keep resetting the watchdog.
+    spawn_ids = for tc <- calls, tc.name == "spawn_agent", do: tc.id
+
+    spawned? =
+      new_msgs
+      |> Enum.flat_map(fn
+        %{role: :tool, tool_results: trs} when is_list(trs) -> trs
+        _ -> []
+      end)
+      |> Enum.any?(fn tr -> tr.tool_call_id in spawn_ids and tr.is_error != true end)
+
     turns = if spawned?, do: 0, else: (state.mode_state[:turns_without_spawn] || 0) + 1
 
     pending =

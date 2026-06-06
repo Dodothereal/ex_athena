@@ -113,7 +113,7 @@ defmodule ExAthena.Tools.SpawnAgent do
     "tool_guidance" => "Use any available tools as needed.",
     "boundaries" => "Do only this step; do not start or modify anything outside its scope."
   }
-  @brief_fields @required_brief ++ Map.keys(@brief_defaults)
+  @brief_fields ~w(objective expected_output tool_guidance boundaries)
 
   @impl true
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
