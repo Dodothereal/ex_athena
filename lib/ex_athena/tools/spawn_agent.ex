@@ -43,6 +43,12 @@ defmodule ExAthena.Tools.SpawnAgent do
   @impl true
   def name, do: "spawn_agent"
 
+  # Subagents are independent loops; the request queue serializes their
+  # provider calls on scarce GPU slots, so spawning several in one turn is
+  # safe — Parallel.run caps concurrency via state.max_concurrency.
+  @impl true
+  def parallel_safe?, do: true
+
   @impl true
   def description,
     do:
@@ -65,17 +71,72 @@ defmodule ExAthena.Tools.SpawnAgent do
           type: "string",
           description:
             "Working directory for the sub-agent. Defaults to the parent's cwd. Use this to point the sub-agent at a different project directory."
+        },
+        todo: %{
+          type: "string",
+          description:
+            "Exact content of the todo item this sub-agent works on. When the sub-agent succeeds, that todo is marked completed automatically."
+        },
+        objective: %{
+          type: "string",
+          description: "What the worker must accomplish (required in orchestrate mode)."
+        },
+        expected_output: %{
+          type: "string",
+          description: "Exactly what the worker should return (required in orchestrate mode)."
+        },
+        tool_guidance: %{
+          type: "string",
+          description: "Which tools/sources to use (required in orchestrate mode)."
+        },
+        boundaries: %{
+          type: "string",
+          description:
+            "What is out of scope / must not be touched (required in orchestrate mode)."
+        },
+        max_result_chars: %{
+          type: "integer",
+          description: "Truncate the sub-agent's returned summary to this many characters."
         }
       },
       required: ["prompt"]
     }
   end
 
+  # The four-field task brief required when the orchestrator runs with
+  # strict spawns (Anthropic's highest-payoff delegation guardrail): a
+  # worker only succeeds when its brief is self-contained.
+  @brief_fields ~w(objective expected_output tool_guidance boundaries)
+
   @impl true
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
+    cond do
+      # Depth-1 rail (Claude Code's own rule): workers finish their step and
+      # report back — they never spawn further workers.
+      Map.get(ctx.assigns || %{}, :subagent?, false) ->
+        {:error,
+         "nested subagents are not allowed (depth 1): finish this step yourself and report back"}
+
+      missing = strict_brief_missing(args, ctx) ->
+        {:error,
+         "spawn_agent requires a complete task brief; missing: #{Enum.join(missing, ", ")}. " <>
+           "Provide objective, expected_output, tool_guidance, and boundaries so the worker " <>
+           "can succeed without seeing this conversation."}
+
+      true ->
+        do_execute(args, prompt, ctx)
+    end
+  end
+
+  def execute(_, _), do: {:error, :missing_prompt}
+
+  defp do_execute(args, prompt, ctx) do
     timeout = Map.get(args, "timeout_ms", 300_000)
+    prompt = compose_worker_prompt(prompt, args)
 
     {agent_def, base_opts} = resolve_agent(args, ctx)
+
+    sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
     sub_opts =
       base_opts
@@ -85,15 +146,14 @@ defmodule ExAthena.Tools.SpawnAgent do
       )
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
       |> maybe_put(:tools, resolve_tools(Map.get(args, "tools"), ctx))
-      |> Keyword.put(:assigns, ctx.assigns)
+      |> apply_prompt_suffix(ctx)
+      |> attribute_events(sub_id, ctx, args, agent_def)
       |> Keyword.put(:parent_session_id, ctx.session_id)
 
     # Worktree isolation lives between resolving the agent and starting the
     # sub-loop so the sub-loop's `:cwd` becomes the worktree path. Falls back
     # to the parent's cwd transparently if any safety check fails.
     {sub_opts, isolation_info} = apply_isolation(agent_def, sub_opts, ctx)
-
-    sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
     parent_hooks = Map.get(ctx.assigns || %{}, :hooks, %{})
 
@@ -147,7 +207,8 @@ defmodule ExAthena.Tools.SpawnAgent do
     result =
       case raw_result do
         {:ok, {:ok, %{text: text} = sub_result}} ->
-          emit_event(ctx, {:subagent_result, %{id: sub_id, text: text || ""}})
+          text = truncate_result(text || "", Map.get(args, "max_result_chars"))
+          emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
           _ =
             ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
@@ -164,7 +225,7 @@ defmodule ExAthena.Tools.SpawnAgent do
           )
 
           ui = subagent_ui(sub_id, sub_result, finalized_isolation)
-          {:ok, text || "", ui}
+          {:ok, text, ui}
 
         {:ok, {:error, reason}} ->
           _ =
@@ -202,10 +263,106 @@ defmodule ExAthena.Tools.SpawnAgent do
     result
   end
 
-  def execute(_, _), do: {:error, :missing_prompt}
-
   defp maybe_put(kw, _key, nil), do: kw
   defp maybe_put(kw, key, value), do: Keyword.put(kw, key, value)
+
+  # Strict-brief validation (orchestrate mode sets assigns[:strict_spawn]).
+  # Returns the list of missing/blank brief fields, or nil when fine.
+  defp strict_brief_missing(args, ctx) do
+    if Map.get(ctx.assigns || %{}, :strict_spawn, false) do
+      case Enum.filter(@brief_fields, fn f -> blank?(Map.get(args, f)) end) do
+        [] -> nil
+        missing -> missing
+      end
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(s) when is_binary(s), do: String.trim(s) == ""
+  defp blank?(_), do: false
+
+  # Fold the brief into the worker's opening message so it is self-contained.
+  defp compose_worker_prompt(prompt, args) do
+    brief =
+      @brief_fields
+      |> Enum.map(fn f -> {f, Map.get(args, f)} end)
+      |> Enum.reject(fn {_f, v} -> blank?(v) end)
+      |> Enum.map_join("\n", fn {f, v} ->
+        "#{f |> String.replace("_", " ") |> String.capitalize()}: #{v}"
+      end)
+
+    if brief == "" do
+      prompt
+    else
+      prompt <> "\n\n## Task brief\n" <> brief
+    end
+  end
+
+  # Orchestrating parents (see Loop's :subagent_prompt_suffix opt) append a
+  # worker contract to every sub-agent's system prompt.
+  defp apply_prompt_suffix(sub_opts, %{assigns: %{subagent_prompt_suffix: suffix}})
+       when is_binary(suffix) and suffix != "" do
+    case Keyword.get(sub_opts, :system_prompt) do
+      nil -> Keyword.put(sub_opts, :system_prompt, suffix)
+      existing -> Keyword.put(sub_opts, :system_prompt, existing <> "\n\n" <> suffix)
+    end
+  end
+
+  defp apply_prompt_suffix(sub_opts, _ctx), do: sub_opts
+
+  # Per-agent attribution (see ExAthena.Orchestrator.Coordinator): when the
+  # parent run carries an :agent_event_sink, the sub-loop's events flow
+  # through it tagged with this sub_id — its own on_event, its own
+  # todo_writer, and an :agent_meta enrichment (name + linked todo). The
+  # sink and parent callbacks are OVERWRITTEN (not put_new) in the sub
+  # assigns so nested spawns can never mis-attribute to this level, and the
+  # sink itself is removed (depth-1 observation).
+  defp attribute_events(
+         sub_opts,
+         sub_id,
+         %{assigns: %{agent_event_sink: sink}} = ctx,
+         args,
+         agent_def
+       )
+       when is_function(sink, 2) do
+    sink.(
+      sub_id,
+      {:agent_meta,
+       %{
+         prompt: Map.get(args, "prompt"),
+         name: agent_def && agent_def.name,
+         linked_todo: Map.get(args, "todo")
+       }}
+    )
+
+    tagged_on_event = fn event -> sink.(sub_id, event) end
+
+    todo_writer = fn todos ->
+      sink.(sub_id, {:todos, todos})
+      :ok
+    end
+
+    sub_assigns =
+      ctx.assigns
+      |> Map.put(:on_event, tagged_on_event)
+      |> Map.put(:todo_writer, todo_writer)
+      |> Map.put(:subagent?, true)
+      |> Map.delete(:agent_event_sink)
+
+    sub_opts
+    |> Keyword.put(:on_event, tagged_on_event)
+    |> Keyword.put(:assigns, sub_assigns)
+  end
+
+  defp attribute_events(sub_opts, _sub_id, ctx, _args, _agent_def) do
+    Keyword.put(sub_opts, :assigns, Map.put(ctx.assigns, :subagent?, true))
+  end
+
+  defp truncate_result(text, max) when is_integer(max) and max > 0 do
+    if String.length(text) > max, do: String.slice(text, 0, max) <> "…", else: text
+  end
+
+  defp truncate_result(text, _), do: text
 
   # Pass names through; the loop resolves names → modules. Filter out the
   # meta tools to avoid runaway recursion.

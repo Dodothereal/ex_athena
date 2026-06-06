@@ -564,10 +564,13 @@ defmodule ExAthena.Loop do
       memory_messages = resolve_memory(cwd, opts)
       skills = resolve_skills(cwd, opts)
 
+      conclusions? = Keyword.get(opts, :conclusions, true)
+
       request_template =
         prompt
         |> Request.new(opts)
         |> apply_skills_catalog(skills)
+        |> apply_conclusion_contract(conclusions?)
 
       permissions_opts = %{
         phase: phase,
@@ -591,6 +594,13 @@ defmodule ExAthena.Loop do
         |> inherit_provider_opts(opts)
         |> inherit_tool_ui_forwarder(opts)
 
+      # When a Coordinator observes this run, tee every host event to it
+      # (attributed as :main) and wire the side channels subagents use for
+      # per-agent attribution. The coordinator is observational only — all
+      # traffic is cast, so its absence or death never affects the run.
+      coordinator = Keyword.get(opts, :coordinator)
+      on_event = opts |> Keyword.get(:on_event) |> tee_coordinator(coordinator)
+
       assigns =
         assigns
         |> Map.put_new(:hooks, hooks_table)
@@ -599,6 +609,15 @@ defmodule ExAthena.Loop do
           Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
         )
         |> Map.put_new(:spawn_agent_opts, inherited_provider_opts)
+        # Tools that surface events to the host (SpawnAgent's
+        # subagent_spawn/result boundary events) read the callback from the
+        # tool context. put_new keeps a callback the caller (or a spawning
+        # parent) already placed in assigns.
+        |> maybe_put_new_on_event(on_event)
+        |> wire_coordinator(coordinator)
+        |> maybe_put_subagent_suffix(Keyword.get(opts, :subagent_prompt_suffix))
+
+      if coordinator, do: ExAthena.Orchestrator.Coordinator.attach_run(coordinator, self())
 
       ctx =
         ExAthena.ToolContext.new(
@@ -637,7 +656,7 @@ defmodule ExAthena.Loop do
         permissions_opts: permissions_opts,
         hooks: Keyword.get(opts, :hooks, %{}) |> ImplicitDiagnostics.maybe_merge(),
         ctx: ctx,
-        on_event: Keyword.get(opts, :on_event),
+        on_event: on_event,
         budget: Budget.new(),
         max_iterations: Keyword.get(opts, :max_iterations, @default_max_iterations),
         max_consecutive_mistakes:
@@ -657,6 +676,22 @@ defmodule ExAthena.Loop do
           |> Map.put(:skills, skills)
           |> Map.put(:memory_count, length(memory_messages))
           |> Map.put(:preloaded_skill_count, length(preloaded_skills))
+          # Provider atom + queue opts for the per-call RequestQueue gate.
+          # Modes wrap each provider call in RequestQueue.with_slot/3 so
+          # concurrent loops (subagents!) serialize on scarce local GPU
+          # slots. queue_timeout defaults to :infinity inside the loop —
+          # the run's own timeout/budget guards bound total time, and a
+          # queued subagent legitimately waits minutes for a slot.
+          |> Map.put(:provider_atom, raw_provider)
+          |> Map.put(:queue_opts,
+            queue: Keyword.get(opts, :queue, true),
+            timeout: Keyword.get(opts, :queue_timeout, :infinity)
+          )
+          # Per-iteration conclusions (see ExAthena.Conclusions): modes emit
+          # {:conclusion, …} events and keep a rolling ledger here that is
+          # recited back to the model at the request tail each turn.
+          |> Map.put(:conclusions, conclusions?)
+          |> Map.put(:ledger, [])
           |> maybe_put_halt(ups_halt)
       }
 
@@ -668,6 +703,72 @@ defmodule ExAthena.Loop do
 
       {:ok, state}
     end
+  end
+
+  defp maybe_put_new_on_event(assigns, nil), do: assigns
+  defp maybe_put_new_on_event(assigns, on_event), do: Map.put_new(assigns, :on_event, on_event)
+
+  # ── Coordinator wiring (see ExAthena.Orchestrator.Coordinator) ─────
+
+  defp tee_coordinator(on_event, nil), do: on_event
+
+  defp tee_coordinator(on_event, coordinator) do
+    fn event ->
+      ExAthena.Orchestrator.Coordinator.notify(coordinator, :main, event)
+      if is_function(on_event, 1), do: on_event.(event)
+      :ok
+    end
+  end
+
+  defp wire_coordinator(assigns, nil), do: assigns
+
+  defp wire_coordinator(assigns, coordinator) do
+    existing_todo_writer = assigns[:todo_writer]
+
+    todo_writer = fn todos ->
+      ExAthena.Orchestrator.Coordinator.notify(coordinator, :main, {:todos, todos})
+      if is_function(existing_todo_writer, 1), do: existing_todo_writer.(todos)
+      :ok
+    end
+
+    # SpawnAgent tags each subagent's events with its generated id through
+    # this sink so the coordinator can attribute them per agent.
+    sink = fn sub_id, event ->
+      ExAthena.Orchestrator.Coordinator.notify(coordinator, sub_id, event)
+    end
+
+    assigns
+    |> Map.put(:todo_writer, todo_writer)
+    |> Map.put(:agent_event_sink, sink)
+  end
+
+  defp maybe_put_subagent_suffix(assigns, nil), do: assigns
+
+  defp maybe_put_subagent_suffix(assigns, suffix) when is_binary(suffix),
+    do: Map.put_new(assigns, :subagent_prompt_suffix, suffix)
+
+  # The CONCLUSION prompt contract (see ExAthena.Conclusions). Lenient by
+  # design — the extraction has tail/derived fallbacks, so a model that
+  # forgets the marker still produces a usable conclusion.
+  @conclusion_contract """
+  ## Conclusion protocol
+  End EVERY response with a final line of exactly this form:
+  CONCLUSION: <one sentence stating what you concluded or decided this turn>
+  """
+
+  defp apply_conclusion_contract(request, false), do: request
+
+  defp apply_conclusion_contract(request, true) do
+    contract = String.trim(@conclusion_contract)
+
+    system_prompt =
+      case request.system_prompt do
+        nil -> contract
+        "" -> contract
+        existing -> existing <> "\n\n" <> contract
+      end
+
+    %{request | system_prompt: system_prompt}
   end
 
   defp apply_user_prompt_submit(hooks, messages, payload) do

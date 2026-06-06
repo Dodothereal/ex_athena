@@ -36,15 +36,34 @@ defmodule ExAthena.Modes.ReAct do
   def productivity_signal(prev_state, new_state) do
     current_fp = ExAthena.Loop.compute_tool_fingerprint(prev_state, new_state)
 
+    # Text only counts as progress when it is non-blank AND differs from the
+    # previous assistant turn — local reasoning models often emit a bare " "
+    # or repeat the same sentence while re-issuing identical tool calls,
+    # which must not reset the no-progress guard.
+    prev_text = last_assistant_text(prev_state.messages)
+
     has_new_text? =
       new_state.messages
       |> Enum.drop(length(prev_state.messages))
       |> Enum.any?(fn
-        %{role: :assistant, content: c} when is_binary(c) and byte_size(c) > 0 -> true
-        _ -> false
+        %{role: :assistant, content: c} when is_binary(c) ->
+          trimmed = String.trim(c)
+          trimmed != "" and trimmed != prev_text
+
+        _ ->
+          false
       end)
 
     current_fp != prev_state.last_tool_fingerprint or has_new_text?
+  end
+
+  defp last_assistant_text(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{role: :assistant, content: c} when is_binary(c) -> String.trim(c)
+      _ -> nil
+    end)
   end
 
   @impl true
@@ -107,6 +126,8 @@ defmodule ExAthena.Modes.ReAct do
             unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
             unless streamed_text?, do: maybe_emit_content(state.on_event, response)
 
+            state = record_conclusion(state, response, [])
+
             state =
               %{
                 state
@@ -119,6 +140,8 @@ defmodule ExAthena.Modes.ReAct do
           {:ok, tool_calls} ->
             unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
             unless streamed_text?, do: maybe_emit_content(state.on_event, response)
+
+            state = record_conclusion(state, response, tool_calls)
 
             assistant_msg = Messages.assistant(response.text, tool_calls)
             state = %{state | messages: state.messages ++ [assistant_msg]}
@@ -389,12 +412,88 @@ defmodule ExAthena.Modes.ReAct do
     %{state | budget: new_budget}
   end
 
+  # ── Conclusions (see ExAthena.Conclusions) ────────────────────────
+
+  # Emit the per-iteration {:conclusion, …} event and fold it into the
+  # rolling ledger (recited at the request tail next turn). Disabled via
+  # `conclusions: false` on the run.
+  @ledger_size 10
+
+  defp record_conclusion(%State{meta: %{conclusions: false}} = state, _response, _calls),
+    do: state
+
+  defp record_conclusion(state, response, tool_calls) do
+    case ExAthena.Conclusions.from_turn(response.text, Enum.map(tool_calls, & &1.name)) do
+      {:ok, %{text: text, source: source}} ->
+        entry = %{iteration: state.iterations, text: text, source: source}
+        Events.emit(state.on_event, {:conclusion, entry})
+
+        ledger = Enum.take((state.meta[:ledger] || []) ++ [entry], -@ledger_size)
+        put_in(state.meta[:ledger], ledger)
+
+      :none ->
+        state
+    end
+  end
+
+  # Manus-style recitation: replay the rolling conclusions ledger as an
+  # EPHEMERAL message at the request tail — never persisted into
+  # state.messages, so the transcript prefix stays append-only (KV-cache
+  # friendly) and the reminder always sits in the model's most recent
+  # attention span.
+  defp recitation(%State{meta: %{conclusions: false}}), do: []
+  defp recitation(%State{meta: %{ledger: []}}), do: []
+
+  defp recitation(%State{meta: %{ledger: [_ | _] = ledger}}) do
+    # The PREVIOUS turn's conclusion is already the most recent assistant
+    # message in context — reciting it back invites recency-bias parroting
+    # (a stale "waiting for user input" conclusion made the model claim it
+    # was still waiting AFTER the answer arrived). Recite only the older
+    # entries; the stall directive still considers the full ledger.
+    case Enum.drop(ledger, -1) do
+      [] ->
+        []
+
+      older ->
+        lines = Enum.map_join(older, "\n", fn e -> "- (iteration #{e.iteration}) #{e.text}" end)
+
+        [
+          Messages.user("""
+          [progress ledger — runtime-generated reminder, not a user message]
+          Conclusions so far:
+          #{lines}
+          #{ledger_directive(ledger)}\
+          """)
+        ]
+    end
+  end
+
+  defp recitation(_state), do: []
+
+  # Magentic-One-style outer-loop response to a stall: when the last
+  # conclusions are identical the agent is spinning (e.g. endless exploratory
+  # tool calls) — escalate the reminder into a corrective instruction
+  # instead of politely repeating the same ledger back.
+  defp ledger_directive(ledger) do
+    case Enum.take(ledger, -2) do
+      [%{text: same}, %{text: same}] ->
+        """
+        You are repeating yourself without making progress — change strategy NOW:
+        stop exploratory commands, record/update your todo list (todo_write),
+        and act on the next pending item (delegate it with spawn_agent if available).
+        """
+
+      _ ->
+        "Stay focused on the remaining work; do not repeat completed steps."
+    end
+  end
+
   # ── Request building ──────────────────────────────────────────────
 
   defp build_request(state) do
     %{
       state.request_template
-      | messages: state.messages,
+      | messages: state.messages ++ recitation(state),
         tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
     }
@@ -450,10 +549,26 @@ defmodule ExAthena.Modes.ReAct do
 
   defp maybe_stream_callback(_state), do: {nil, nil}
 
-  defp query_or_stream(state, request, nil),
+  # Every provider call goes through the request queue (per-call granularity)
+  # so concurrent loops — especially subagents — serialize on the provider's
+  # scarce slots (local GPUs serve 1-3 concurrent requests). The slot is held
+  # for the full call/stream lifetime and released on every exit path; the
+  # provider's own timeout_ms only starts once the slot is acquired.
+  defp query_or_stream(state, request, stream_cb) do
+    ExAthena.RequestQueue.with_slot(
+      state.meta[:provider_atom],
+      fn -> provider_call(state, request, stream_cb) end,
+      Keyword.merge(
+        state.meta[:queue_opts] || [],
+        on_wait: Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
+      )
+    )
+  end
+
+  defp provider_call(state, request, nil),
     do: state.provider_mod.query(request, state.provider_opts)
 
-  defp query_or_stream(state, request, stream_cb),
+  defp provider_call(state, request, stream_cb),
     do: state.provider_mod.stream(request, stream_cb, state.provider_opts)
 
   defp stringify(value) when is_binary(value), do: value

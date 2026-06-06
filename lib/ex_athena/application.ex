@@ -10,7 +10,13 @@ defmodule ExAthena.Application do
         # Subagents spawn under this supervisor so a sub-loop crash can't
         # take down the parent run. `Task.Supervisor.async_nolink` + timeout
         # gives us unlinked concurrency we can reap on deadline.
-        {Task.Supervisor, name: ExAthena.Tasks}
+        {Task.Supervisor, name: ExAthena.Tasks},
+        # Orchestration blackboards: one Coordinator GenServer per observed
+        # run, named by session id via the Registry, started on demand under
+        # the DynamicSupervisor (restart: :temporary — a dead coordinator
+        # loses observability only; runs never depend on it).
+        {Registry, keys: :unique, name: ExAthena.Orchestrator.Registry},
+        {DynamicSupervisor, name: ExAthena.Orchestrator.Supervisor, strategy: :one_for_one}
       ]
       |> maybe_add_sweeper()
 
@@ -67,7 +73,11 @@ defmodule ExAthena.Application do
         children
       end
 
-    if Application.get_env(:ex_athena, :request_queue, [])[:enabled] do
+    # Enabled by default (kill switch: `config :ex_athena, :request_queue,
+    # enabled: false`). Local inference servers serve 1-3 concurrent
+    # requests; the gate keeps concurrent loops/subagents from overwhelming
+    # them.
+    if ExAthena.Config.request_queue_enabled?() do
       children ++ [ExAthena.RequestQueue.Supervisor]
     else
       children

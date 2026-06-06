@@ -62,7 +62,21 @@ defmodule ExAthena.Modes.PlanAndSolve do
     # messages, transition to :executing, continue.
     request = build_planning_request(state)
 
-    case state.provider_mod.query(request, state.provider_opts) do
+    # The planning call goes through the request queue like every other
+    # provider call (per-call granularity; see ReAct.query_or_stream/3).
+    queued_query = fn ->
+      ExAthena.RequestQueue.with_slot(
+        state.meta[:provider_atom],
+        fn -> state.provider_mod.query(request, state.provider_opts) end,
+        Keyword.merge(
+          state.meta[:queue_opts] || [],
+          on_wait:
+            ExAthena.Loop.Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
+        )
+      )
+    end
+
+    case queued_query.() do
       {:ok, response} ->
         if is_binary(response.thinking) and response.thinking != "" do
           ExAthena.Loop.Events.emit(state.on_event, {:thinking, response.thinking})

@@ -84,7 +84,13 @@ defmodule ExAthena.Tools.AskUser do
     receive do
       {:athena_user_answer, ^tool_call_id, answer} ->
         Process.demonitor(ref, [:flush])
-        {:ok, to_string(answer)}
+
+        # Phrase the result so even a small local model cannot miss that the
+        # question has been RESOLVED — a bare answer string was read as
+        # "still waiting" and stalled runs.
+        {:ok,
+         ~s(The user answered: "#{answer}"\n) <>
+           "Act on this answer now; do not ask again."}
 
       {:DOWN, ^ref, :process, ^host, _reason} ->
         {:error, "the user session ended before answering the question"}

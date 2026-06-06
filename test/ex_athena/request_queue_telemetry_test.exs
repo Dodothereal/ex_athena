@@ -122,7 +122,10 @@ defmodule ExAthena.RequestQueueTelemetryTest do
   end
 
   describe "no telemetry when queue is disabled" do
-    test "no request_queue events are emitted when queue is not enabled" do
+    test "no request_queue events are emitted when the queue is disabled" do
+      # The queue is enabled by default; the kill switch must silence it.
+      Application.put_env(:ex_athena, :request_queue, enabled: false)
+
       assert {:ok, _} = ExAthena.query("hi", provider: :mock, mock: [text: "ok"])
 
       refute_received {:telemetry, [:ex_athena, :request_queue, _], _, _}

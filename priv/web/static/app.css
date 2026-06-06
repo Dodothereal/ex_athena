@@ -1906,3 +1906,152 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 
 .btn-pin-panel:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── Overview tab — live orchestration state ─────────────────────────── */
+
+.ov-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.ov-gpu {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ov-gpu-provider { color: var(--accent); font-weight: 600; }
+.ov-gpu-waiting { color: #fbbf24; }
+
+.ov-working {
+  font-size: 12px;
+  color: var(--accent);
+  padding: 2px 2px 0;
+}
+
+.ov-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ov-agent--sub { margin-left: 16px; border-left: 2px solid var(--border-light); }
+
+.ov-agent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ov-agent-name { font-size: 13px; font-weight: 600; }
+.ov-agent-role { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+
+.ov-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.ov-badge--running { color: var(--accent); border-color: var(--accent); }
+.ov-badge--waiting_gpu { color: #fbbf24; border-color: #fbbf24; }
+.ov-badge--stalling { color: #fb923c; border-color: #fb923c; }
+.ov-badge--done { color: var(--muted); }
+.ov-badge--failed, .ov-badge--timeout { color: var(--error-text); border-color: var(--error-text); }
+
+.ov-agent-prompt { font-size: 12px; color: var(--muted); }
+.ov-agent-action { font-size: 12px; color: var(--accent); }
+
+.ov-todos { display: flex; flex-direction: column; gap: 2px; }
+
+.ov-todo {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.ov-todo--completed .ov-todo-text { color: var(--muted); text-decoration: line-through; }
+.ov-todo--in_progress .ov-todo-text { color: var(--accent); }
+.ov-todo-marker { width: 14px; text-align: center; color: var(--muted); }
+.ov-todo--in_progress .ov-todo-marker { color: var(--accent); }
+.ov-todo--completed .ov-todo-marker { color: var(--accent); }
+
+.ov-conclusions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+.ov-conclusion { font-size: 12px; line-height: 1.4; }
+.ov-conclusion--derived { color: var(--muted); font-style: italic; }
+
+.ov-conclusion-iter {
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.ov-agent-footer { font-size: 11px; color: var(--muted); }
+
+.ov-transcript summary {
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ov-transcript summary:hover { color: var(--accent); }
+
+.ov-transcript-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.ov-transcript-entry { display: flex; gap: 6px; align-items: baseline; }
+
+.ov-transcript-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--muted);
+  width: 70px;
+  text-align: right;
+}
+
+.ov-transcript-kind--tool_call { color: var(--user-accent); }
+.ov-transcript-kind--thinking { color: #c084fc; }
+.ov-transcript-kind--error { color: var(--error-text); }
+
+.ov-transcript-text {
+  margin: 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}

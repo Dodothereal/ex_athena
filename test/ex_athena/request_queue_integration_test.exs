@@ -10,14 +10,17 @@ defmodule ExAthena.RequestQueueIntegrationTest do
     end)
   end
 
-  describe "default-disabled behavior" do
-    test "queue is bypassed and query succeeds when request_queue is not enabled" do
+  describe "kill switch and missing-process behavior" do
+    test "queue is bypassed and query succeeds when explicitly disabled" do
+      Application.put_env(:ex_athena, :request_queue, enabled: false)
+
       assert {:ok, %Response{text: "pong"}} =
                ExAthena.query("hi", provider: :mock, mock: [text: "pong"])
     end
 
-    test "query succeeds with no RequestQueue process running" do
-      # Verify no RequestQueue process is running
+    test "query succeeds with no RequestQueue process running (acquire no-ops)" do
+      # Enabled by default, but the GenServer isn't started in tests —
+      # acquire/release degrade to no-ops rather than crashing.
       assert Process.whereis(RequestQueue) == nil
 
       assert {:ok, %Response{text: "ok"}} =
@@ -148,6 +151,135 @@ defmodule ExAthena.RequestQueueIntegrationTest do
       send(task.pid, :continue)
       assert {:ok, _} = Task.await(task, 1_000)
       assert RequestQueue.depth(:mock) == 0
+    end
+
+    test "loop provider calls acquire one slot PER CALL, not per run" do
+      test_pid = self()
+
+      :telemetry.attach_many(
+        "per-call-granularity-#{System.unique_integer([:positive])}",
+        [
+          [:ex_athena, :request_queue, :acquired],
+          [:ex_athena, :request_queue, :released]
+        ],
+        fn event, _m, %{provider: :mock}, _ -> send(test_pid, {:tele, List.last(event)}) end,
+        nil
+      )
+
+      dir = Path.join(System.tmp_dir!(), "rq_loop_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      File.write!(Path.join(dir, "hello.txt"), "hi")
+
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn _request ->
+        :counters.add(counter, 1, 1)
+
+        case :counters.get(counter, 1) do
+          1 ->
+            %ExAthena.Response{
+              text: "",
+              tool_calls: [
+                %ExAthena.Messages.ToolCall{
+                  id: "c1",
+                  name: "read",
+                  arguments: %{"path" => "hello.txt"}
+                }
+              ],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          _ ->
+            %ExAthena.Response{
+              text: "done",
+              tool_calls: [],
+              finish_reason: :stop,
+              provider: :mock
+            }
+        end
+      end
+
+      assert {:ok, _} =
+               ExAthena.run("go",
+                 provider: :mock,
+                 mock: [responder: responder],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Read]
+               )
+
+      # Two provider calls → exactly two acquire/release pairs (per-call
+      # granularity; a run-level hold would emit just one pair).
+      assert_receive {:tele, :acquired}
+      assert_receive {:tele, :released}
+      assert_receive {:tele, :acquired}
+      assert_receive {:tele, :released}
+      refute_received {:tele, :acquired}
+      assert RequestQueue.depth(:mock) == 0
+    end
+
+    test "two concurrent loops serialize their provider calls at max_depth 1" do
+      test_pid = self()
+
+      # Responder signals entry, then blocks until told to continue — proving
+      # the second loop's provider call cannot start while the first holds the slot.
+      responder = fn _request ->
+        send(test_pid, {:entered, self()})
+
+        receive do
+          :continue -> :ok
+        end
+
+        %ExAthena.Response{text: "ok", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+
+      opts = [provider: :mock, mock: [responder: responder], tools: []]
+
+      t1 = Task.async(fn -> ExAthena.Loop.run("a", opts) end)
+      t2 = Task.async(fn -> ExAthena.Loop.run("b", opts) end)
+
+      assert_receive {:entered, first}, 1_000
+      # Only one call may be in flight — the second loop's provider call is
+      # queued, so no second :entered can arrive while the first holds its slot.
+      refute_receive {:entered, _}, 100
+
+      send(first, :continue)
+      assert_receive {:entered, second}, 1_000
+      send(second, :continue)
+
+      assert {:ok, _} = Task.await(t1)
+      assert {:ok, _} = Task.await(t2)
+      assert RequestQueue.depth(:mock) == 0
+    end
+
+    test "the loop emits {:queue_wait, ...} events around a blocked acquire" do
+      test_pid = self()
+      on_event = fn ev -> send(test_pid, {:athena, ev}) end
+
+      # Occupy the only slot so the loop's provider call must queue.
+      :ok = RequestQueue.acquire(:mock)
+
+      task =
+        Task.async(fn ->
+          ExAthena.Loop.run("hi",
+            provider: :mock,
+            mock: [text: "done"],
+            tools: [],
+            on_event: on_event
+          )
+        end)
+
+      assert_receive {:athena, {:queue_wait, %{provider: :mock, status: :waiting}}}, 1_000
+
+      RequestQueue.release(:mock)
+
+      assert_receive {:athena,
+                      {:queue_wait, %{provider: :mock, status: :acquired, waited_ms: ms}}}
+                     when is_integer(ms),
+                     1_000
+
+      assert {:ok, _} = Task.await(task)
     end
 
     test "returns {:error, :request_queue_timeout} when acquire times out" do

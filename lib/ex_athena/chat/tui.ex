@@ -635,6 +635,30 @@ if Code.ensure_loaded?(ExRatatui.App) do
       |> noreply()
     end
 
+    defp dispatch_command(:slots, [], state) do
+      slots = ExAthena.Config.request_queue_max_depth(state.session.provider)
+
+      state
+      |> State.append_event({:info, "#{state.session.provider} parallel slots: #{slots}"})
+      |> noreply()
+    end
+
+    defp dispatch_command(:slots, [arg | _], state) do
+      case Integer.parse(arg) do
+        {n, ""} when n > 0 ->
+          :ok = ExAthena.Config.set_request_queue_max_depth(state.session.provider, n)
+
+          state
+          |> State.append_event({:info, "#{state.session.provider} parallel slots → #{n}"})
+          |> noreply()
+
+        _ ->
+          state
+          |> State.append_event({:error, "usage: /slots N (positive integer)"})
+          |> noreply()
+      end
+    end
+
     defp dispatch_command(:tab, _args, state) do
       state = State.cycle_details_tab(state)
       label = state.details_tab |> Atom.to_string() |> String.capitalize()

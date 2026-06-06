@@ -50,6 +50,19 @@ defmodule ExAthena.Chat.CommandsTest do
       assert Commands.parse("/tools") == {:command, :tools, []}
     end
 
+    test "parses /slots with a count" do
+      assert Commands.parse("/slots 2") == {:command, :slots, ["2"]}
+    end
+
+    test "parses /slots with no args (show current)" do
+      assert Commands.parse("/slots") == {:command, :slots, []}
+    end
+
+    test "/slots is listed in verbs and descriptions" do
+      assert "/slots" in Commands.verbs()
+      assert Map.has_key?(Commands.descriptions(), "/slots")
+    end
+
     test "parses /clear" do
       assert Commands.parse("/clear") == {:command, :clear, []}
     end

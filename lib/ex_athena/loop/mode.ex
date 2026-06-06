@@ -61,7 +61,8 @@ defmodule ExAthena.Loop.Mode do
   @builtins %{
     react: ExAthena.Modes.ReAct,
     plan_and_solve: ExAthena.Modes.PlanAndSolve,
-    reflexion: ExAthena.Modes.Reflexion
+    reflexion: ExAthena.Modes.Reflexion,
+    orchestrate: ExAthena.Modes.Orchestrate
   }
 
   @doc "Resolve an atom shortcut or module to the Mode module."

@@ -7,6 +7,83 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Added — orchestration (main loop + subagents, observable end-to-end)
+
+- **`:orchestrate` mode** (`mode: :orchestrate`): one tool-free planning turn,
+  then todo-driven delegation — each substantial step goes to a `spawn_agent`
+  worker with a **required four-field brief** (objective, expected_output,
+  tool_guidance, boundaries; rejected with a model-visible error when
+  incomplete). Deterministic rails enforced in code, not prompts: **depth 1**
+  (workers cannot spawn workers), **fan-out capped at the provider's queue
+  slots**, summary-only returns (`max_result_chars` arg), and a worker
+  contract appended to every sub-agent's system prompt.
+- **Per-iteration conclusions in every mode**: the system prompt asks for a
+  trailing `CONCLUSION: <one sentence>` line; `ExAthena.Conclusions` parses
+  it with fallbacks (final paragraph → derived from tool activity) so the
+  timeline never has holes, and a `{:conclusion, %{iteration, text, source}}`
+  event is emitted each turn. The rolling ledger is **recited Manus-style**
+  as an ephemeral message at the request tail (KV-cache-friendly). Opt out
+  with `conclusions: false`.
+- **Orchestrator.Coordinator** — a per-run blackboard GenServer (Registry +
+  DynamicSupervisor, `restart: :temporary`): ingests attributed events from
+  the main loop and every subagent (cast-only — a coordinator crash can never
+  stall a run), maintains pure `AgentInfo` reducers (status machine incl.
+  `:waiting_gpu`/`:stalling`, bounded transcript tails, capped conclusions),
+  keeps a **runtime todo ledger** (stable ids diffed from full rewrites,
+  single in_progress enforced, todos auto-completed when their linked worker
+  succeeds), and broadcasts batched snapshots (100 ms) to monitored
+  subscribers. Wire with `Loop.run(..., coordinator: pid)`.
+- **Web Overview tab is live**: agent tree (orchestrator + workers) with
+  status badges, todo checklists, conclusions timeline, current action,
+  per-agent token/cost counters, expandable bounded transcripts, GPU slot/
+  queue indicator, and a "working on now" strip. The Orchestrate mode is in
+  the mode dropdown.
+- Tightened the no-progress signal: blank or repeated assistant text no
+  longer counts as productivity (local reasoning models often emit a bare
+  `" "` while re-issuing identical tool calls).
+
+### Fixed
+
+- `ctx.assigns[:on_event]` was never wired by the loop, so SpawnAgent's
+  `{:subagent_spawn}`/`{:subagent_result}` events silently never reached any
+  host. They now flow to `on_event` in every host.
+
+### Changed — request queue (behavior change)
+
+- **The request queue is now enabled by default.** Kill switch:
+  `config :ex_athena, :request_queue, enabled: false`. Local inference
+  servers serve 1–3 concurrent requests; the gate keeps concurrent loops and
+  subagents from overwhelming them (a client-side gate also measurably
+  reduces server-side queue contention).
+- **Per-call granularity inside the agent loop.** `run/2` no longer holds one
+  slot for the entire run — every provider call inside the loop (ReAct turns,
+  PlanAndSolve planning) acquires its own slot via
+  `RequestQueue.with_slot/3` and releases it between iterations. This removes
+  the deadlock/starvation class where one long run monopolized a depth-1
+  provider, and means subagent loops now queue too (they previously bypassed
+  the queue entirely). In-loop acquisition waits `:infinity` by default
+  (override with `queue_timeout:`); the provider's own `timeout_ms` only
+  starts after the slot is acquired, so queue wait never burns the HTTP
+  timeout.
+- **Local provider slots default to 1** (`ollama`, `llamacpp`, `exo`) until
+  your serving setup is load-tested. Raise at runtime with
+  `ExAthena.Config.set_request_queue_max_depth/2` — exposed as the
+  "Parallel slots" input next to the provider selector in the web chat and
+  the `/slots N` command in the TUI. If you raise ollama past 1, match it
+  server-side with `OLLAMA_NUM_PARALLEL` (its server default is 1).
+- **Holder crash safety.** Slot holders are now monitored: a process that
+  dies mid-request without releasing (even a brutal kill that skips `after`
+  blocks) has its slot reclaimed and handed to the next waiter.
+
+### Added — request queue
+
+- `ExAthena.RequestQueue.with_slot/3` — acquire/run/release with telemetry,
+  `queue:`/`timeout:`/`on_wait:` options.
+- `ExAthena.RequestQueue.waiting_count/1` for queue-pressure UIs.
+- New loop event `{:queue_wait, %{provider:, status: :waiting | :acquired,
+  waited_ms?}}` — emitted only when a provider call actually blocks on a
+  slot, so hosts can render a "waiting on GPU" state.
+
 ## v0.15.0 — Runtime JSON provider config + per-provider request queue
 
 Two coordinated upgrades to provider handling: a runtime JSON registry so users

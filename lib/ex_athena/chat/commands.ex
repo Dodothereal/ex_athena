@@ -38,7 +38,8 @@ defmodule ExAthena.Chat.Commands do
     "mouse" => :mouse,
     "help" => :help,
     "?" => :help,
-    "provider" => :provider
+    "provider" => :provider,
+    "slots" => :slots
   }
 
   @spec parse(String.t() | :eof) :: result()
@@ -89,7 +90,8 @@ defmodule ExAthena.Chat.Commands do
       "mouse",
       "help",
       "exit",
-      "provider"
+      "provider",
+      "slots"
     ]
 
     canonical |> Enum.sort() |> Enum.map(&("/" <> &1))
@@ -116,7 +118,8 @@ defmodule ExAthena.Chat.Commands do
       "/mouse" => "toggle mouse capture (off lets the terminal copy/paste natively)",
       "/help" => "show full usage help",
       "/exit" => "leave the chat",
-      "/provider" => "pick or switch the active provider"
+      "/provider" => "pick or switch the active provider",
+      "/slots" => "show or set the provider's parallel request slots"
     }
   end
 
@@ -148,6 +151,9 @@ defmodule ExAthena.Chat.Commands do
                          you bypass capture by holding Option (macOS) or
                          Shift while click-dragging.
       /provider [name]   open the provider picker, or set provider directly
+      /slots [N]         show or set how many requests the active provider
+                         may serve concurrently (local servers default to 1;
+                         raise only after load-testing your GPU setup)
       /help, /?          show this help
       /exit, /quit, /q   leave the chat
 

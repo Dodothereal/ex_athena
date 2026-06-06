@@ -8,6 +8,7 @@ defmodule ExAthena.ConfigTest do
     :openai,
     :openai_compatible,
     :llamacpp,
+    :exo,
     :claude,
     :anthropic,
     :req_llm,
@@ -381,13 +382,25 @@ defmodule ExAthena.ConfigTest do
       :ok
     end
 
-    test "returns built-in defaults for known local providers" do
-      assert Config.request_queue_max_depth(:ollama) == 2
+    test "local providers default to 1 slot until load-tested" do
+      assert Config.request_queue_max_depth(:ollama) == 1
       assert Config.request_queue_max_depth(:llamacpp) == 1
+      assert Config.request_queue_max_depth(:exo) == 1
     end
 
-    test "returns 3 for :exo" do
+    test "set_request_queue_max_depth/2 changes the cap at runtime, keeping other provider config" do
+      Application.put_env(:ex_athena, :exo, base_url: "http://localhost:52415")
+
+      assert :ok = Config.set_request_queue_max_depth(:exo, 3)
+
       assert Config.request_queue_max_depth(:exo) == 3
+      # Other provider keys survive the merge.
+      assert Application.get_env(:ex_athena, :exo)[:base_url] == "http://localhost:52415"
+    end
+
+    test "set_request_queue_max_depth/2 rejects non-positive values" do
+      assert {:error, :invalid_depth} = Config.set_request_queue_max_depth(:exo, 0)
+      assert {:error, :invalid_depth} = Config.set_request_queue_max_depth(:exo, -2)
     end
 
     test "returns 10 for cloud providers" do
@@ -421,16 +434,25 @@ defmodule ExAthena.ConfigTest do
 
   describe "request_queue_enabled?/0" do
     setup do
-      on_exit(fn -> Application.delete_env(:ex_athena, :request_queue) end)
+      original = Application.get_env(:ex_athena, :request_queue)
+
+      on_exit(fn ->
+        if original do
+          Application.put_env(:ex_athena, :request_queue, original)
+        else
+          Application.delete_env(:ex_athena, :request_queue)
+        end
+      end)
+
       :ok
     end
 
-    test "returns false when not configured" do
+    test "defaults to enabled when not configured" do
       Application.delete_env(:ex_athena, :request_queue)
-      refute Config.request_queue_enabled?()
+      assert Config.request_queue_enabled?()
     end
 
-    test "returns false when explicitly disabled" do
+    test "explicit enabled: false is the kill switch" do
       Application.put_env(:ex_athena, :request_queue, enabled: false)
       refute Config.request_queue_enabled?()
     end

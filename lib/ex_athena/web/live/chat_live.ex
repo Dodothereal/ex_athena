@@ -18,7 +18,8 @@ defmodule ExAthena.Web.Live.ChatLive do
   @modes [
     {"ReAct", "react"},
     {"Plan & Solve", "plan_and_solve"},
-    {"Reflexion", "reflexion"}
+    {"Reflexion", "reflexion"},
+    {"Orchestrate", "orchestrate"}
   ]
 
   # How many diff lines to show before truncating
@@ -51,6 +52,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Model settings
         provider: provider,
         model: model,
+        queue_slots: current_queue_slots(provider),
         mode: "react",
         available_models: [],
         models_loading: false,
@@ -87,6 +89,12 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Details pane: tabbed (:overview | :log | :git) plus a visibility toggle.
         details_tab: :log,
         show_details: true,
+        # Live orchestration snapshot (ExAthena.Orchestrator.Coordinator) for
+        # the Overview tab. One coordinator per run; orchestrator_sid scopes
+        # incoming updates to the current run.
+        orchestrator: nil,
+        orchestrator_sid: nil,
+        gpu_stats: nil,
         # Git diff output (rendered in the Git tab)
         git_diff: nil,
         # Loading / status / errors
@@ -286,9 +294,22 @@ defmodule ExAthena.Web.Live.ChatLive do
        model: model,
        available_models: [],
        models_loading: true,
+       queue_slots: current_queue_slots(provider),
        # The resume id belongs to the previous provider's conversation.
        provider_session_id: nil
      )}
+  end
+
+  def handle_event("set_queue_slots", %{"value" => value}, socket) do
+    case Integer.parse(value) do
+      {n, _} when n > 0 ->
+        provider_atom = safe_atom(socket.assigns.provider, :llamacpp)
+        :ok = ExAthena.Config.set_request_queue_max_depth(provider_atom, n)
+        {:noreply, assign(socket, queue_slots: n)}
+
+      _ ->
+        {:noreply, socket}
+    end
   end
 
   def handle_event("set_model", %{"value" => model}, socket) do
@@ -612,6 +633,17 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def handle_info({:athena, _other}, socket), do: {:noreply, socket}
 
+  # Batched orchestration snapshots (≤ ~10/s) from the run's coordinator.
+  # Scoped to the current run — late updates from a previous run are dropped.
+  def handle_info({:orchestrator_update, sid, snapshot}, socket) do
+    if sid == socket.assigns.orchestrator_sid do
+      {:noreply,
+       assign(socket, orchestrator: snapshot, gpu_stats: gpu_stats(socket.assigns.provider))}
+    else
+      {:noreply, socket}
+    end
+  end
+
   # The `ask_user` tool paused the run and wants an answer. Surface the
   # question, log it, and re-enable the input (see the `disabled` guard on the
   # textarea). The run task stays alive, blocked in `receive`, until the user's
@@ -830,6 +862,22 @@ defmodule ExAthena.Web.Live.ChatLive do
         </div>
 
         <div class="sidebar-section">
+          <label class="field-label" title="Concurrent requests this provider may serve. Local servers default to 1 — raise only after load-testing.">
+            Parallel slots
+          </label>
+          <form phx-change="set_queue_slots">
+            <input
+              class="field-input"
+              type="number"
+              name="value"
+              min="1"
+              max="16"
+              value={@queue_slots}
+            />
+          </form>
+        </div>
+
+        <div class="sidebar-section">
           <label class="field-label">
             Model
             <%= if @models_loading do %>
@@ -1032,10 +1080,16 @@ defmodule ExAthena.Web.Live.ChatLive do
             <%= case @details_tab do %>
               <% :overview -> %>
                 <div class="details-tab-body">
-                  <div class="details-empty">
-                    <div class="details-empty-title">Overview</div>
-                    <div class="details-empty-sub">Coming soon.</div>
-                  </div>
+                  <%= if @orchestrator do %>
+                    <.overview_panel orchestrator={@orchestrator} gpu={@gpu_stats} />
+                  <% else %>
+                    <div class="details-empty">
+                      <div class="details-empty-title">Overview</div>
+                      <div class="details-empty-sub">
+                        Send a message to watch the run live: agents, todos, conclusions, and GPU queue.
+                      </div>
+                    </div>
+                  <% end %>
                 </div>
               <% :git -> %>
                 <div class="details-tab-body details-tab-body--git">
@@ -1552,6 +1606,110 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp detail_entry(assigns), do: ~H""
 
+  # ---------------------------------------------------------------------------
+  # Overview tab — live orchestration state
+  # ---------------------------------------------------------------------------
+
+  defp overview_panel(assigns) do
+    ~H"""
+    <div class="ov-panel">
+      <%= if @gpu do %>
+        <div class="ov-gpu">
+          <span class="ov-gpu-provider">{@gpu.provider}</span>
+          <span class="ov-gpu-slots">{@gpu.depth}/{@gpu.max} slots</span>
+          <%= if @gpu.waiting > 0 do %>
+            <span class="ov-gpu-waiting">{@gpu.waiting} waiting</span>
+          <% end %>
+        </div>
+      <% end %>
+
+      <%= if action = working_on(@orchestrator) do %>
+        <div class="ov-working">⚡ {action}</div>
+      <% end %>
+
+      <.ov_agent_card info={@orchestrator.main} main={true} />
+      <.ov_agent_card :for={agent <- @orchestrator.agents} info={agent} main={false} />
+    </div>
+    """
+  end
+
+  defp ov_agent_card(assigns) do
+    ~H"""
+    <div class={["ov-agent", !@main && "ov-agent--sub"]}>
+      <div class="ov-agent-head">
+        <span class="ov-agent-name">
+          {@info.name || @info.id} <span :if={@main} class="ov-agent-role">orchestrator</span>
+        </span>
+        <span class={["ov-badge", "ov-badge--#{@info.status}"]}>{badge_label(@info.status)}</span>
+      </div>
+
+      <div :if={@info.prompt_summary} class="ov-agent-prompt">{@info.prompt_summary}</div>
+      <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
+
+      <%= if @info.todos != [] do %>
+        <div class="ov-todos">
+          <div :for={todo <- @info.todos} class={["ov-todo", "ov-todo--#{todo.status}"]}>
+            <span class="ov-todo-marker">{todo_marker(todo.status)}</span>
+            <span class="ov-todo-text">{todo.content}</span>
+          </div>
+        </div>
+      <% end %>
+
+      <%= if @info.conclusions != [] do %>
+        <div class="ov-conclusions">
+          <div
+            :for={c <- Enum.take(@info.conclusions, -5)}
+            class={["ov-conclusion", c.source != :stated && "ov-conclusion--derived"]}
+          >
+            <span class="ov-conclusion-iter">#{c.iteration}</span>
+            {c.text}
+          </div>
+        </div>
+      <% end %>
+
+      <div class="ov-agent-footer">
+        iter {@info.iteration} · {@info.usage.input_tokens}/{@info.usage.output_tokens} tok
+        <%= if @info.cost_usd do %>
+          · ${format_cost(@info.cost_usd)}
+        <% end %>
+      </div>
+
+      <%= if @info.transcript_tail != [] do %>
+        <details class="ov-transcript">
+          <summary>transcript ({length(@info.transcript_tail)})</summary>
+          <div class="ov-transcript-body">
+            <div :for={{kind, text} <- @info.transcript_tail} class="ov-transcript-entry">
+              <span class={["ov-transcript-kind", "ov-transcript-kind--#{kind}"]}>{kind}</span>
+              <pre class="ov-transcript-text">{text}</pre>
+            </div>
+          </div>
+        </details>
+      <% end %>
+    </div>
+    """
+  end
+
+  # The deepest currently-active agent's action — "what is the system doing
+  # right now". Subagents win over the orchestrator (they do the actual work).
+  defp working_on(%{main: main, agents: agents}) do
+    active = fn info -> info.status in [:running, :waiting_gpu, :stalling] end
+
+    agents
+    |> Enum.reverse()
+    |> Enum.find_value(fn info -> if active.(info), do: info.current_action end)
+    |> case do
+      nil -> if active.(main), do: main.current_action
+      action -> action
+    end
+  end
+
+  defp badge_label(:waiting_gpu), do: "waiting gpu"
+  defp badge_label(status), do: to_string(status)
+
+  defp todo_marker(:completed), do: "✓"
+  defp todo_marker(:in_progress), do: "◐"
+  defp todo_marker(_), do: "○"
+
   defp format_args(args) when is_map(args) do
     case Jason.encode(args, pretty: true) do
       {:ok, json} -> json
@@ -1602,6 +1760,13 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     ex_messages = socket.assigns.ex_messages ++ [new_ex_msg]
 
+    # One orchestration blackboard per run (Overview tab). Host-started and
+    # subscribed BEFORE the run begins, so no event can be missed. The
+    # coordinator is observational only — a crash never affects the run.
+    run_sid = "#{socket.assigns.session_id}-run-#{assistant_msg_id}"
+    {:ok, coordinator} = ExAthena.Orchestrator.Coordinator.start_for(run_sid)
+    {:ok, initial_snapshot} = ExAthena.Orchestrator.Coordinator.subscribe(run_sid, pid)
+
     {:ok, task_pid} =
       Task.start(fn ->
         on_event = fn event -> send(pid, {:athena, event}) end
@@ -1617,6 +1782,7 @@ defmodule ExAthena.Web.Live.ChatLive do
             tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser],
             assigns: %{ask_user: pid},
             permission_mode: :accept_edits,
+            coordinator: coordinator,
             on_event: on_event,
             timeout_ms: 24 * 60 * 60 * 1000
           ]
@@ -1652,6 +1818,9 @@ defmodule ExAthena.Web.Live.ChatLive do
        current_action: nil,
        pending_assistant_msg_id: assistant_msg_id,
        details_stream: [user_detail | socket.assigns.details_stream],
+       orchestrator: initial_snapshot,
+       orchestrator_sid: run_sid,
+       gpu_stats: gpu_stats(provider),
        error: nil
      )}
   end
@@ -1723,6 +1892,9 @@ defmodule ExAthena.Web.Live.ChatLive do
     Enum.flat_map(entries, fn
       %{type: :assistant_text} = e ->
         [{:text, e}]
+
+      %{type: :thinking} = e ->
+        [{:thinking, e}]
 
       %{type: :tool_call} = e ->
         [{:tool, e, Map.get(results, e.payload.tool_call_id)}]
@@ -2073,6 +2245,26 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp maybe_put_model(opts, m) when is_binary(m) and m != "", do: Keyword.put(opts, :model, m)
   defp maybe_put_model(opts, _), do: opts
 
+  # Current request-queue slot cap for the (string) provider selection.
+  defp current_queue_slots(provider) when is_binary(provider) do
+    provider
+    |> safe_atom(:llamacpp)
+    |> ExAthena.Config.request_queue_max_depth()
+  end
+
+  # GPU gate pressure for the Overview header. Computed on coordinator
+  # updates (≤ ~10/s) — never inside render.
+  defp gpu_stats(provider) when is_binary(provider) do
+    atom = safe_atom(provider, :llamacpp)
+
+    %{
+      provider: atom,
+      depth: ExAthena.RequestQueue.depth(atom),
+      max: ExAthena.Config.request_queue_max_depth(atom),
+      waiting: ExAthena.RequestQueue.waiting_count(atom)
+    }
+  end
+
   # Continue the provider-side conversation (e.g. a Claude Code CLI session)
   # captured from the previous Result. Providers without server-side session
   # state never populate it, so this stays provider-agnostic.
@@ -2090,9 +2282,15 @@ defmodule ExAthena.Web.Live.ChatLive do
     _ -> default
   end
 
-  defp safe_mode(m) when m in ["react", "plan_and_solve", "reflexion"],
-    do: String.to_existing_atom(m)
-
+  # Literal atoms, NOT String.to_existing_atom/1: in a dev VM modules load
+  # lazily, so an atom that only lives in another module's literals (e.g.
+  # :orchestrate in Mode.@builtins) may not exist yet when the first send
+  # arrives — to_existing_atom then crashes the run task with :badarg.
+  # Literal clauses guarantee the atoms exist as soon as ChatLive is loaded.
+  defp safe_mode("react"), do: :react
+  defp safe_mode("plan_and_solve"), do: :plan_and_solve
+  defp safe_mode("reflexion"), do: :reflexion
+  defp safe_mode("orchestrate"), do: :orchestrate
   defp safe_mode(_), do: :react
 
   defp unique_id, do: :crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower)

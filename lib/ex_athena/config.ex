@@ -60,17 +60,22 @@ defmodule ExAthena.Config do
 
   | Provider | Default max_depth |
   |---|---|
-  | `:ollama` | 2 |
+  | `:ollama` | 1 |
   | `:llamacpp` | 1 |
-  | `:exo` | 3 |
+  | `:exo` | 1 |
   | `:openai`, `:anthropic`, `:claude`, `:gemini`, `:openrouter`, `:req_llm` | 10 |
   | unknown | 10 |
+
+  Local providers deliberately default to a single slot until the serving
+  setup is load-tested — raise at runtime via
+  `set_request_queue_max_depth/2` (the hosts expose this next to the
+  provider selector).
   """
 
   @request_queue_defaults %{
-    ollama: 2,
+    ollama: 1,
     llamacpp: 1,
-    exo: 3,
+    exo: 1,
     openai: 10,
     openai_compatible: 10,
     anthropic: 10,
@@ -358,7 +363,7 @@ defmodule ExAthena.Config do
   Resolution order:
     1. `config :ex_athena, provider_atom, request_queue: [max_depth: N]`
     2. `config :ex_athena, :request_queue, max_depth: N`
-    3. Built-in per-provider default (ollama: 2, llamacpp: 1, exo: 3, cloud: 10).
+    3. Built-in per-provider default (local providers: 1, cloud: 10).
     4. `10` for unrecognised providers.
   """
   @spec request_queue_max_depth(atom()) :: pos_integer()
@@ -378,17 +383,49 @@ defmodule ExAthena.Config do
   end
 
   @doc """
-  Return `true` when the request queue feature is enabled via application config.
+  Set the per-provider concurrent-slot cap at runtime.
 
-  Opt-in: defaults to `false`. Enable with:
+  Hosts expose this next to their provider selector so users can raise a
+  local provider's slots once their serving setup proves it can take more
+  load (everything local defaults to 1). Merges into the provider's existing
+  application env, preserving keys like `base_url`.
 
-      config :ex_athena, :request_queue, enabled: true
+  Takes effect on the next slot acquisition — in-flight holders and waiters
+  are unaffected.
+  """
+  @spec set_request_queue_max_depth(atom(), pos_integer()) :: :ok | {:error, :invalid_depth}
+  def set_request_queue_max_depth(provider_atom, depth)
+      when is_atom(provider_atom) and is_integer(depth) and depth > 0 do
+    provider_env = Application.get_env(:ex_athena, provider_atom, [])
+
+    request_queue =
+      provider_env
+      |> Keyword.get(:request_queue, [])
+      |> Keyword.put(:max_depth, depth)
+
+    Application.put_env(
+      :ex_athena,
+      provider_atom,
+      Keyword.put(provider_env, :request_queue, request_queue)
+    )
+  end
+
+  def set_request_queue_max_depth(_provider_atom, _depth), do: {:error, :invalid_depth}
+
+  @doc """
+  Return `true` when the request queue feature is enabled.
+
+  Enabled by default — local inference servers (ollama / llama.cpp / exo)
+  can only serve 1-3 concurrent requests, and the per-call gate is what keeps
+  concurrent loops and subagents from overwhelming them. Disable with:
+
+      config :ex_athena, :request_queue, enabled: false
   """
   @spec request_queue_enabled?() :: boolean()
   def request_queue_enabled? do
     :ex_athena
     |> Application.get_env(:request_queue, [])
-    |> Keyword.get(:enabled, false)
+    |> Keyword.get(:enabled, true)
   end
 
   defp get_provider_env(provider_module, key) do

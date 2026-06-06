@@ -25,6 +25,17 @@ defmodule ExAthena.Loop.Events do
     * `{:compaction, %{before:, after:, reason:}}` — context compacted.
     * `{:subagent_spawn, %{id:, prompt:}}` — a sub-agent started.
     * `{:subagent_result, %{id:, text:}}` — sub-agent returned.
+    * `{:conclusion, %{iteration:, text:, source:}}` — the iteration's
+      one-line conclusion (see `ExAthena.Conclusions`). `source` is
+      `:stated` (model used the CONCLUSION marker), `:tail` (final
+      paragraph fallback), or `:derived` (synthesized from tool activity).
+      Hosts render these as a progress timeline.
+    * `{:queue_wait, %{provider:, status:, waited_ms?}}` — the loop's next
+      provider call is blocked waiting for a request-queue slot
+      (`status: :waiting`), or just obtained one after a wait
+      (`status: :acquired`, with `waited_ms`). Only emitted when the call
+      actually blocks — a free slot produces no events. Hosts use this to
+      render a "waiting on GPU" state for runs queued behind other loops.
     * `{:usage, usage_map}` — partial usage report from the provider.
     * `{:structured_retry, %{attempt:, error:}}` — extract_structured
       retry.
@@ -62,12 +73,49 @@ defmodule ExAthena.Loop.Events do
              }}
           | {:subagent_spawn, %{required(:id) => term(), required(:prompt) => String.t()}}
           | {:subagent_result, %{required(:id) => term(), required(:text) => String.t()}}
+          | {:conclusion,
+             %{
+               required(:iteration) => non_neg_integer(),
+               required(:text) => String.t(),
+               required(:source) => :stated | :tail | :derived
+             }}
+          | {:queue_wait,
+             %{
+               required(:provider) => atom(),
+               required(:status) => :waiting | :acquired,
+               optional(:waited_ms) => non_neg_integer()
+             }}
           | {:usage, map()}
           | {:structured_retry,
              %{required(:attempt) => non_neg_integer(), required(:error) => term()}}
           | {:error, term()}
           | {:submitted, term()}
           | {:done, Result.t()}
+
+  @doc """
+  Build an `:on_wait` callback for `ExAthena.RequestQueue.with_slot/3` that
+  translates queue-wait notifications into `{:queue_wait, …}` loop events.
+
+  Returns `nil` when there is no `on_event` callback (with_slot treats a nil
+  on_wait as "don't notify").
+  """
+  @spec queue_wait_emitter((t() -> term()) | nil, atom() | nil) ::
+          (:waiting | {:acquired, non_neg_integer()} -> :ok) | nil
+  def queue_wait_emitter(nil, _provider), do: nil
+  def queue_wait_emitter(_on_event, nil), do: nil
+
+  def queue_wait_emitter(on_event, provider) do
+    fn
+      :waiting ->
+        emit(on_event, {:queue_wait, %{provider: provider, status: :waiting}})
+
+      {:acquired, waited_ms} ->
+        emit(
+          on_event,
+          {:queue_wait, %{provider: provider, status: :acquired, waited_ms: waited_ms}}
+        )
+    end
+  end
 
   @doc "Emit an event via the supplied callback (nil is a no-op)."
   @spec emit((t() -> term()) | nil, t()) :: :ok
