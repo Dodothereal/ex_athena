@@ -29,12 +29,18 @@ defmodule ExAthena.Modes.Orchestrate do
   alias ExAthena.RequestQueue
 
   @planning_addendum """
-  ## Planning step
-  This is a PLANNING-ONLY turn — tools are unavailable.
-  Break the task into a short numbered list of concrete steps. Each step
-  should be small and self-contained enough to hand to a focused sub-agent
-  that cannot see this conversation. After this turn you will record the
-  steps with todo_write and work through them.
+  ## Planning phase
+  You are PLANNING. Understand the task, then produce the plan:
+  - Prefer delegating exploration to a worker: spawn_agent with
+    agent: "explore" and a focused brief — it reports back a summary
+    without filling your context.
+  - Direct read/glob/grep/web_fetch are for QUICK orientation only
+    (a file or two), never deep investigation.
+  - When you understand enough, reply with ONLY a short numbered plan
+    (no tool calls). Each step must be small and self-contained enough to
+    hand to a worker that cannot see this conversation. That tool-free
+    reply ends planning; you will then record the steps with todo_write
+    and delegate them.
   """
 
   @execution_addendum """
@@ -73,6 +79,15 @@ defmodule ExAthena.Modes.Orchestrate do
   # prompt for weak models.
   @orchestrator_tools ~w(todo_write spawn_agent finish ask_user)
 
+  # Planning phase: read-only exploration + delegation — quick peeks are
+  # allowed, the prompt pushes exploration AGENTS for anything deeper, and
+  # nothing can mutate before a plan exists.
+  @planning_tools ~w(read glob grep web_fetch lsp spawn_agent ask_user)
+
+  # Exploration during planning is bounded — after this many planning turns
+  # the runtime forces the transition to execution with what is known.
+  @max_planning_turns 8
+
   # Auto-delegation watchdog: with pending todos, after this many
   # consecutive turns without a spawn_agent call the runtime delegates the
   # first pending todo itself (deterministic rail — prompts alone don't
@@ -95,7 +110,14 @@ defmodule ExAthena.Modes.Orchestrate do
     {:ok,
      %{
        state
-       | mode_state: %{phase: :planning, todos: [], turns_without_spawn: 0},
+       | mode_state: %{
+           phase: :planning,
+           todos: [],
+           turns_without_spawn: 0,
+           planning_turns: 0,
+           # Planning swaps these in per turn; executing uses the state's own.
+           planning_specs: Enum.filter(state.tool_specs, &(&1.name in @planning_tools))
+         },
          # Uncapped by design (user-directed): the orchestrator runs until
          # the todos are done. The no-progress guard, mistake counter,
          # budget cap, and the host's stop control bound the run. An
@@ -118,58 +140,52 @@ defmodule ExAthena.Modes.Orchestrate do
     do: ExAthena.Modes.ReAct.productivity_signal(prev_state, new_state)
 
   @impl true
-  def iterate(%State{mode_state: %{phase: :planning}} = state) do
-    request = %{
-      state.request_template
-      | messages: state.messages,
-        tools: nil,
-        system_prompt:
-          append_prompt(state.request_template.system_prompt, String.trim(@planning_addendum))
+  def iterate(%State{mode_state: %{phase: :planning} = mode_state} = state) do
+    # Planning is itself a (read-only) ReAct phase: the orchestrator may
+    # take quick peeks or delegate exploration workers across several
+    # turns. A TOOL-FREE reply is the plan and ends the phase; the
+    # executing toolset/prompt (set in init) is restored afterwards.
+    planning_state = %{
+      state
+      | tool_specs: mode_state.planning_specs,
+        request_template: %{
+          state.request_template
+          | system_prompt:
+              append_prompt(
+                state.request_template.system_prompt,
+                String.trim(@planning_addendum)
+              )
+        }
     }
 
-    # Stream the planning turn like any ReAct turn — without this, the
-    # run's first thinking/content appears as one sudden blob at turn end.
-    {stream_cb, counters} = ExAthena.Modes.ReAct.stream_callback(state)
-
-    queued_query = fn ->
-      RequestQueue.with_slot(
-        state.meta[:provider_atom],
-        fn -> planning_call(state, request, stream_cb) end,
-        Keyword.merge(
-          state.meta[:queue_opts] || [],
-          on_wait: Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
-        )
-      )
-    end
-
-    case queued_query.() do
-      {:ok, response} ->
-        streamed_text? = counters != nil and :counters.get(counters, 1) > 0
-        streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0
-
-        if not streamed_thinking? and is_binary(response.thinking) and response.thinking != "" do
-          Events.emit(state.on_event, {:thinking, response.thinking})
+    case ExAthena.Modes.ReAct.iterate(planning_state) do
+      {:halt, halted} ->
+        if halted.meta[:finish_reason] == :stop do
+          # The tool-free plan turn — transition instead of terminating.
+          {:continue, halted |> restore_executing(state) |> to_executing()}
+        else
+          # Real terminations (errors, finish tool) propagate untouched.
+          {:halt, restore_executing(halted, state)}
         end
 
-        if not streamed_text? and is_binary(response.text) and response.text != "" do
-          Events.emit(state.on_event, {:content, response.text})
+      {:continue, new_state} ->
+        new_state = restore_executing(new_state, state)
+        turns = (mode_state[:planning_turns] || 0) + 1
+
+        if turns >= @max_planning_turns do
+          note =
+            ExAthena.Messages.user(
+              "[orchestration runtime] Planning budget exhausted — proceed to execution " <>
+                "with what you know: record your todos with todo_write and delegate."
+            )
+
+          {:continue, %{new_state | messages: new_state.messages ++ [note]} |> to_executing()}
+        else
+          {:continue, put_in(new_state.mode_state[:planning_turns], turns)}
         end
 
-        state = fold_usage(state, response)
-        new_messages = state.messages ++ [ExAthena.Messages.assistant(response.text || "")]
-
-        {:continue,
-         %{
-           state
-           | messages: new_messages,
-             mode_state: %{state.mode_state | phase: :executing}
-         }}
-
-      {:error, %ExAthena.Error{kind: :context_length_exceeded}} ->
-        {:error, :error_prompt_too_long}
-
-      {:error, reason} ->
-        {:error, {:orchestrate_planning_failed, reason}}
+      other ->
+        other
     end
   end
 

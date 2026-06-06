@@ -35,7 +35,7 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert Mode.resolve(:orchestrate) == ExAthena.Modes.Orchestrate
   end
 
-  test "the planning turn is tool-free with the orchestration planning addendum", %{dir: dir} do
+  test "planning turns carry READ-ONLY exploration tools and the planning addendum", %{dir: dir} do
     test_pid = self()
 
     responses = [
@@ -62,13 +62,67 @@ defmodule ExAthena.Modes.OrchestrateTest do
                provider: :mock,
                mock: [responder: scripted(responses)],
                cwd: dir,
-               tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+               tools: ExAthena.Tools.builtins(),
                mode: :orchestrate
              )
 
     assert_receive {:planning_request, request}
-    assert request.tools == nil
-    assert request.system_prompt =~ "todo"
+    names = Enum.map(request.tools || [], fn t -> t[:name] || t["name"] end)
+
+    # Quick exploration AND delegated exploration are allowed while planning…
+    assert "read" in names
+    assert "glob" in names
+    assert "grep" in names
+    assert "web_fetch" in names
+    assert "spawn_agent" in names
+    # …but nothing that mutates.
+    refute "bash" in names
+    refute "write" in names
+    refute "edit" in names
+
+    assert request.system_prompt =~ "numbered plan"
+    # The prompt pushes exploration agents over direct reads.
+    assert request.system_prompt =~ "explore"
+  end
+
+  test "planning may explore across turns, then a tool-free plan transitions to executing", %{
+    dir: dir
+  } do
+    File.write!(Path.join(dir, "f.txt"), "x")
+    test_pid = self()
+
+    responses = [
+      # Planning turn 1: explores with a read-only tool.
+      %Response{
+        text: "Let me look first.",
+        tool_calls: [%ToolCall{id: "p1", name: "read", arguments: %{"path" => "f.txt"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      # Planning turn 2: tool-free numbered plan → ends planning.
+      %Response{text: "1. do A\n2. do B", tool_calls: [], finish_reason: :stop, provider: :mock},
+      # First EXECUTING turn.
+      fn _n, request ->
+        send(test_pid, {:exec_request, request})
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    ]
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("build it",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate
+             )
+
+    assert_receive {:exec_request, request}
+    # Executing phase restored the coordination toolset + execution addendum.
+    names = Enum.map(request.tools || [], fn t -> t[:name] || t["name"] end)
+    assert "spawn_agent" in names
+    refute "read" in names
+    assert request.system_prompt =~ "spawn_agent"
   end
 
   test "the planning turn STREAMS thinking and content deltas", %{dir: dir} do

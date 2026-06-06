@@ -161,6 +161,28 @@ defmodule ExAthena.Orchestrator.AgentInfoTest do
       assert List.last(info.conclusions).text == "c60"
     end
 
+    test "a successful close finalizes stale in_progress sub-todos (pending stays pending)" do
+      info =
+        new()
+        |> AgentInfo.set_todos([
+          %{"content" => "done step", "status" => "completed"},
+          %{"content" => "was mid-flight", "status" => "in_progress"},
+          %{"content" => "never started", "status" => "pending"}
+        ])
+        |> AgentInfo.apply_event({:done, %ExAthena.Result{finish_reason: :stop}})
+
+      assert Enum.map(info.todos, & &1.status) == [:completed, :completed, :pending]
+    end
+
+    test "a FAILED close leaves sub-todos untouched (true state)" do
+      info =
+        new()
+        |> AgentInfo.set_todos([%{"content" => "mid-flight", "status" => "in_progress"}])
+        |> AgentInfo.apply_event({:done, %ExAthena.Result{finish_reason: :error_max_turns}})
+
+      assert [%{status: :in_progress}] = info.todos
+    end
+
     test "{:done, result} closes the agent by result category" do
       ok = %ExAthena.Result{finish_reason: :stop}
       bad = %ExAthena.Result{finish_reason: :error_no_progress}

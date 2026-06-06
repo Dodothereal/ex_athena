@@ -170,9 +170,22 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   def apply_event(info, {:done, %Result{} = result}) do
     status = if Result.success?(result), do: :done, else: :failed
 
+    # A done agent can't have "in progress" sub-todos — finalize stale
+    # mid-flight items on success. A failed close keeps the true state.
+    todos =
+      if status == :done do
+        Enum.map(info.todos, fn
+          %{status: :in_progress} = todo -> %{todo | status: :completed}
+          todo -> todo
+        end)
+      else
+        info.todos
+      end
+
     %{
       info
       | status: status,
+        todos: todos,
         current_action: nil,
         cost_usd: result.cost_usd || info.cost_usd,
         finished_at: System.system_time(:millisecond)
