@@ -404,7 +404,12 @@ defmodule ExAthena.Modes.OrchestrateTest do
     end
 
     sub_responder = fn _request ->
-      %Response{text: "Worker explored the repo.", tool_calls: [], finish_reason: :stop, provider: :mock}
+      %Response{
+        text: "Worker explored the repo.",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
     end
 
     on_event = fn ev -> send(test_pid, {:event, ev}) end
