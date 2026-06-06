@@ -1768,6 +1768,11 @@ defmodule ExAthena.Web.Live.ChatLive do
 
           <div :if={agent.current_action} class="ov-agent-action">⚡ {agent.current_action}</div>
 
+          <%!-- What this worker contributed to the parent task. --%>
+          <div :if={agent.result} class={["ov-worker-result", agent.status == :failed && "ov-worker-result--failed"]}>
+            {agent.result}
+          </div>
+
           <%= if agent.todos != [] do %>
             <div class="ov-todos ov-task-subtasks">
               <div :for={st <- agent.todos} class={["ov-todo", "ov-todo--#{st.status}"]}>
@@ -1828,6 +1833,13 @@ defmodule ExAthena.Web.Live.ChatLive do
       <div :if={@info.linked_todo} class="ov-focus-section">
         <div class="ov-focus-label">linked todo</div>
         <div class="ov-focus-text">{@info.linked_todo}</div>
+      </div>
+
+      <div :if={@info.result} class="ov-focus-section">
+        <div class="ov-focus-label">contribution</div>
+        <div class={["ov-worker-result", @info.status == :failed && "ov-worker-result--failed"]}>
+          {@info.result}
+        </div>
       </div>
 
       <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>

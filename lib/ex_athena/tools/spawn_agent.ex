@@ -224,9 +224,20 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
+          digest = conclusions_digest(sub_result)
+
+          # Surface the failure digest on the agent's Overview entry too.
+          case Map.get(ctx.assigns || %{}, :agent_event_sink) do
+            sink when is_function(sink, 2) ->
+              sink.(sub_id, {:result_note, "did not finish (#{sub_result.finish_reason}):\n#{digest}"})
+
+            _ ->
+              :ok
+          end
+
           {:error,
            "worker did not finish (#{sub_result.finish_reason}). " <>
-             "What it learned before stopping:\n#{conclusions_digest(sub_result)}\n" <>
+             "What it learned before stopping:\n#{digest}\n" <>
              "Re-delegate with a narrower or clearer brief, building on those findings."}
 
         {:ok, {:ok, %{text: text} = sub_result}} ->

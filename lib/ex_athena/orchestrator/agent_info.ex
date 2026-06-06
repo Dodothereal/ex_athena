@@ -57,6 +57,9 @@ defmodule ExAthena.Orchestrator.AgentInfo do
             usage: %{input_tokens: 0, output_tokens: 0},
             cost_usd: nil,
             transcript_tail: [],
+            # Final summary the worker contributed to its parent (or the
+            # failure digest of what it learned before stopping).
+            result: nil,
             # Content of the PARENT's todo item this agent works on — the
             # model references todos by content (it never sees runtime ids);
             # the coordinator resolves content → id at completion time.
@@ -84,6 +87,13 @@ defmodule ExAthena.Orchestrator.AgentInfo do
 
   @doc "Fold one loop event into the agent's observable state."
   @spec apply_event(t(), term()) :: t()
+  # The final summary/failure digest arrives AFTER the worker's own {:done}
+  # event has already made the status terminal — so it must bypass the
+  # terminal guard below.
+  def apply_event(info, {:result_note, text}) when is_binary(text) do
+    %{info | result: truncate(text, 600)}
+  end
+
   def apply_event(%__MODULE__{status: status} = info, _event) when status in @terminal, do: info
 
   def apply_event(info, {:iteration, n}) do
@@ -130,19 +140,28 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   end
 
   def apply_event(info, {:conclusion, %{text: text} = entry}) do
-    # Magentic-One-style stall signal, computed in code: the same conclusion
-    # twice in a row means the agent is spinning. A fresh conclusion (or any
-    # later tool progress) recovers to :running.
-    stalling? =
+    # Magentic-One-style stall signal, computed in code: the same STATED
+    # conclusion twice in a row means the agent is spinning. Identical
+    # DERIVED texts ("ran bash") are weak evidence — a busy worker yields
+    # them every turn while each call differs — so those only count when
+    # the underlying tool calls were identical too (fingerprint semantics).
+    repeated? =
       case List.last(info.conclusions) do
-        %{text: ^text} -> true
-        _ -> false
+        %{text: ^text, source: prev_source} ->
+          if entry.source == :derived and prev_source == :derived do
+            repeated_tool_call?(info)
+          else
+            true
+          end
+
+        _ ->
+          false
       end
 
     %{
       info
       | conclusions: Enum.take(info.conclusions ++ [entry], -@conclusions_cap),
-        status: if(stalling?, do: :stalling, else: :running)
+        status: if(repeated?, do: :stalling, else: :running)
     }
   end
 
@@ -264,6 +283,15 @@ defmodule ExAthena.Orchestrator.AgentInfo do
       end)
 
     todos
+  end
+
+  # The last two tool calls in the transcript tail are byte-identical
+  # (same name + args) — the agent is literally repeating itself.
+  defp repeated_tool_call?(info) do
+    case info.transcript_tail |> Enum.filter(&match?({:tool_call, _}, &1)) |> Enum.take(-2) do
+      [{:tool_call, same}, {:tool_call, same}] -> true
+      _ -> false
+    end
   end
 
   defp append_transcript(info, {kind, text}) do

@@ -290,12 +290,18 @@ defmodule ExAthena.Orchestrator.Coordinator do
     end
   end
 
-  # A finished subagent: mark done and auto-complete the main todo it was
-  # linked to (runtime-derived completion — never trust model bookkeeping).
-  defp close_agent(state, sub_id, _text) do
+  # A finished subagent: mark done, keep its final summary (its contribution
+  # to the parent task), and auto-complete the main todo it was linked to
+  # (runtime-derived completion — never trust model bookkeeping).
+  defp close_agent(state, sub_id, text) do
     state = ensure_agent(state, sub_id, %{})
     info = state.agents[sub_id]
-    closed = AgentInfo.apply_event(info, {:done, %ExAthena.Result{finish_reason: :stop}})
+
+    closed =
+      info
+      |> AgentInfo.apply_event({:done, %ExAthena.Result{finish_reason: :stop}})
+      |> maybe_put_result(text)
+
     state = %{state | agents: Map.put(state.agents, sub_id, closed)}
 
     case closed do
@@ -306,6 +312,11 @@ defmodule ExAthena.Orchestrator.Coordinator do
         state
     end
   end
+
+  defp maybe_put_result(info, text) when is_binary(text) and text != "",
+    do: AgentInfo.apply_event(info, {:result_note, text})
+
+  defp maybe_put_result(info, _text), do: info
 
   defp update_main(state, fun), do: %{state | main: fun.(state.main)}
 

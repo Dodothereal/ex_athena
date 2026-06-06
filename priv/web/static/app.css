@@ -2230,3 +2230,17 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .ov-task-worker-link:hover { color: var(--accent); }
 
 .ov-task-subtasks { margin-left: 2px; }
+
+.ov-worker-result {
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px dashed var(--border-light);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  color: var(--accent);
+}
+
+.ov-worker-result--failed { color: #fb923c; }

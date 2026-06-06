@@ -90,6 +90,45 @@ defmodule ExAthena.Orchestrator.AgentInfoTest do
       assert info.status == :running
     end
 
+    test "repeated DERIVED conclusions with differing tool calls do NOT flag stalling" do
+      # A busy worker yields "ran bash" every turn while each bash differs —
+      # that's progress, not a stall (the badge used to flicker STALLED).
+      info =
+        new()
+        |> AgentInfo.apply_event(
+          {:tool_call, %ToolCall{id: "a", name: "bash", arguments: %{"command" => "ls web"}}}
+        )
+        |> AgentInfo.apply_event(
+          {:conclusion, %{iteration: 1, text: "ran bash", source: :derived}}
+        )
+        |> AgentInfo.apply_event(
+          {:tool_call,
+           %ToolCall{id: "b", name: "bash", arguments: %{"command" => "cat README.md"}}}
+        )
+        |> AgentInfo.apply_event(
+          {:conclusion, %{iteration: 2, text: "ran bash", source: :derived}}
+        )
+
+      assert info.status == :running
+    end
+
+    test "repeated derived conclusions WITH identical tool calls flag stalling" do
+      tc = %ToolCall{id: "a", name: "bash", arguments: %{"command" => "ls web"}}
+
+      info =
+        new()
+        |> AgentInfo.apply_event({:tool_call, tc})
+        |> AgentInfo.apply_event(
+          {:conclusion, %{iteration: 1, text: "ran bash", source: :derived}}
+        )
+        |> AgentInfo.apply_event({:tool_call, %{tc | id: "b"}})
+        |> AgentInfo.apply_event(
+          {:conclusion, %{iteration: 2, text: "ran bash", source: :derived}}
+        )
+
+      assert info.status == :stalling
+    end
+
     test "a repeated identical conclusion flags :stalling; a fresh one recovers" do
       c = %{iteration: 1, text: "still reading the file", source: :stated}
 

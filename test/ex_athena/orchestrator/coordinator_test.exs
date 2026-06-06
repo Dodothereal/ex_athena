@@ -75,6 +75,23 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       assert b.status == :running
       assert a.prompt_summary == "step A"
       assert [%{text: "did A"}] = a.conclusions
+      # The worker's final summary is kept on its entry for the UI.
+      assert a.result == "summary A"
+
+      GenServer.stop(pid)
+    end
+
+    test "a failure note is stored on the agent entry" do
+      sid = unique_sid()
+      {:ok, pid} = Coordinator.start_for(sid)
+
+      Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-x", prompt: "explore"}})
+      Coordinator.notify(pid, "sub-x", {:result_note, "did not finish (error_max_turns): - found services dir"})
+
+      {:ok, snap} = Coordinator.snapshot(sid)
+      [agent] = snap.agents
+      assert agent.result =~ "did not finish"
+      assert agent.result =~ "found services dir"
 
       GenServer.stop(pid)
     end
