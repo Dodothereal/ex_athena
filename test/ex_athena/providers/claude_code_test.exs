@@ -230,6 +230,87 @@ defmodule ExAthena.Providers.ClaudeCodeTest do
     end
   end
 
+  describe "flatten_prompt/2" do
+    alias ExAthena.{Messages, Request}
+
+    defp req(messages), do: %Request{messages: messages, model: "claude-opus-4-8"}
+
+    test "single user message stays unlabeled" do
+      assert ClaudeCode.flatten_prompt(req([Messages.user("hi")]), []) == "hi"
+    end
+
+    test "multi-turn transcript without resume gets role labels" do
+      messages = [
+        Messages.user("what is 2+2?"),
+        Messages.assistant("4"),
+        Messages.user("and times 3?")
+      ]
+
+      assert ClaudeCode.flatten_prompt(req(messages), []) ==
+               "User: what is 2+2?\n\nAssistant: 4\n\nUser: and times 3?"
+    end
+
+    test "tool messages are skipped when labeling" do
+      messages = [
+        Messages.user("read the file"),
+        Messages.assistant("reading"),
+        Messages.tool_result("c1", "file contents"),
+        Messages.user("now summarize")
+      ]
+
+      assert ClaudeCode.flatten_prompt(req(messages), []) ==
+               "User: read the file\n\nAssistant: reading\n\nUser: now summarize"
+    end
+
+    test "with resume only the messages after the last assistant turn are sent" do
+      messages = [
+        Messages.user("what is 2+2?"),
+        Messages.assistant("4"),
+        Messages.user("and times 3?")
+      ]
+
+      assert ClaudeCode.flatten_prompt(req(messages), resume: "cli-sess-1") == "and times 3?"
+    end
+
+    test "with resume but no assistant message the full prompt is sent" do
+      assert ClaudeCode.flatten_prompt(req([Messages.user("hi")]), resume: "cli-sess-1") == "hi"
+    end
+  end
+
+  describe "to_response/3" do
+    alias Elixir.ClaudeCode.Message.ResultMessage
+    alias ExAthena.Request
+
+    defp result_message(overrides) do
+      struct!(
+        ResultMessage,
+        Keyword.merge(
+          [
+            type: :result,
+            subtype: :success,
+            is_error: false,
+            duration_ms: 1.0,
+            duration_api_ms: 1.0,
+            num_turns: 1,
+            result: "answer",
+            session_id: "cli-sess-1",
+            total_cost_usd: 0.0,
+            usage: %{}
+          ],
+          overrides
+        )
+      )
+    end
+
+    test "carries the CLI session id so hosts can resume the conversation" do
+      request = %Request{messages: [], model: "claude-opus-4-8"}
+      response = ClaudeCode.to_response(result_message([]), request)
+
+      assert response.session_id == "cli-sess-1"
+      assert response.text == "answer"
+    end
+  end
+
   describe "stream_opts/2" do
     alias ExAthena.Request
 

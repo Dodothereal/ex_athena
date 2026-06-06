@@ -6,6 +6,10 @@ defmodule ExAthena.Response do
   calls the model wants the runtime to execute (empty when the model just
   replied with text). `:usage` carries token accounting when the provider
   reports it; `:raw` keeps the provider's original payload for debugging.
+  `:session_id` is the provider-side conversation identifier when the
+  provider maintains its own session state (e.g. the Claude Code CLI) —
+  hosts pass it back as `resume:` to continue that conversation; `nil` for
+  stateless providers.
   """
 
   alias ExAthena.Messages.ToolCall
@@ -18,6 +22,7 @@ defmodule ExAthena.Response do
     :usage,
     :model,
     :provider,
+    :session_id,
     :raw
   ]
 
@@ -35,6 +40,7 @@ defmodule ExAthena.Response do
           usage: usage() | nil,
           model: String.t() | nil,
           provider: atom() | module() | nil,
+          session_id: String.t() | nil,
           raw: term() | nil
         }
 end

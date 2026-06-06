@@ -176,6 +176,44 @@ defmodule ExAthena.Chat.SessionTest do
     end
   end
 
+  describe "provider session id (resume) tracking" do
+    test "apply_result/2 captures the provider session id for resume" do
+      session = Session.new(model: "m")
+
+      updated =
+        Session.apply_result(session, %Result{messages: [], session_id: "cli-sess-1"})
+
+      assert updated.provider_session_id == "cli-sess-1"
+    end
+
+    test "apply_result/2 keeps the previous session id when the result has none" do
+      session =
+        Session.new(model: "m")
+        |> Session.apply_result(%Result{messages: [], session_id: "cli-sess-1"})
+        |> Session.apply_result(%Result{messages: [], session_id: nil})
+
+      assert session.provider_session_id == "cli-sess-1"
+    end
+
+    test "set_provider/2 clears the session id (it belongs to the old provider)" do
+      session =
+        Session.new(model: "m")
+        |> Session.apply_result(%Result{messages: [], session_id: "cli-sess-1"})
+        |> Session.set_provider(:ollama)
+
+      assert session.provider_session_id == nil
+    end
+
+    test "clear_messages/1 clears the session id (a /clear is a fresh start)" do
+      session =
+        Session.new(model: "m")
+        |> Session.apply_result(%Result{messages: [], session_id: "cli-sess-1"})
+        |> Session.clear_messages()
+
+      assert session.provider_session_id == nil
+    end
+  end
+
   describe "tool_results/1" do
     test "extracts ToolResult structs in most-recent-first order" do
       first = %ToolResult{tool_call_id: "1", content: "first", is_error: false}

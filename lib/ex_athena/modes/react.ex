@@ -86,6 +86,11 @@ defmodule ExAthena.Modes.ReAct do
         # Accumulate usage + cost before considering termination.
         state = fold_usage(state, response)
 
+        # Providers with server-side conversation state (e.g. the Claude Code
+        # CLI) report a session id; keep the latest so the Result can surface
+        # it for hosts to pass back as `resume:`.
+        state = stash_session_id(state, response)
+
         # When deltas already streamed to the host this turn, suppress the
         # end-of-turn full-text/full-thinking emission to avoid duplicates.
         # Counter-based (not static) because providers may export stream/3
@@ -100,9 +105,7 @@ defmodule ExAthena.Modes.ReAct do
           {:ok, []} ->
             # Terminal: model returned plain text with no tool calls.
             unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
-
-            unless streamed_text?,
-              do: Events.emit(state.on_event, {:content, response.text || ""})
+            unless streamed_text?, do: maybe_emit_content(state.on_event, response)
 
             state =
               %{
@@ -115,9 +118,7 @@ defmodule ExAthena.Modes.ReAct do
 
           {:ok, tool_calls} ->
             unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
-
-            unless streamed_text?,
-              do: Events.emit(state.on_event, {:content, response.text || ""})
+            unless streamed_text?, do: maybe_emit_content(state.on_event, response)
 
             assistant_msg = Messages.assistant(response.text, tool_calls)
             state = %{state | messages: state.messages ++ [assistant_msg]}
@@ -222,6 +223,12 @@ defmodule ExAthena.Modes.ReAct do
   # ── Tool execution for one call ───────────────────────────────────
 
   defp run_single_tool_call(%ToolCall{} = call, state) do
+    # Surface the call to the host BEFORE gating/execution so UIs can show a
+    # "running…" state — matching the Claude Code provider, whose tool-call
+    # events stream when the model requests the tool. The matching
+    # {:tool_result, _} follows once the call is gated/executed.
+    Events.emit(state.on_event, {:tool_call, call})
+
     case Parallel.pre_tool_gate(call, state) do
       :allow ->
         do_execute(call, state)
@@ -229,13 +236,13 @@ defmodule ExAthena.Modes.ReAct do
       {:deny, %Permissions.Denial{reason: reason_str}} ->
         result = Messages.tool_result(call.id, reason_str, true)
         state = bump_mistake(state)
-        Parallel.emit_events(state, call, result)
+        Parallel.emit_result_events(state, call, result)
         {result, state}
 
       {:deny, reason} ->
         result = Messages.tool_result(call.id, "permission denied: #{inspect(reason)}", true)
         state = bump_mistake(state)
-        Parallel.emit_events(state, call, result)
+        Parallel.emit_result_events(state, call, result)
         {result, state}
 
       {:halt, reason} ->
@@ -258,7 +265,7 @@ defmodule ExAthena.Modes.ReAct do
       nil ->
         result = Messages.tool_result(call.id, "unknown tool: #{call.name}", true)
         state = bump_mistake(state)
-        Parallel.emit_events(state, call, result)
+        Parallel.emit_result_events(state, call, result)
         {result, state}
 
       spec ->
@@ -338,7 +345,7 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   defp emit_and_return(state, call, result) do
-    Parallel.emit_events(state, call, result)
+    Parallel.emit_result_events(state, call, result)
     {result, state}
   end
 
@@ -361,6 +368,11 @@ defmodule ExAthena.Modes.ReAct do
   defp set_finish_reason(state, reason) do
     put_in(state.meta[:finish_reason], reason)
   end
+
+  defp stash_session_id(state, %{session_id: sid}) when is_binary(sid) and sid != "",
+    do: put_in(state.meta[:provider_session_id], sid)
+
+  defp stash_session_id(state, _response), do: state
 
   defp fold_usage(state, response) do
     budget = state.budget || Budget.new()
@@ -492,6 +504,16 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   defp maybe_emit_thinking(_on_event, _response), do: :ok
+
+  # Emit the end-of-turn {:content, text} only when there is actual text.
+  # Tool-call-only turns (common for native-tool-call models that narrate in
+  # the thinking channel) have none — emitting {:content, ""} would render
+  # an empty assistant block in host UIs.
+  defp maybe_emit_content(on_event, %{text: text}) when is_binary(text) and text != "" do
+    Events.emit(on_event, {:content, text})
+  end
+
+  defp maybe_emit_content(_on_event, _response), do: :ok
 
   defp extract_cost(nil), do: nil
 

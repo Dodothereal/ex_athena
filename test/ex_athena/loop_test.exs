@@ -74,6 +74,44 @@ defmodule ExAthena.LoopTest do
     assert result.iterations == 0
   end
 
+  test "result carries the provider session id when the provider reports one", %{dir: dir} do
+    responses = [
+      %Response{
+        text: "done",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock,
+        session_id: "cli-sess-123"
+      }
+    ]
+
+    assert {:ok, result} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [responder: script(responses)],
+               cwd: dir,
+               tools: []
+             )
+
+    assert result.session_id == "cli-sess-123"
+  end
+
+  test "result session id is nil when the provider reports none", %{dir: dir} do
+    responses = [
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, result} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [responder: script(responses)],
+               cwd: dir,
+               tools: []
+             )
+
+    assert result.session_id == nil
+  end
+
   test "model calls a tool, gets a result, then emits text", %{dir: dir} do
     File.write!(Path.join(dir, "hello.txt"), "hello world")
 

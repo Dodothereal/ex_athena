@@ -81,6 +81,59 @@ defmodule ExAthena.Modes.StreamingTest do
     assert_receive {:event, {:content, "hello world"}}
   end
 
+  test "never emits {:content, \"\"} for a terminal turn with no assistant text", %{dir: dir} do
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [text: ""],
+               mock_events: [%Event{type: :thinking_delta, data: "hmm"}],
+               cwd: dir,
+               tools: [],
+               on_event: collecting_on_event()
+             )
+
+    refute_received {:event, {:content, ""}}
+  end
+
+  test "never emits {:content, \"\"} for a tool-call-only turn (no assistant text)", %{dir: dir} do
+    File.write!(Path.join(dir, "hello.txt"), "hello world")
+
+    responses = [
+      %ExAthena.Response{
+        text: "",
+        tool_calls: [
+          %ExAthena.Messages.ToolCall{id: "c1", name: "read", arguments: %{"path" => "hello.txt"}}
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %ExAthena.Response{
+        text: "the file says hello",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    ]
+
+    counter = :counters.new(1, [:atomics])
+
+    responder = fn _request ->
+      :counters.add(counter, 1, 1)
+      Enum.at(responses, :counters.get(counter, 1) - 1) || List.last(responses)
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("read hello.txt",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read],
+               on_event: collecting_on_event()
+             )
+
+    refute_received {:event, {:content, ""}}
+  end
+
   test "forwards thinking deltas and suppresses end-of-turn full thinking", %{dir: dir} do
     assert {:ok, %Result{finish_reason: :stop}} =
              Loop.run("hi",

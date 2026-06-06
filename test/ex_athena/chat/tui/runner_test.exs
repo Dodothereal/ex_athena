@@ -61,6 +61,22 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
     end
   end
 
+  describe "build_run_opts/2 — resume" do
+    test "passes resume: when the session carries a provider session id" do
+      session = %{Session.new(model: "m") | provider_session_id: "cli-sess-1"}
+      opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+      assert opts[:resume] == "cli-sess-1"
+    end
+
+    test "omits :resume when the session has no provider session id" do
+      session = Session.new(model: "m")
+      opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+      refute Keyword.has_key?(opts, :resume)
+    end
+  end
+
   describe "select_initial_model/2" do
     test "keeps the desired model when it is in the installed list" do
       assert Runner.select_initial_model("llama3.1", {:ok, ["llama3.1", "qwen2.5"]}) ==

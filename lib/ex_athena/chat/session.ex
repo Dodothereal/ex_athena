@@ -22,7 +22,8 @@ defmodule ExAthena.Chat.Session do
             iteration: 0,
             usage: %{input_tokens: 0, output_tokens: 0},
             cost_usd: 0.0,
-            cwd: nil
+            cwd: nil,
+            provider_session_id: nil
 
   @type t :: %__MODULE__{
           provider: atom(),
@@ -34,7 +35,8 @@ defmodule ExAthena.Chat.Session do
           iteration: non_neg_integer(),
           usage: %{input_tokens: non_neg_integer(), output_tokens: non_neg_integer()},
           cost_usd: float(),
-          cwd: String.t() | nil
+          cwd: String.t() | nil,
+          provider_session_id: String.t() | nil
         }
 
   @spec new(keyword()) :: t()
@@ -73,7 +75,8 @@ defmodule ExAthena.Chat.Session do
       | messages: [],
         iteration: 0,
         usage: %{input_tokens: 0, output_tokens: 0},
-        cost_usd: 0.0
+        cost_usd: 0.0,
+        provider_session_id: nil
     }
   end
 
@@ -89,7 +92,9 @@ defmodule ExAthena.Chat.Session do
 
   @spec set_provider(t(), atom()) :: t()
   def set_provider(%__MODULE__{} = session, provider) when is_atom(provider) do
-    %{session | provider: provider}
+    # The resume session id belongs to the previous provider's server-side
+    # conversation — it has no meaning for the new one.
+    %{session | provider: provider, provider_session_id: nil}
   end
 
   @doc """
@@ -128,7 +133,10 @@ defmodule ExAthena.Chat.Session do
       | messages: new_messages,
         usage: merged_usage,
         cost_usd: session.cost_usd + (result.cost_usd || 0.0),
-        iteration: result.iterations || session.iteration
+        iteration: result.iterations || session.iteration,
+        # Keep the latest provider session id for `resume:`; a result without
+        # one (stateless provider, error run) must not wipe resume state.
+        provider_session_id: result.session_id || session.provider_session_id
     }
   end
 end

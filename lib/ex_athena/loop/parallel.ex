@@ -220,11 +220,15 @@ defmodule ExAthena.Loop.Parallel do
     :ok
   end
 
-  @doc "Emit tool-call / tool-result events and update counters."
-  @spec emit_events(map(), ToolCall.t(), Messages.Message.t()) :: :ok
-  def emit_events(state, %ToolCall{} = call, tool_message) do
-    Events.emit(state.on_event, {:tool_call, call})
+  @doc """
+  Emit tool-result (and tool-ui) events for a completed call.
 
+  The matching `{:tool_call, _}` event is emitted by the single-call runner
+  BEFORE gating/execution, so hosts can render a "running…" state while the
+  tool works.
+  """
+  @spec emit_result_events(map(), ToolCall.t(), Messages.Message.t()) :: :ok
+  def emit_result_events(state, %ToolCall{} = _call, tool_message) do
     case tool_message.tool_results do
       [tr | _] = trs ->
         Events.emit(state.on_event, {:tool_result, tr})

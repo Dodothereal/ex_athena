@@ -70,6 +70,9 @@ defmodule ExAthena.Web.Live.ChatLive do
         # though `streaming` is still true.
         awaiting_question: nil,
         ex_messages: [],
+        # Provider-side conversation id (e.g. Claude Code CLI session) from
+        # the last Result — passed back as `resume:` on the next run.
+        provider_session_id: nil,
         # Stored tool UI payloads (diff/process/file) keyed by tool_call_id
         tool_uis: %{},
         expanded_uis: MapSet.new(),
@@ -124,7 +127,9 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("answer_option", %{"value" => value}, socket) do
-    if socket.assigns.awaiting_question, do: answer_question(socket, value), else: {:noreply, socket}
+    if socket.assigns.awaiting_question,
+      do: answer_question(socket, value),
+      else: {:noreply, socket}
   end
 
   def handle_event("attach_image", %{"data" => data, "type" => type}, socket) do
@@ -276,7 +281,14 @@ defmodule ExAthena.Web.Live.ChatLive do
     send(self(), {:load_models, provider})
 
     {:noreply,
-     assign(socket, provider: provider, model: model, available_models: [], models_loading: true)}
+     assign(socket,
+       provider: provider,
+       model: model,
+       available_models: [],
+       models_loading: true,
+       # The resume id belongs to the previous provider's conversation.
+       provider_session_id: nil
+     )}
   end
 
   def handle_event("set_model", %{"value" => model}, socket) do
@@ -316,6 +328,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        messages: [],
        pending_images: [],
        ex_messages: [],
+       provider_session_id: nil,
        tool_uis: %{},
        expanded_uis: MapSet.new(),
        details_stream: [],
@@ -351,6 +364,7 @@ defmodule ExAthena.Web.Live.ChatLive do
            messages: data.display_messages,
            pending_images: [],
            ex_messages: data.ex_messages,
+           provider_session_id: Map.get(data, :provider_session_id),
            tool_uis: tool_uis,
            expanded_uis: MapSet.new(),
            details_stream: details_stream,
@@ -401,6 +415,9 @@ defmodule ExAthena.Web.Live.ChatLive do
            messages: forked_messages,
            pending_images: [],
            ex_messages: ex_messages,
+           # A fork rewinds the transcript; the provider-side session has
+           # moved past that point, so it can't be resumed.
+           provider_session_id: nil,
            details_stream: details_stream,
            pending_assistant_msg_id: nil,
            status: nil,
@@ -652,6 +669,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       assign(socket,
         messages: messages,
         ex_messages: ex_messages,
+        # Keep the latest provider session id for `resume:`; a result without
+        # one (stateless provider) must not wipe resume state.
+        provider_session_id: result.session_id || socket.assigns.provider_session_id,
         tool_uis: new_tool_uis,
         streaming: false,
         streaming_task_pid: nil,
@@ -1126,7 +1146,9 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp input_placeholder(nil, _), do: "Open a project folder first (+ button)"
   defp input_placeholder(_cwd, q) when not is_nil(q), do: "Type your answer… (Enter to send)"
-  defp input_placeholder(_cwd, _), do: "Message ExAthena… (Enter to send, Shift+Enter for newline)"
+
+  defp input_placeholder(_cwd, _),
+    do: "Message ExAthena… (Enter to send, Shift+Enter for newline)"
 
   defp message(%{msg: %{role: :user}} = assigns) do
     assigns = assign(assigns, :msg_images, Map.get(assigns.msg, :images, []))
@@ -1549,6 +1571,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     model = socket.assigns.model
     mode = socket.assigns.mode
     images = socket.assigns.pending_images
+    provider_session_id = socket.assigns.provider_session_id
 
     image_data_urls =
       Enum.map(images, fn %{data: d, media_type: t} -> "data:#{t};base64,#{d}" end)
@@ -1598,6 +1621,7 @@ defmodule ExAthena.Web.Live.ChatLive do
             timeout_ms: 24 * 60 * 60 * 1000
           ]
           |> maybe_put_model(model)
+          |> maybe_put_resume(provider_session_id)
           |> apply_base_url(provider)
           |> maybe_put_cwd(socket.assigns.cwd)
 
@@ -1668,6 +1692,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       updated_at: DateTime.utc_now(),
       display_messages: a.messages,
       ex_messages: a.ex_messages,
+      provider_session_id: a.provider_session_id,
       tool_uis: a.tool_uis,
       details_stream: a.details_stream
     })
@@ -1688,7 +1713,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       |> Enum.reverse()
 
     results =
-      for %{type: :tool_result, payload: %{tool_call_id: id}} = e <- entries, into: %{}, do: {id, e}
+      for %{type: :tool_result, payload: %{tool_call_id: id}} = e <- entries,
+          into: %{},
+          do: {id, e}
 
     sub_results =
       for %{type: :subagent_result, payload: %{id: id}} = e <- entries, into: %{}, do: {id, e}
@@ -2045,6 +2072,14 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp maybe_put_model(opts, m) when is_binary(m) and m != "", do: Keyword.put(opts, :model, m)
   defp maybe_put_model(opts, _), do: opts
+
+  # Continue the provider-side conversation (e.g. a Claude Code CLI session)
+  # captured from the previous Result. Providers without server-side session
+  # state never populate it, so this stays provider-agnostic.
+  defp maybe_put_resume(opts, sid) when is_binary(sid) and sid != "",
+    do: Keyword.put(opts, :resume, sid)
+
+  defp maybe_put_resume(opts, _), do: opts
 
   defp maybe_put_cwd(opts, cwd) when is_binary(cwd), do: Keyword.put(opts, :cwd, cwd)
   defp maybe_put_cwd(opts, _), do: opts

@@ -33,6 +33,10 @@ defmodule ExAthena.Result do
       `finish_reason` is `:submitted`; `nil` for all other terminations.
       Carries the model's declared output (summary, plan text, or any
       value the `finish` tool received).
+    * `:session_id` — the provider-side conversation identifier when the
+      provider maintains its own session state (e.g. the Claude Code CLI).
+      Hosts pass it back as `resume:` on the next `run/2` to continue that
+      conversation; `nil` for stateless providers.
     * `:telemetry` — span metadata summarising OTel attrs for the run
       (Phase 4).
     * `:no_progress_snapshot` — the last few message pairs (assistant +
@@ -68,6 +72,7 @@ defmodule ExAthena.Result do
             duration_ms: nil,
             model: nil,
             provider: nil,
+            session_id: nil,
             telemetry: %{},
             no_progress_snapshot: nil
 
@@ -85,6 +90,7 @@ defmodule ExAthena.Result do
           duration_ms: non_neg_integer() | nil,
           model: String.t() | nil,
           provider: atom() | module() | nil,
+          session_id: String.t() | nil,
           telemetry: map(),
           no_progress_snapshot: [Message.t()] | nil
         }

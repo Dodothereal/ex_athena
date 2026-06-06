@@ -85,7 +85,7 @@ defmodule ExAthena.Providers.ClaudeCode do
   @impl ExAthena.Provider
   def query(%Request{} = request, opts) do
     with :ok <- ensure_dep() do
-      case ClaudeCode.query(flatten_prompt(request), build_opts(request, opts)) do
+      case ClaudeCode.query(flatten_prompt(request, opts), build_opts(request, opts)) do
         {:ok, %ClaudeCode.Message.ResultMessage{is_error: true} = r} ->
           {:error, Error.new(:server_error, result_text(r), provider: :claude_code, raw: r)}
 
@@ -108,7 +108,7 @@ defmodule ExAthena.Providers.ClaudeCode do
       try do
         acc =
           session
-          |> ClaudeCode.stream(flatten_prompt(request))
+          |> ClaudeCode.stream(flatten_prompt(request, opts))
           |> Enum.reduce(%{result: nil, thinking: [], partials?: false}, fn message, acc ->
             handle_message(message, callback, acc)
           end)
@@ -225,7 +225,10 @@ defmodule ExAthena.Providers.ClaudeCode do
 
   # ── mapping ──────────────────────────────────────────────────────
 
-  defp to_response(%ClaudeCode.Message.ResultMessage{} = r, %Request{} = request, thinking \\ nil) do
+  # Public (but undocumented) so tests can drive the ResultMessage → Response
+  # mapping directly without standing up a CLI session.
+  @doc false
+  def to_response(%ClaudeCode.Message.ResultMessage{} = r, %Request{} = request, thinking \\ nil) do
     %Response{
       text: r.result,
       thinking: thinking,
@@ -234,6 +237,9 @@ defmodule ExAthena.Providers.ClaudeCode do
       usage: usage(r),
       model: request.model,
       provider: :claude_code,
+      # The CLI session id — hosts pass it back as `resume:` so the next turn
+      # continues this conversation instead of starting a fresh session.
+      session_id: r.session_id,
       raw: r
     }
   end
@@ -260,11 +266,51 @@ defmodule ExAthena.Providers.ClaudeCode do
   defp result_text(_), do: "claude_code error"
 
   # claude_code takes a single prompt string and owns conversation state.
-  defp flatten_prompt(%Request{messages: messages}) do
+  #
+  # With `resume:` the CLI session already holds the prior turns, so only the
+  # messages after the last assistant turn (the new user input) are sent —
+  # re-sending the full transcript would duplicate context the CLI already
+  # has. Without resume (fresh session, old saved sessions, provider
+  # switches) a multi-turn transcript is role-labeled so the model can tell
+  # who said what instead of receiving one undifferentiated blob.
+  #
+  # Public (but undocumented) so tests can drive the prompt shaping directly
+  # without standing up a CLI session.
+  @doc false
+  def flatten_prompt(%Request{messages: messages}, opts) do
+    messages =
+      case {Keyword.get(opts, :resume), after_last_assistant(messages)} do
+        {nil, _tail} -> messages
+        {_resume, []} -> messages
+        {_resume, tail} -> tail
+      end
+
+    label? = Enum.any?(messages, &(&1.role == :assistant))
+
     messages
-    |> Enum.map(&message_text/1)
-    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.reject(&(&1.role == :tool))
+    |> Enum.map(fn msg ->
+      case message_text(msg) do
+        text when text in [nil, ""] -> nil
+        text -> label_text(msg.role, text, label?)
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
+  end
+
+  defp label_text(:user, text, true), do: "User: " <> text
+  defp label_text(:assistant, text, true), do: "Assistant: " <> text
+  defp label_text(_role, text, _label?), do: text
+
+  # Messages after the last assistant turn — the part of the transcript the
+  # resumed CLI session hasn't seen yet. `[]` when there is no assistant
+  # message or nothing follows it.
+  defp after_last_assistant(messages) do
+    case Enum.find_index(Enum.reverse(messages), &(&1.role == :assistant)) do
+      nil -> []
+      rev_idx -> Enum.take(messages, -rev_idx)
+    end
   end
 
   defp message_text(%{content: content}) when is_binary(content), do: content

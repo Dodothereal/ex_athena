@@ -71,6 +71,7 @@ defmodule ExAthena.Chat.Tui.Runner do
 
     base
     |> maybe_put_cwd(session.cwd)
+    |> maybe_put_resume(session.provider_session_id)
     |> apply_default_base_url(session.provider)
     |> apply_provider_spec_extra_headers(session.provider)
   end
@@ -79,6 +80,14 @@ defmodule ExAthena.Chat.Tui.Runner do
     do: Keyword.put(opts, :cwd, cwd)
 
   defp maybe_put_cwd(opts, _), do: opts
+
+  # Continue the provider-side conversation (e.g. a Claude Code CLI session)
+  # captured from the previous Result. Providers without server-side session
+  # state never populate it, so this stays provider-agnostic.
+  defp maybe_put_resume(opts, session_id) when is_binary(session_id) and session_id != "",
+    do: Keyword.put(opts, :resume, session_id)
+
+  defp maybe_put_resume(opts, _), do: opts
 
   @spec select_initial_model(String.t(), {:ok, [String.t()]} | {:error, term()}) ::
           {:ok, String.t()}
