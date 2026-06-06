@@ -81,7 +81,13 @@ defmodule ExAthena.Modes.OrchestrateTest do
     ]
 
     responses = [
-      %Response{text: "1. step A", thinking: "planning the steps", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "1. step A",
+        thinking: "planning the steps",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      },
       %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
     ]
 

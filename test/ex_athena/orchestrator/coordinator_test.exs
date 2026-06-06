@@ -109,24 +109,32 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       sid = unique_sid()
       {:ok, pid} = Coordinator.start_for(sid)
 
-      Coordinator.notify(pid, :main, {:todos,
-       [
-         %{
-           "content" =>
-             "Explore repository structure to identify patterns for services, products, and blog posts",
-           "status" => "in_progress"
-         },
-         %{"content" => "Publish the blog post", "status" => "pending"}
-       ]})
+      Coordinator.notify(
+        pid,
+        :main,
+        {:todos,
+         [
+           %{
+             "content" =>
+               "Explore repository structure to identify patterns for services, products, and blog posts",
+             "status" => "in_progress"
+           },
+           %{"content" => "Publish the blog post", "status" => "pending"}
+         ]}
+      )
 
       # The model spawned without `todo:` — only the prompt hints which task.
-      Coordinator.notify(pid, "sub-a", {:agent_meta,
-       %{
-         prompt:
-           "Explore the repository structure to identify how services, products, and blog posts are organized.",
-         name: nil,
-         linked_todo: nil
-       }})
+      Coordinator.notify(
+        pid,
+        "sub-a",
+        {:agent_meta,
+         %{
+           prompt:
+             "Explore the repository structure to identify how services, products, and blog posts are organized.",
+           name: nil,
+           linked_todo: nil
+         }}
+      )
 
       Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-a", prompt: "explore"}})
 
@@ -146,9 +154,17 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       sid = unique_sid()
       {:ok, pid} = Coordinator.start_for(sid)
 
-      Coordinator.notify(pid, :main, {:todos, [%{"content" => "Publish the blog post", "status" => "pending"}]})
+      Coordinator.notify(
+        pid,
+        :main,
+        {:todos, [%{"content" => "Publish the blog post", "status" => "pending"}]}
+      )
 
-      Coordinator.notify(pid, "sub-b", {:agent_meta, %{prompt: "Compute fibonacci numbers quickly", name: nil, linked_todo: nil}})
+      Coordinator.notify(
+        pid,
+        "sub-b",
+        {:agent_meta, %{prompt: "Compute fibonacci numbers quickly", name: nil, linked_todo: nil}}
+      )
 
       Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-b", prompt: "fib"}})
 

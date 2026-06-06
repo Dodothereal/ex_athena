@@ -87,7 +87,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         # attributed to. Set in start_agent_run; cleared in :athena_done.
         pending_assistant_msg_id: nil,
         # Details pane: tabbed (:overview | :log | :git) plus a visibility toggle.
-        details_tab: :log,
+        details_tab: :overview,
         show_details: true,
         # Live orchestration snapshot (ExAthena.Orchestrator.Coordinator) for
         # the Overview tab. One coordinator per run; orchestrator_sid scopes

@@ -245,7 +245,9 @@ defmodule ExAthena.Orchestrator.Coordinator do
           info
           | name: meta[:name] || info.name,
             prompt_summary: info.prompt_summary || meta[:prompt],
-            linked_todo: meta[:linked_todo] || info.linked_todo
+            linked_todo:
+              meta[:linked_todo] || info.linked_todo ||
+                fuzzy_todo_match(meta[:prompt], state.main.todos)
         }
       end)
     else
@@ -264,12 +266,19 @@ defmodule ExAthena.Orchestrator.Coordinator do
       state
     else
       {meta, pending} = Map.pop(state.pending_meta, sub_id, %{})
+      # The meta prompt (SpawnAgent's raw task text) is the richer matching
+      # source; the boundary event's prompt may be abbreviated.
+      match_prompt = meta[:prompt] || attrs[:prompt_summary]
 
       info =
         AgentInfo.new(sub_id, %{
           name: meta[:name],
           prompt_summary: attrs[:prompt_summary] || meta[:prompt],
-          linked_todo: meta[:linked_todo]
+          # Models often omit the explicit `todo:` link — fall back to
+          # fuzzy-matching the worker's prompt against the task list so the
+          # Overview tree groups it under its parent task and runtime todo
+          # completion still works.
+          linked_todo: meta[:linked_todo] || fuzzy_todo_match(match_prompt, state.main.todos)
         })
 
       %{
@@ -299,6 +308,40 @@ defmodule ExAthena.Orchestrator.Coordinator do
   end
 
   defp update_main(state, fun), do: %{state | main: fun.(state.main)}
+
+  # Best word-overlap match between a worker's prompt and the task list:
+  # score = |significant words ∩| / |todo's significant words|, threshold ½.
+  defp fuzzy_todo_match(prompt, todos) when is_binary(prompt) and todos != [] do
+    prompt_words = significant_words(prompt)
+
+    todos
+    |> Enum.map(fn todo ->
+      todo_words = significant_words(todo.content)
+
+      score =
+        case MapSet.size(todo_words) do
+          0 -> 0.0
+          n -> MapSet.size(MapSet.intersection(todo_words, prompt_words)) / n
+        end
+
+      {todo.content, score}
+    end)
+    |> Enum.max_by(fn {_content, score} -> score end, fn -> {nil, 0.0} end)
+    |> case do
+      {content, score} when score >= 0.5 -> content
+      _ -> nil
+    end
+  end
+
+  defp fuzzy_todo_match(_prompt, _todos), do: nil
+
+  defp significant_words(text) do
+    text
+    |> String.downcase()
+    |> String.split(~r/[^a-z0-9]+/, trim: true)
+    |> Enum.filter(&(String.length(&1) > 3))
+    |> MapSet.new()
+  end
 
   defp update_agent(state, sub_id, fun) do
     %{state | agents: Map.update!(state.agents, sub_id, fun)}
