@@ -916,18 +916,14 @@ defmodule ExAthena.Web.Live.ChatLive do
           <.message
             :for={msg <- @messages}
             msg={msg}
-            tool_uis={@tool_uis}
-            expanded_uis={@expanded_uis}
-            max_diff_lines={@max_diff_lines}
+            details_stream={@details_stream}
           />
 
           <%= if @streaming do %>
             <.streaming_message
-              text={@stream_text}
-              events={@stream_events}
+              details_stream={@details_stream}
+              msg_id={@pending_assistant_msg_id}
               current_action={@current_action}
-              tool_uis={@stream_tool_ui}
-              expanded_uis={@expanded_uis}
             />
           <% end %>
 
@@ -1076,6 +1072,8 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp message(%{msg: %{role: :assistant}} = assigns) do
+    assigns = assign(assigns, :items, message_items(assigns.details_stream, assigns.msg.id))
+
     ~H"""
     <div class="msg msg--assistant">
       <div class="msg-role">
@@ -1084,17 +1082,11 @@ defmodule ExAthena.Web.Live.ChatLive do
           ⑂ fork
         </button>
       </div>
-      <.tool_events
-        events={@msg.tool_events}
-        tool_uis={@tool_uis}
-        expanded_uis={@expanded_uis}
-      />
-      <div
-        class="msg-body md"
-        id={"md-#{@msg.id}"}
-        phx-hook="MarkdownRender"
-        data-raw={@msg.text}
-      ></div>
+      <%= if @items == [] do %>
+        <div class="msg-body md" id={"md-#{@msg.id}"} phx-hook="MarkdownRender" data-raw={@msg.text}></div>
+      <% else %>
+        <.assistant_item :for={item <- @items} item={item} streaming={false} />
+      <% end %>
       <%= if @msg.status do %>
         <div class="msg-footer">
           iter={@msg.status.iterations} · {@msg.status.input_tokens}/{@msg.status.output_tokens} tok · ${format_cost(@msg.status.cost_usd)}
@@ -1105,6 +1097,8 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp streaming_message(assigns) do
+    assigns = assign(assigns, :items, message_items(assigns.details_stream, assigns.msg_id))
+
     ~H"""
     <div class="msg msg--assistant msg--streaming">
       <div class="msg-role">
@@ -1116,47 +1110,84 @@ defmodule ExAthena.Web.Live.ChatLive do
           </span>
         <% end %>
       </div>
-      <.tool_events events={@events} tool_uis={@tool_uis} expanded_uis={@expanded_uis} />
-      <div class="msg-body" style="white-space: pre-wrap">
-        {if @text == "", do: "", else: @text}<span class="cursor">▋</span>
-      </div>
+      <.assistant_item :for={item <- @items} item={item} streaming={true} />
+      <div class="msg-body" style="white-space: pre-wrap"><span class="cursor">▋</span></div>
     </div>
     """
   end
 
-  defp tool_events(%{events: []} = assigns), do: ~H""
+  # Render a single inline item of an assistant turn (text segment, tool call,
+  # or subagent activity) at its actual chronological position. Streaming text
+  # is shown raw (no markdown re-render churn); finalized text is markdown.
+  defp assistant_item(%{item: {:text, e}, streaming: true} = assigns) do
+    assigns = assign(assigns, :e, e)
 
-  defp tool_events(assigns) do
-    calls = Enum.filter(assigns.events, &(&1.type == :call))
+    ~H"""
+    <div class="msg-body" style="white-space: pre-wrap">{@e.payload.text}</div>
+    """
+  end
 
-    results_by_id =
-      assigns.events |> Enum.filter(&(&1.type == :result)) |> Map.new(&{&1.tool_call_id, &1})
+  defp assistant_item(%{item: {:text, e}} = assigns) do
+    assigns = assign(assigns, :e, e)
 
-    assigns = assign(assigns, calls: calls, results_by_id: results_by_id)
+    ~H"""
+    <div class="msg-body md" id={"md-#{@e.id}"} phx-hook="MarkdownRender" data-raw={@e.payload.text}></div>
+    """
+  end
+
+  defp assistant_item(%{item: {:tool, call, result}} = assigns) do
+    assigns = assign(assigns, call: call, result: result)
 
     ~H"""
     <div class="tool-events tool-events--compact">
       <button
-        :for={call <- @calls}
         type="button"
         class="tool-one-liner"
         phx-click="focus_detail"
-        phx-value-id={call.id}
+        phx-value-id={@call.payload.tool_call_id}
         title="Show details on the right"
       >
         <span class="tool-arrow">→</span>
-        <span class="tool-name">{call.name}</span>
-        <span class="tool-args">{preview_args(call.arguments)}</span>
-        <%= if result = Map.get(@results_by_id, call.id) do %>
-          <span class={"tool-result-inline#{if result.is_error, do: " tool-result-inline--error", else: ""}"}>
-            <span class="tool-arrow">{if result.is_error, do: "✗", else: "←"}</span>
-            <span class="tool-result-content">{summarize(result.content)}</span>
+        <span class="tool-name">{@call.payload.name}</span>
+        <span class="tool-args">{preview_args(@call.payload.arguments)}</span>
+        <%= if @result do %>
+          <span class={"tool-result-inline#{if @result.payload.is_error, do: " tool-result-inline--error", else: ""}"}>
+            <span class="tool-arrow">{if @result.payload.is_error, do: "✗", else: "←"}</span>
+            <span class="tool-result-content">{summarize(@result.payload.content)}</span>
           </span>
         <% end %>
       </button>
     </div>
     """
   end
+
+  defp assistant_item(%{item: {:subagent, spawn, result}} = assigns) do
+    assigns = assign(assigns, spawn: spawn, result: result)
+
+    ~H"""
+    <div class="tool-events tool-events--compact">
+      <button
+        type="button"
+        class="tool-one-liner"
+        phx-click="focus_detail"
+        phx-value-id={Map.get(@spawn.payload, :id)}
+        title="Show details on the right"
+      >
+        <span class="tool-arrow">⊕</span>
+        <span class="tool-name">subagent</span>
+        <span class="tool-args">{summarize(Map.get(@spawn.payload, :prompt, ""))}</span>
+        <%= if @result do %>
+          <span class="tool-result-inline">
+            <span class="tool-arrow">←</span>
+            <span class="tool-result-content">{summarize(Map.get(@result.payload, :text, ""))}</span>
+          </span>
+        <% end %>
+      </button>
+    </div>
+    """
+  end
+
+  defp assistant_item(assigns), do: ~H""
 
   defp tool_ui_panel(%{ui: %{kind: :diff}} = assigns) do
     ~H"""
@@ -1516,6 +1547,39 @@ defmodule ExAthena.Web.Live.ChatLive do
   # ---------------------------------------------------------------------------
   # Details-stream helpers
   # ---------------------------------------------------------------------------
+
+  # Build the chronological (oldest-first) inline items for one assistant turn
+  # in the main messages pane, derived from the details_stream (newest-first).
+  # Interleaves assistant text segments, tool calls (paired with their result),
+  # and subagent activity in the exact order they actually occurred.
+  defp message_items(details_stream, msg_id) when is_list(details_stream) do
+    entries =
+      details_stream
+      |> Enum.filter(&(&1.message_id == msg_id))
+      |> Enum.reverse()
+
+    results =
+      for %{type: :tool_result, payload: %{tool_call_id: id}} = e <- entries, into: %{}, do: {id, e}
+
+    sub_results =
+      for %{type: :subagent_result, payload: %{id: id}} = e <- entries, into: %{}, do: {id, e}
+
+    Enum.flat_map(entries, fn
+      %{type: :assistant_text} = e ->
+        [{:text, e}]
+
+      %{type: :tool_call} = e ->
+        [{:tool, e, Map.get(results, e.payload.tool_call_id)}]
+
+      %{type: :subagent_spawn} = e ->
+        [{:subagent, e, Map.get(sub_results, Map.get(e.payload, :id))}]
+
+      _ ->
+        []
+    end)
+  end
+
+  defp message_items(_, _), do: []
 
   defp new_detail(type, message_id, payload) do
     %{
