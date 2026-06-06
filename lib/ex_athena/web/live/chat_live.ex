@@ -64,6 +64,11 @@ defmodule ExAthena.Web.Live.ChatLive do
         stream_events: [],
         stream_tool_ui: %{},
         current_action: nil,
+        # When the run calls the `ask_user` tool it pauses and we surface the
+        # question here: %{tool_call_id, question, options}. Non-nil means the
+        # loop is blocked waiting for the user — the input is re-enabled even
+        # though `streaming` is still true.
+        awaiting_question: nil,
         ex_messages: [],
         # Stored tool UI payloads (diff/process/file) keyed by tool_call_id
         tool_uis: %{},
@@ -108,11 +113,18 @@ defmodule ExAthena.Web.Live.ChatLive do
     text = String.trim(text)
 
     cond do
+      # A run is paused on an `ask_user` question — route this as the answer
+      # back into the blocked tool instead of starting a new run.
+      socket.assigns.awaiting_question != nil and text != "" -> answer_question(socket, text)
       text == "" and socket.assigns.pending_images == [] -> {:noreply, socket}
       socket.assigns.streaming -> {:noreply, socket}
       is_nil(socket.assigns.cwd) -> {:noreply, socket}
       true -> start_agent_run(socket, text)
     end
+  end
+
+  def handle_event("answer_option", %{"value" => value}, socket) do
+    if socket.assigns.awaiting_question, do: answer_question(socket, value), else: {:noreply, socket}
   end
 
   def handle_event("attach_image", %{"data" => data, "type" => type}, socket) do
@@ -138,6 +150,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        stream_events: [],
        stream_tool_ui: %{},
        current_action: nil,
+       awaiting_question: nil,
        pending_assistant_msg_id: nil
      )}
   end
@@ -582,6 +595,24 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def handle_info({:athena, _other}, socket), do: {:noreply, socket}
 
+  # The `ask_user` tool paused the run and wants an answer. Surface the
+  # question, log it, and re-enable the input (see the `disabled` guard on the
+  # textarea). The run task stays alive, blocked in `receive`, until the user's
+  # answer is routed back via `answer_question/2`.
+  def handle_info({:athena_ask_user, question}, socket) do
+    detail =
+      new_detail(:ask_user, socket.assigns.pending_assistant_msg_id, %{
+        question: question.question,
+        options: Map.get(question, :options, [])
+      })
+
+    {:noreply,
+     socket
+     |> assign(awaiting_question: question, current_action: nil)
+     |> update(:details_stream, &[detail | &1])
+     |> push_event("focus-chat-input", %{})}
+  end
+
   def handle_info({:athena_done, _result}, %{assigns: %{streaming: false}} = socket),
     do: {:noreply, socket}
 
@@ -628,6 +659,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         stream_events: [],
         stream_tool_ui: %{},
         current_action: nil,
+        awaiting_question: nil,
         pending_assistant_msg_id: nil,
         status: status,
         error: nil,
@@ -654,9 +686,28 @@ defmodule ExAthena.Web.Live.ChatLive do
        streaming: false,
        streaming_task_pid: nil,
        current_action: nil,
+       awaiting_question: nil,
        error: inspect(reason)
      )}
   end
+
+  # The run process went down. If we're still streaming, no {:athena_done,...}
+  # or {:athena_error,...} arrived first — the run crashed (or was killed).
+  # Reset the UI so the input is usable again. A `:normal`/`:killed` exit means
+  # we already handled completion (or the user hit stop), so leave state alone.
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, %{assigns: %{streaming: true}} = socket)
+      when reason not in [:normal, :killed] do
+    {:noreply,
+     assign(socket,
+       streaming: false,
+       streaming_task_pid: nil,
+       current_action: nil,
+       awaiting_question: nil,
+       error: "run crashed: #{inspect(reason)}"
+     )}
+  end
+
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:noreply, socket}
 
   # ---------------------------------------------------------------------------
   # Template
@@ -990,6 +1041,26 @@ defmodule ExAthena.Web.Live.ChatLive do
         <% end %>
 
         <div class="input-bar" id="image-input-bar" phx-hook="ImageInput">
+          <%= if @awaiting_question do %>
+            <div class="ask-user">
+              <div class="ask-user-head">
+                <span class="ask-user-icon">?</span>
+                <span class="ask-user-label">ExAthena is asking</span>
+              </div>
+              <div class="ask-user-question">{@awaiting_question.question}</div>
+              <%= if @awaiting_question.options not in [nil, []] do %>
+                <div class="ask-user-options">
+                  <button
+                    :for={opt <- @awaiting_question.options}
+                    type="button"
+                    class="ask-user-option"
+                    phx-click="answer_option"
+                    phx-value-value={opt}
+                  >{opt}</button>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
           <%= if @pending_images != [] do %>
             <div class="img-preview-bar">
               <div
@@ -1022,8 +1093,8 @@ defmodule ExAthena.Web.Live.ChatLive do
               id="chat-input"
               class="input-textarea"
               name="text"
-              placeholder={if is_nil(@cwd), do: "Open a project folder first (+ button)", else: "Message ExAthena… (Enter to send, Shift+Enter for newline)"}
-              disabled={@streaming or is_nil(@cwd)}
+              placeholder={input_placeholder(@cwd, @awaiting_question)}
+              disabled={(@streaming and is_nil(@awaiting_question)) or is_nil(@cwd)}
               phx-hook="SubmitOnEnter"
             ></textarea>
             <button
@@ -1052,6 +1123,10 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp tab_class(active, tab),
     do: "details-tab" <> if(active == tab, do: " details-tab--active", else: "")
+
+  defp input_placeholder(nil, _), do: "Open a project folder first (+ button)"
+  defp input_placeholder(_cwd, q) when not is_nil(q), do: "Type your answer… (Enter to send)"
+  defp input_placeholder(_cwd, _), do: "Message ExAthena… (Enter to send, Shift+Enter for newline)"
 
   defp message(%{msg: %{role: :user}} = assigns) do
     assigns = assign(assigns, :msg_images, Map.get(assigns.msg, :images, []))
@@ -1431,6 +1506,28 @@ defmodule ExAthena.Web.Live.ChatLive do
     """
   end
 
+  defp detail_entry(%{entry: %{type: :ask_user} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--ask-user" id={"detail-#{@e.id}"}>
+      <div class="detail-label">? asked the user</div>
+      <div class="detail-text">{@e.payload.question}</div>
+    </div>
+    """
+  end
+
+  defp detail_entry(%{entry: %{type: :ask_user_answer} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--ask-user-answer" id={"detail-#{@e.id}"}>
+      <div class="detail-label">↳ user answered</div>
+      <div class="detail-text">{@e.payload.answer}</div>
+    </div>
+    """
+  end
+
   defp detail_entry(assigns), do: ~H""
 
   defp format_args(args) when is_map(args) do
@@ -1491,7 +1588,11 @@ defmodule ExAthena.Web.Live.ChatLive do
             provider: safe_atom(provider, :llamacpp),
             mode: safe_mode(mode),
             messages: ex_messages,
-            tools: :all,
+            # Builtins plus the interactive ask_user tool. `ask_user` reads the
+            # LiveView pid from assigns to surface a question and block for the
+            # reply; see ExAthena.Tools.AskUser.
+            tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser],
+            assigns: %{ask_user: pid},
             permission_mode: :accept_edits,
             on_event: on_event,
             timeout_ms: 24 * 60 * 60 * 1000
@@ -1505,6 +1606,12 @@ defmodule ExAthena.Web.Live.ChatLive do
           {:error, reason} -> send(pid, {:athena_error, reason})
         end
       end)
+
+    # Monitor the run so an *unexpected crash* (an exception that bypasses the
+    # {:error, reason} path above) still resets the UI. Without this, a raising
+    # run leaves `streaming: true` forever and the input stays disabled — the
+    # user can no longer type/send. See the {:DOWN, ...} handler below.
+    Process.monitor(task_pid)
 
     user_detail = new_detail(:user_text, user_msg.id, %{text: text})
 
@@ -1523,6 +1630,28 @@ defmodule ExAthena.Web.Live.ChatLive do
        details_stream: [user_detail | socket.assigns.details_stream],
        error: nil
      )}
+  end
+
+  # Route the user's reply back into the run task blocked inside the `ask_user`
+  # tool, then clear the pending question and resume the "thinking" indicator.
+  # The run continues from where it paused — no new run is started.
+  defp answer_question(socket, answer) do
+    q = socket.assigns.awaiting_question
+
+    if pid = socket.assigns.streaming_task_pid do
+      send(pid, {:athena_user_answer, q.tool_call_id, answer})
+    end
+
+    detail =
+      new_detail(:ask_user_answer, socket.assigns.pending_assistant_msg_id, %{
+        question: q.question,
+        answer: answer
+      })
+
+    {:noreply,
+     socket
+     |> assign(awaiting_question: nil, current_action: "thinking…")
+     |> update(:details_stream, &[detail | &1])}
   end
 
   defp save_session(socket) do

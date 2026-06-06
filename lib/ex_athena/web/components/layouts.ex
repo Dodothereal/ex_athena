@@ -162,6 +162,11 @@ defmodule ExAthena.Web.Layouts do
                     setTimeout(() => { this.el.value = "" }, 0)
                   }
                 })
+                // When the run pauses to ask a question, focus the input so the
+                // user can answer immediately.
+                this.handleEvent("focus-chat-input", () => {
+                  setTimeout(() => this.el.focus(), 0)
+                })
               }
             },
 

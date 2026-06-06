@@ -452,6 +452,73 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   background: var(--bg);
 }
 
+/* Inline question prompt shown while the run is paused on ask_user. */
+.ask-user {
+  max-width: 760px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-dim);
+}
+
+.ask-user-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ask-user-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #0e0e12;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ask-user-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.ask-user-question {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.ask-user-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ask-user-option {
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.ask-user-option:hover { border-color: var(--accent); color: var(--accent); }
+
 .input-form {
   display: flex;
   gap: 10px;
@@ -1549,6 +1616,10 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .detail-entry--error .detail-label,
 .detail-entry--error .detail-text { color: var(--error-text); }
+
+.detail-entry--ask-user .detail-label,
+.detail-entry--ask-user-answer .detail-label { color: var(--accent); }
+.detail-entry--ask-user-answer .detail-text { color: var(--user-accent); }
 
 .detail-entry--iteration {
   flex-direction: row;
