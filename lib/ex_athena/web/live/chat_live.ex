@@ -76,12 +76,10 @@ defmodule ExAthena.Web.Live.ChatLive do
         # The assistant message id that streaming events are currently
         # attributed to. Set in start_agent_run; cleared in :athena_done.
         pending_assistant_msg_id: nil,
-        # Tool-UI panel (diffs / file reads / process output from tool events)
-        show_diff_panel: false,
-        diff_panel_log: [],
-        diff_panel_idx: 0,
-        # Git diff panel (git diff / git diff --staged output)
-        show_git_panel: false,
+        # Details pane: tabbed (:overview | :log | :git) plus a visibility toggle.
+        details_tab: :log,
+        show_details: true,
+        # Git diff output (rendered in the Git tab)
         git_diff: nil,
         # Loading / status / errors
         page_loading: !connected?(socket),
@@ -190,8 +188,6 @@ defmodule ExAthena.Web.Live.ChatLive do
          expanded_uis: MapSet.new(),
          details_stream: [],
          pending_assistant_msg_id: nil,
-         diff_panel_log: [],
-         diff_panel_idx: 0,
          git_diff: nil,
          status: nil,
          error: nil,
@@ -223,8 +219,6 @@ defmodule ExAthena.Web.Live.ChatLive do
          expanded_uis: MapSet.new(),
          details_stream: [],
          pending_assistant_msg_id: nil,
-         diff_panel_log: [],
-         diff_panel_idx: 0,
          git_diff: nil,
          status: nil,
          error: nil,
@@ -255,7 +249,6 @@ defmodule ExAthena.Web.Live.ChatLive do
        expanded_uis: MapSet.new(),
        details_stream: [],
        pending_assistant_msg_id: nil,
-       diff_panel_entry: nil,
        status: nil,
        error: nil,
        stream_text: "",
@@ -314,7 +307,6 @@ defmodule ExAthena.Web.Live.ChatLive do
        expanded_uis: MapSet.new(),
        details_stream: [],
        pending_assistant_msg_id: nil,
-       diff_panel_entry: nil,
        status: nil,
        error: nil
      )}
@@ -350,8 +342,6 @@ defmodule ExAthena.Web.Live.ChatLive do
            expanded_uis: MapSet.new(),
            details_stream: details_stream,
            pending_assistant_msg_id: nil,
-           diff_panel_log: [],
-           diff_panel_idx: 0,
            status: nil,
            error: nil,
            show_sessions: false
@@ -423,45 +413,29 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("focus_detail", %{"id" => tool_call_id}, socket) do
-    {:noreply, push_event(socket, "focus-detail", %{tool_call_id: tool_call_id})}
+    # Clicking a tool one-liner in the messages pane should reveal the Log tab.
+    {:noreply,
+     socket
+     |> assign(show_details: true, details_tab: :log)
+     |> push_event("focus-detail", %{tool_call_id: tool_call_id})}
   end
 
-  def handle_event("toggle_diff_panel", _params, socket) do
-    {:noreply, assign(socket, show_diff_panel: !socket.assigns.show_diff_panel)}
+  def handle_event("toggle_details", _params, socket) do
+    {:noreply, assign(socket, show_details: !socket.assigns.show_details)}
   end
 
-  def handle_event("toggle_git_panel", _params, socket) do
-    opening = !socket.assigns.show_git_panel
-    git_diff = if opening, do: fetch_git_diff(socket.assigns.cwd), else: socket.assigns.git_diff
-    {:noreply, assign(socket, show_git_panel: opening, git_diff: git_diff)}
+  def handle_event("switch_details_tab", %{"tab" => tab}, socket)
+      when tab in ~w(overview log git) do
+    tab = String.to_existing_atom(tab)
+
+    git_diff =
+      if tab == :git, do: fetch_git_diff(socket.assigns.cwd), else: socket.assigns.git_diff
+
+    {:noreply, assign(socket, details_tab: tab, show_details: true, git_diff: git_diff)}
   end
 
   def handle_event("refresh_git_diff", _params, socket) do
     {:noreply, assign(socket, git_diff: fetch_git_diff(socket.assigns.cwd))}
-  end
-
-  def handle_event("panel_prev", _params, socket) do
-    idx = max(0, socket.assigns.diff_panel_idx - 1)
-    {:noreply, assign(socket, diff_panel_idx: idx)}
-  end
-
-  def handle_event("panel_next", _params, socket) do
-    idx = min(length(socket.assigns.diff_panel_log) - 1, socket.assigns.diff_panel_idx + 1)
-    {:noreply, assign(socket, diff_panel_idx: idx)}
-  end
-
-  def handle_event("pin_to_panel", %{"id" => id}, socket) do
-    log = socket.assigns.diff_panel_log
-    idx = Enum.find_index(log, fn {log_id, _} -> log_id == id end)
-
-    socket =
-      if idx do
-        assign(socket, diff_panel_idx: idx, show_diff_panel: true)
-      else
-        assign(socket, show_diff_panel: true)
-      end
-
-    {:noreply, socket}
   end
 
   # ---------------------------------------------------------------------------
@@ -661,7 +635,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       )
 
     socket =
-      if socket.assigns.show_git_panel do
+      if socket.assigns.show_details and socket.assigns.details_tab == :git do
         assign(socket, git_diff: fetch_git_diff(socket.assigns.cwd))
       else
         socket
@@ -903,18 +877,13 @@ defmodule ExAthena.Web.Live.ChatLive do
       </aside>
 
       <%!-- Main chat --%>
-      <main class="chat-main" id="chat-main" phx-hook="SplitResize">
+      <main class={"chat-main#{if @show_details, do: "", else: " chat-main--solo"}"} id="chat-main" phx-hook="SplitResize">
         <div class="panel-toggles">
           <button
-            class={"btn-panel-toggle#{if @show_diff_panel, do: " btn-panel-toggle--active", else: ""}"}
-            phx-click="toggle_diff_panel"
-            title={if @show_diff_panel, do: "Hide tool panel", else: "Show tool panel"}
-          >⊟</button>
-          <button
-            class={"btn-panel-toggle#{if @show_git_panel, do: " btn-panel-toggle--active", else: ""}"}
-            phx-click="toggle_git_panel"
-            title={if @show_git_panel, do: "Hide git diff", else: "Show git diff"}
-          >±</button>
+            class={"btn-panel-toggle#{if @show_details, do: " btn-panel-toggle--active", else: ""}"}
+            phx-click="toggle_details"
+            title={if @show_details, do: "Hide changes", else: "Show changes"}
+          >▤</button>
         </div>
 
         <div class="messages" id="messages" phx-hook="ScrollToBottom">
@@ -967,11 +936,62 @@ defmodule ExAthena.Web.Live.ChatLive do
           <% end %>
         </div>
 
-        <div class="chat-divider" id="chat-divider" aria-label="Resize panes" role="separator"></div>
+        <%= if @show_details do %>
+          <div class="chat-divider" id="chat-divider" aria-label="Resize panes" role="separator"></div>
 
-        <div class="details-pane" id="details-pane" phx-hook="ScrollToBottom">
-          <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
-        </div>
+          <div class="details-pane">
+            <div class="details-tabs">
+              <button
+                class={tab_class(@details_tab, :overview)}
+                phx-click="switch_details_tab"
+                phx-value-tab="overview"
+              >Overview</button>
+              <button
+                class={tab_class(@details_tab, :log)}
+                phx-click="switch_details_tab"
+                phx-value-tab="log"
+              >Log</button>
+              <button
+                class={tab_class(@details_tab, :git)}
+                phx-click="switch_details_tab"
+                phx-value-tab="git"
+              >Git</button>
+              <span class="details-tabs-spacer"></span>
+              <%= if @details_tab == :git do %>
+                <button class="details-tab-action" phx-click="refresh_git_diff" title="Refresh">↺</button>
+              <% end %>
+            </div>
+
+            <%= case @details_tab do %>
+              <% :overview -> %>
+                <div class="details-tab-body">
+                  <div class="details-empty">
+                    <div class="details-empty-title">Overview</div>
+                    <div class="details-empty-sub">Coming soon.</div>
+                  </div>
+                </div>
+              <% :git -> %>
+                <div class="details-tab-body details-tab-body--git">
+                  <%= cond do %>
+                    <% is_nil(@git_diff) -> %>
+                      <div class="diff-panel-empty">Not a git repository or git not available.</div>
+                    <% @git_diff == [] -> %>
+                      <div class="diff-panel-empty">Working tree clean — no changes.</div>
+                    <% true -> %>
+                      <div class="git-diff-output">
+                        <%= for {kind, line} <- @git_diff do %>
+                          <div class={"gdiff-line gdiff-#{kind}"}>{line}</div>
+                        <% end %>
+                      </div>
+                  <% end %>
+                </div>
+              <% _ -> %>
+                <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
+                  <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
+                </div>
+            <% end %>
+          </div>
+        <% end %>
 
         <div class="input-bar" id="image-input-bar" phx-hook="ImageInput">
           <%= if @pending_images != [] do %>
@@ -1025,77 +1045,6 @@ defmodule ExAthena.Web.Live.ChatLive do
           </form>
         </div>
       </main>
-
-      <%!-- Right-side panels column --%>
-      <%= if @show_diff_panel or @show_git_panel do %>
-        <div class="panels-col">
-          <%!-- Tool-UI panel --%>
-          <%= if @show_diff_panel do %>
-            <%
-              {_panel_id, panel_entry} = Enum.at(@diff_panel_log, @diff_panel_idx, {nil, nil})
-              panel_total = length(@diff_panel_log)
-            %>
-            <div class="diff-panel">
-              <div class="diff-panel-header">
-                <span class="diff-panel-title">
-                  <%= cond do %>
-                    <% is_nil(panel_entry) -> %>
-                      Changes
-                    <% panel_entry[:kind] == :diff -> %>
-                      {panel_entry[:path]}
-                    <% panel_entry[:kind] == :file -> %>
-                      {panel_entry[:path]}
-                    <% panel_entry[:kind] == :process -> %>
-                      {panel_entry[:command]}
-                    <% true -> %>
-                      Changes
-                  <% end %>
-                </span>
-                <%= if panel_total > 1 do %>
-                  <div class="diff-panel-nav">
-                    <button class="diff-panel-nav-btn" phx-click="panel_prev" disabled={@diff_panel_idx == 0}>‹</button>
-                    <span class="diff-panel-nav-pos">{@diff_panel_idx + 1}/{panel_total}</span>
-                    <button class="diff-panel-nav-btn" phx-click="panel_next" disabled={@diff_panel_idx == panel_total - 1}>›</button>
-                  </div>
-                <% end %>
-                <button class="diff-panel-close" phx-click="toggle_diff_panel" title="Close">×</button>
-              </div>
-              <div class="diff-panel-body">
-                <%= if panel_entry do %>
-                  <.tool_ui_panel ui={panel_entry} />
-                <% else %>
-                  <div class="diff-panel-empty">No output yet — run a command to see results here.</div>
-                <% end %>
-              </div>
-            </div>
-          <% end %>
-
-          <%!-- Git diff panel --%>
-          <%= if @show_git_panel do %>
-            <div class="git-panel">
-              <div class="git-panel-header">
-                <span class="git-panel-title">git diff</span>
-                <button class="git-panel-refresh" phx-click="refresh_git_diff" title="Refresh">↺</button>
-                <button class="git-panel-close" phx-click="toggle_git_panel" title="Close">×</button>
-              </div>
-              <div class="git-panel-body">
-                <%= cond do %>
-                  <% is_nil(@git_diff) -> %>
-                    <div class="diff-panel-empty">Not a git repository or git not available.</div>
-                  <% @git_diff == [] -> %>
-                    <div class="diff-panel-empty">Working tree clean — no changes.</div>
-                  <% true -> %>
-                    <div class="git-diff-output">
-                      <%= for {kind, line} <- @git_diff do %>
-                        <div class={"gdiff-line gdiff-#{kind}"}>{line}</div>
-                      <% end %>
-                    </div>
-                <% end %>
-              </div>
-            </div>
-          <% end %>
-        </div>
-      <% end %>
     </div>
     <% end %>
     """
@@ -1104,6 +1053,9 @@ defmodule ExAthena.Web.Live.ChatLive do
   # ---------------------------------------------------------------------------
   # Sub-components
   # ---------------------------------------------------------------------------
+
+  defp tab_class(active, tab),
+    do: "details-tab" <> if(active == tab, do: " details-tab--active", else: "")
 
   defp message(%{msg: %{role: :user}} = assigns) do
     assigns = assign(assigns, :msg_images, Map.get(assigns.msg, :images, []))
@@ -1535,8 +1487,6 @@ defmodule ExAthena.Web.Live.ChatLive do
        stream_text: "",
        stream_events: [],
        stream_tool_ui: %{},
-       diff_panel_log: [],
-       diff_panel_idx: 0,
        current_action: nil,
        pending_assistant_msg_id: assistant_msg_id,
        details_stream: [user_detail | socket.assigns.details_stream],
@@ -1745,10 +1695,10 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp fetch_git_diff(cwd) do
     try do
-      {unstaged, _} = System.cmd("git", ["diff", "--color=never"], cd: cwd)
-      {staged, _} = System.cmd("git", ["diff", "--staged", "--color=never"], cd: cwd)
-      combined = [unstaged, staged] |> Enum.reject(&(&1 == "")) |> Enum.join("\n")
-      if combined == "", do: [], else: parse_git_diff(combined)
+      # Single source of truth: all working-tree changes (staged + unstaged)
+      # against HEAD, so the system's changes can be reviewed and committed.
+      {diff, _} = System.cmd("git", ["diff", "HEAD", "--color=never"], cd: cwd)
+      if diff == "", do: [], else: parse_git_diff(diff)
     rescue
       _ -> nil
     end

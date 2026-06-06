@@ -38,7 +38,6 @@
 [data-theme="light"] .diff-header,
 [data-theme="light"] .process-header,
 [data-theme="light"] .file-header,
-[data-theme="light"] .diff-panel-header,
 [data-theme="light"] .git-panel-header,
 [data-theme="light"] .tool-result,
 [data-theme="light"] .diff-gap,
@@ -268,6 +267,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   overflow: hidden;
   min-width: 0;
   position: relative;
+}
+
+/* When the details pane is closed, the chat takes the full width. */
+.chat-main--solo {
+  grid-template-columns: 1fr;
 }
 
 /* ── Messages ─────────────────────────────────────────────────────────────── */
@@ -1408,11 +1412,61 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .details-pane {
   grid-column: 3;
   grid-row: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
-  scroll-behavior: smooth;
   min-width: 0;
 }
+
+/* ── Details tabs (Overview / Log / Git) ──────────────────────────────────── */
+
+.details-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.details-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px 14px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.details-tab:hover { color: var(--text); }
+.details-tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.details-tabs-spacer { flex: 1 1 auto; }
+
+.details-tab-action {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 10px;
+  transition: color 0.15s;
+}
+.details-tab-action:hover { color: var(--accent); }
+
+.details-tab-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  min-height: 0;
+}
+.details-tab-body--git { overflow-x: auto; padding: 8px 0; }
 
 .details-empty {
   height: 100%;
@@ -1577,112 +1631,6 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .tool-result-inline--error .tool-arrow { color: var(--error-text); }
 
 /* ── Panels column (contains git diff panel) ────────────────────────────── */
-
-.panels-col {
-  width: 480px;
-  min-width: 320px;
-  max-width: 50vw;
-  border-left: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.diff-panel {
-  flex: 1;
-  min-height: 0;
-  background: var(--sidebar-bg);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.diff-panel-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(0,0,0,0.2);
-  flex-shrink: 0;
-}
-
-.diff-panel-title {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.diff-panel-nav {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.diff-panel-nav-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 1px 6px;
-  border-radius: 3px;
-  transition: color 0.15s;
-}
-
-.diff-panel-nav-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-light); }
-.diff-panel-nav-btn:disabled { opacity: 0.3; cursor: default; }
-
-.diff-panel-nav-pos {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted);
-  min-width: 36px;
-  text-align: center;
-}
-
-.diff-panel-close {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 3px;
-  transition: color 0.15s;
-}
-
-.diff-panel-close:hover { color: var(--error-text); }
-
-.diff-panel-body {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-.diff-panel-body .ui-panel {
-  border-top: none;
-}
-
-.diff-panel-body .diff-body {
-  max-height: none;
-}
-
-.diff-panel-body .process-output {
-  max-height: none;
-}
-
-.diff-panel-body .file-content {
-  max-height: none;
-}
 
 .diff-panel-empty {
   padding: 32px 20px;
