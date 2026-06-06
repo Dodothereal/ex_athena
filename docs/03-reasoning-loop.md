@@ -62,6 +62,50 @@ sequenceDiagram
 
 ---
 
+## `Loop.run/2` options at a glance
+
+Every option with its default (authoritative list: the [`Loop` moduledoc](../lib/ex_athena/loop.ex#L19)):
+
+```elixir
+ExAthena.Loop.run("Add a PORT note to the README",
+  # inference
+  provider: :exo,                      # required; atom or Provider module
+  model: "mlx-community/Qwen3.6-27B",
+  system_prompt: nil, temperature: nil, top_p: nil, max_tokens: nil,
+  stop: nil, timeout_ms: nil, tool_choice: nil, response_format: nil,
+  provider_opts: [],                   # raw passthrough to the provider
+  resume: nil,                         # provider-side session id (from Result.session_id)
+
+  # conversation
+  messages: [],                        # prior transcript; prompt is appended
+  memory: :auto,                       # :auto | false | [Message.t()]
+  skills: :auto,                       # :auto | false | %{name => %Skill{}}
+  preload_skills: [],                  # activate bodies up-front
+
+  # tools & safety
+  tools: :all,                         # :all | [module] | nil → app config
+  cwd: nil, phase: nil, assigns: %{},  # → ToolContext
+  allowed_tools: nil, disallowed_tools: nil, can_use_tool: nil,
+  hooks: %{},
+
+  # reliability knobs
+  max_iterations: 25,
+  max_consecutive_mistakes: 3,
+  max_unproductive_iterations: 3,      # 0 disables the no-progress guard
+  max_budget_usd: nil,
+  tool_timeout_ms: 60_000,
+  max_concurrency: 4,
+
+  # identity & events
+  mode: :react,                        # :react | :plan_and_solve | :reflexion | module
+  session_id: nil,                     # auto-generated when omitted
+  parent_session_id: nil,              # set for subagent runs
+  on_event: fn ev -> send(host, {:athena, ev}) end
+)
+```
+
+---
+
 ## Per-iteration decision tree
 
 The body of [`Loop.loop/1`](../lib/ex_athena/loop.ex#L116):
@@ -194,9 +238,34 @@ flowchart LR
   r --> caller([{:ok, Result}])
 ```
 
-The Result carries: `text`, `messages`, `finish_reason`, `halted_reason`, `error_diagnostic`, `iterations`, `tool_calls_made`, `usage`, `cost_usd`, `duration_ms`, `model`, `provider`, `no_progress_snapshot`.
+The Result carries: `text`, `messages`, `finish_reason`, `halted_reason`, `error_diagnostic`, `deliverable`, `iterations`, `tool_calls_made`, `usage`, `cost_usd`, `duration_ms`, `model`, `provider`, `session_id` (provider-side conversation id for `resume:`), `no_progress_snapshot`.
 
-`Stop` fires when `finish_reason == :stop`; `StopFailure` otherwise. `SessionEnd` always fires last.
+When `finish_reason` is `:submitted`, `{:submitted, deliverable}` is emitted just before `{:done, result}` ([`loop.ex:486`](../lib/ex_athena/loop.ex#L486)).
+
+`Stop` fires when the termination is a success; `StopFailure` otherwise. `SessionEnd` always fires last.
+
+---
+
+## Host event vocabulary
+
+Everything a `:on_event` callback can receive ([`lib/ex_athena/loop/events.ex`](../lib/ex_athena/loop/events.ex)), in the shape hosts pattern-match on:
+
+| Event | Example payload | Emitted when |
+|---|---|---|
+| `{:content, text}` | `{:content, "Added a PORT note "}` | Streaming text delta, or the end-of-turn full text when no deltas streamed. Never emitted for empty text (tool-call-only turns). |
+| `{:thinking, text}` | `{:thinking, "I should read the README…"}` | Reasoning-channel delta (or end-of-turn full thinking). |
+| `{:tool_call, tc}` | `{:tool_call, %ToolCall{id: "t1", name: "read", arguments: %{"path" => "README.md"}}}` | The model requested a tool — emitted **before** gating/execution, so hosts can render a "running…" state. Identical timing on the Claude Code path (the CLI announces the call before running it). |
+| `{:tool_result, tr}` | `{:tool_result, %ToolResult{tool_call_id: "t1", content: "1  # Udin…", is_error: nil}}` | The call finished (success, error, or denial — denials carry `is_error: true`). |
+| `{:tool_ui, map}` | `{:tool_ui, %{tool_call_id: "t3", kind: :diff, payload: %{path: "README.md", diff: "…"}}}` | A tool returned the `{:ok, text, %{kind:, payload:}}` split; follows its `:tool_result`. |
+| `{:iteration, n}` | `{:iteration, 2}` | A new kernel iteration is starting. |
+| `{:compaction, map}` | `{:compaction, %{before: 110_000, after: 45_000, reason: :threshold}}` | Context was compacted (proactive or reactive). |
+| `{:subagent_spawn, map}` | `{:subagent_spawn, %{id: "reviewer", prompt: "…"}}` | A sub-agent started. |
+| `{:subagent_result, map}` | `{:subagent_result, %{id: "reviewer", text: "Critique: …"}}` | A sub-agent returned. |
+| `{:usage, map}` | `{:usage, %{input_tokens: 880, output_tokens: 61}}` | Per-turn usage from the final `Response`. |
+| `{:structured_retry, map}` | `{:structured_retry, %{attempt: 2, error: …}}` | `extract_structured` retried after a schema miss. |
+| `{:error, reason}` | `{:error, %ExAthena.Error{kind: :server_error}}` | Non-fatal warning; the loop continues. |
+| `{:submitted, deliverable}` | `{:submitted, %{"summary" => "…"}}` | The model called `finish`; precedes `{:done, _}`. |
+| `{:done, result}` | `{:done, %Result{finish_reason: :stop, …}}` | Terminal — always the last event. |
 
 ---
 

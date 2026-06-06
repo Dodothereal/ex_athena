@@ -1,6 +1,6 @@
 # 18 · End-to-End Traces
 
-> **What this answers:** what does a real turn look like? Five annotated sequence diagrams of real flows.
+> **What this answers:** what does a real turn look like? Six annotated sequence diagrams of real flows.
 > **Audience:** everyone. The fastest way to build a mental model.
 
 ---
@@ -231,7 +231,51 @@ sequenceDiagram
 
 ---
 
-## Comparing the five traces
+## Trace 6 — Streaming host events (local provider, `on_event`)
+
+What a host (web chat / TUI) actually receives over `on_event` for a three-iteration run on a local reasoning model (`provider: :exo, model: "mlx-community/Qwen3.6-27B"`). Left: loop activity; right: the exact event tuples, in order.
+
+```text
+ITERATION 0                                  → {:iteration, 0}
+  model streams reasoning                    → {:thinking, "I need to see the README and check the port…"}
+  response: text "" + 2 tool calls           → {:usage, %{input_tokens: 880, output_tokens: 61}}
+    (no {:content, _} — empty text on a tool-call-only turn is never emitted)
+  bash call (mutating → runs first, serial)  → {:tool_call, %ToolCall{id: "t2", name: "bash", …}}
+    PreToolUse hook denies                   → {:tool_result, %ToolResult{tool_call_id: "t2",
+                                                  content: "rm blocked", is_error: true}}
+  read call (parallel-safe)                  → {:tool_call, %ToolCall{id: "t1", name: "read", …}}
+    executes (host shows "running…"
+    between these two events)                → {:tool_result, %ToolResult{tool_call_id: "t1",
+                                                  content: "1  # Udin\n2  …", is_error: nil}}
+
+ITERATION 1                                  → {:iteration, 1}
+  model calls edit                           → {:thinking, "Now I add the note under Setup…"}
+                                             → {:usage, %{input_tokens: 6_410, output_tokens: 88}}
+                                             → {:tool_call, %ToolCall{id: "t3", name: "edit", …}}
+                                             → {:tool_result, %{tool_call_id: "t3", content: "edited README.md"}}
+  edit returned a UI split                   → {:tool_ui, %{tool_call_id: "t3", kind: :diff,
+                                                  payload: %{path: "README.md", diff: "…"}}}
+
+ITERATION 2                                  → {:iteration, 2}
+  model streams the final answer             → {:content, "Added a PORT note "}
+                                             → {:content, "to the README."}
+                                             → {:usage, %{input_tokens: 6_920, output_tokens: 47}}
+  no tool calls → :stop                      → {:done, %Result{finish_reason: :stop, iterations: 2,
+                                                  tool_calls_made: 3, text: "Added a PORT note to the README.",
+                                                  usage: %{input_tokens: 14_210, output_tokens: 196, …}}}
+```
+
+**What to notice:**
+
+- `{:tool_call, _}` is emitted **before** gating/execution ([`react.ex` `run_single_tool_call`](../lib/ex_athena/modes/react.ex)) — hosts can show a spinner until the matching `{:tool_result, _}` arrives. Same timing as the Claude Code path, where the CLI announces the call before running it.
+- Reasoning models narrate in the thinking channel: tool-call turns often have **no assistant text**, so no `{:content, _}` is emitted for them (an empty end-of-turn text is suppressed).
+- The denial is just an `is_error: true` tool result — the model sees it next turn and pivots; `consecutive_mistakes` was reset by the successful `read` in the same turn.
+- Streaming deltas suppress the end-of-turn full-text emission — hosts never see the same text twice.
+- On the Claude Code provider the same vocabulary applies, plus `Result.session_id` carries the CLI session id; hosts pass it back as `resume:` so the next turn continues that conversation.
+
+---
+
+## Comparing the six traces
 
 ```mermaid
 flowchart LR
@@ -240,6 +284,7 @@ flowchart LR
   T3[3 · Context overflow] --> rec[Reactive compaction<br/>1-shot retry]
   T4[4 · Permission denial] --> resilient[Denial is recoverable<br/>model pivots]
   T5[5 · Subagent] --> compose[Parent sees only summary<br/>subagent has own loop]
+  T6[6 · Streaming events] --> host[Exact on_event sequence<br/>tool_call before execution]
 ```
 
 Each trace exercises a different piece of the kernel's contract:
@@ -251,11 +296,12 @@ Each trace exercises a different piece of the kernel's contract:
 | 3 | Reactive recovery, auto-pin, compaction pipeline |
 | 4 | Deny-first gate, recoverable error path, mistake counter |
 | 5 | Composition, worktree isolation, sidechain transcripts |
+| 6 | Host event vocabulary, tool-call/result timing, thinking-channel narration, resume |
 
 ---
 
 ## Where to go next
 
-- [03 · Reasoning loop](03-reasoning-loop.md) — the decision tree that drives all five traces.
+- [03 · Reasoning loop](03-reasoning-loop.md) — the decision tree that drives all six traces.
 - [07 · Tools](07-tools.md) → [08 · Permissions](08-permissions.md) → [09 · Hooks](09-hooks.md) — the three layers traversed in every tool-execution segment.
 - [17 · Error recovery](17-error-recovery.md) — when a trace ends in something other than `:stop`.

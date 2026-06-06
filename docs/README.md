@@ -64,7 +64,7 @@ Three layers do the work:
 | 02 | [Architecture](02-architecture.md) | What are the subsystems and how do they fit? |
 | 03 | [Reasoning loop](03-reasoning-loop.md) | How does the kernel drive `Mode.iterate/1`? What happens between turns? |
 | 04 | [Modes](04-modes.md) | How do ReAct / Plan-and-Solve / Reflexion differ? |
-| 05 | [State & termination](05-state-and-termination.md) | What's in `Loop.State`? What are the 12 finish reasons? |
+| 05 | [State & termination](05-state-and-termination.md) | What's in `Loop.State`? What are the 13 finish reasons? |
 | 06 | [Messages & tool calls](06-messages-and-tool-calls.md) | What does the conversation look like in memory? How are tool calls parsed? |
 | 07 | [Tools](07-tools.md) | How does a tool execute? What's parallel-safe? |
 | 08 | [Permissions](08-permissions.md) | How does the deny-first gate work? What are the 5 phases? |

@@ -1,6 +1,6 @@
 # 05 · State & Termination
 
-> **What this answers:** what does `Loop.State` carry? What are the 12 finish reasons and how should they be classified?
+> **What this answers:** what does `Loop.State` carry? What are the 13 finish reasons and how should they be classified?
 > **Audience:** contributors (state invariants); consumers (interpreting `Result.finish_reason`).
 
 ---
@@ -95,7 +95,7 @@ Source: [`lib/ex_athena/loop/state.ex`](../lib/ex_athena/loop/state.ex). State i
 
 ---
 
-## Twelve termination subtypes
+## Thirteen termination subtypes
 
 Source: [`lib/ex_athena/loop/terminations.ex`](../lib/ex_athena/loop/terminations.ex).
 
@@ -103,6 +103,7 @@ Source: [`lib/ex_athena/loop/terminations.ex`](../lib/ex_athena/loop/termination
 stateDiagram-v2
   state "Run" as run
   run --> stop: :stop
+  run --> submitted: :submitted
   state "Capacity" as cap {
     [*] --> error_max_turns
     [*] --> error_max_budget_usd
@@ -124,6 +125,7 @@ stateDiagram-v2
   run --> ret
   run --> fat
   stop: :success category
+  submitted: :success category
 ```
 
 ### Category table
@@ -131,6 +133,7 @@ stateDiagram-v2
 | Subtype | Category | When it fires | Where set |
 |---|---|---|---|
 | `:stop` | `:success` | Model returned text with no tool calls. | [`react.ex:98`](../lib/ex_athena/modes/react.ex#L98) |
+| `:submitted` | `:success` | Model called the `finish` tool to declare completion; `Result.deliverable` carries its payload, and `{:submitted, deliverable}` is emitted just before `{:done, result}`. | finish tool `{:halt, {:submitted, d}}`, remapped in [`to_result/2`](../lib/ex_athena/loop.ex#L457) |
 | `:error_max_turns` | `:capacity` | `iterations >= max_iterations`. | [`loop.ex:125`](../lib/ex_athena/loop.ex#L125) |
 | `:error_max_budget_usd` | `:capacity` | `Budget.exceeded?` for `max_budget_usd`. | [`loop.ex:133`](../lib/ex_athena/loop.ex#L133) |
 | `:error_max_structured_output_retries` | `:capacity` | Structured extraction repair budget exhausted. | `Structured` |
@@ -190,6 +193,7 @@ classDiagram
     +finish_reason: subtype
     +halted_reason: term?
     +error_diagnostic: map?
+    +deliverable: term?
     +iterations: int
     +tool_calls_made: int
     +usage: map?
@@ -197,12 +201,18 @@ classDiagram
     +duration_ms: int
     +model: string?
     +provider: module?
+    +session_id: string?
     +no_progress_snapshot: [Message]?
     +telemetry: map
   }
 ```
 
 Built in [`Loop.to_result/2`](../lib/ex_athena/loop.ex#L422). The text is the last assistant message's content ([`extract_final_text/1`](../lib/ex_athena/loop.ex#L479)).
+
+Two fields deserve a callout:
+
+- `deliverable` — populated only on `:submitted`: the payload the model passed to the `finish` tool.
+- `session_id` — the **provider-side** conversation id when the provider keeps server-side session state (today only the Claude Code CLI, via `Response.session_id`). Hosts feed it back as `resume:` on the next `run/2` so the provider continues that conversation instead of starting fresh. `nil` for stateless providers; distinct from the loop's own `State.session_id`.
 
 `category/1` lives on the Result struct or you can call `Loop.Terminations.category(result.finish_reason)`.
 

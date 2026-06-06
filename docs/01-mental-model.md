@@ -58,7 +58,7 @@ flowchart TD
   subgraph K [Kernel — caps · budget · counters · termination]
     Loop[ExAthena.Loop]
     State[Loop.State]
-    Term[Loop.Terminations<br/>12 finish reasons]
+    Term[Loop.Terminations<br/>13 finish reasons]
   end
 
   subgraph S [Strategy — per-turn control flow]
