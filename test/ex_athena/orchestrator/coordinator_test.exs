@@ -172,6 +172,46 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       GenServer.stop(pid)
     end
 
+    test "an unlinked worker is RE-linked when a matching todo is added later" do
+      sid = unique_sid()
+      {:ok, pid} = Coordinator.start_for(sid)
+
+      # Worker spawns BEFORE any matching todo exists (ad-hoc delegation).
+      Coordinator.notify(
+        pid,
+        "sub-a",
+        {:agent_meta,
+         %{
+           prompt: "Create the blog directory structure for Ollama posts",
+           name: nil,
+           linked_todo: nil
+         }}
+      )
+
+      Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-a", prompt: "create dirs"}})
+
+      {:ok, snap} = Coordinator.snapshot(sid)
+      assert [%{linked_todo: nil}] = snap.agents
+
+      # The model writes the todo AFTERWARDS — the worker must attach to it.
+      Coordinator.notify(
+        pid,
+        :main,
+        {:todos,
+         [
+           %{
+             "content" => "Create blog directory structure for Ollama posts",
+             "status" => "in_progress"
+           }
+         ]}
+      )
+
+      {:ok, snap} = Coordinator.snapshot(sid)
+      assert [%{linked_todo: "Create blog directory structure for Ollama posts"}] = snap.agents
+
+      GenServer.stop(pid)
+    end
+
     test "an unrelated worker prompt stays unlinked" do
       sid = unique_sid()
       {:ok, pid} = Coordinator.start_for(sid)

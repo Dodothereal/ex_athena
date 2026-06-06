@@ -66,6 +66,9 @@ defmodule ExAthena.Orchestrator.AgentInfo do
             # model references todos by content (it never sees runtime ids);
             # the coordinator resolves content → id at completion time.
             linked_todo: nil,
+            # Untruncated-ish prompt text kept for fuzzy todo matching
+            # (prompt_summary is display-truncated and too lossy to match on).
+            match_text: nil,
             started_at: nil,
             finished_at: nil
 
@@ -81,6 +84,7 @@ defmodule ExAthena.Orchestrator.AgentInfo do
       name: Map.get(attrs, :name),
       prompt_summary: attrs |> Map.get(:prompt_summary) |> truncate(@summary_max_chars),
       linked_todo: Map.get(attrs, :linked_todo),
+      match_text: attrs |> Map.get(:match_text) |> truncate(600),
       started_at: System.system_time(:millisecond)
     }
   end

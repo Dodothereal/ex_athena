@@ -2304,3 +2304,17 @@ button.msg-thinking-summary {
   max-height: 260px;
   overflow-y: auto;
 }
+
+/* Task-level thinking & actions expander — clearly part of the task body. */
+.ov-task-transcript {
+  margin-left: 18px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+.ov-task-transcript .ov-transcript-body {
+  max-height: 360px;
+  margin-left: 12px;
+  border-left: 2px solid var(--border-light);
+  padding-left: 10px;
+}

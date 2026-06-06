@@ -53,6 +53,9 @@ defmodule ExAthena.Modes.Orchestrate do
   3. After each worker returns, update todo_write (mark completed, add newly
      discovered steps). Record decisions only — never restate worker output
      verbatim.
+  3b. Never delegate work that is not on the todo list — FIRST add the todo
+     with todo_write, THEN spawn the worker with `todo:` set to it. One
+     todo per worker; do not bundle several steps into one spawn.
   4. Effort scaling: one worker for a simple step, two for comparisons.
      Read-only research workers may run in parallel; only ONE worker that
      writes/edits files at a time.

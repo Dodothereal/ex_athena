@@ -232,6 +232,15 @@ defmodule ExAthena.Orchestrator.Coordinator do
     |> update_main(&AgentInfo.apply_event(&1, {:subagent_result, payload}))
   end
 
+  # Todo-list rewrites also retro-link workers that spawned BEFORE their
+  # matching todo existed (models sometimes delegate ad-hoc and only then
+  # record the step).
+  defp ingest(state, :main, {:todos, _} = event) do
+    state
+    |> update_main(&AgentInfo.apply_event(&1, event))
+    |> relink_unlinked_agents()
+  end
+
   defp ingest(state, :main, event) do
     update_main(state, &AgentInfo.apply_event(&1, event))
   end
@@ -274,6 +283,7 @@ defmodule ExAthena.Orchestrator.Coordinator do
         AgentInfo.new(sub_id, %{
           name: meta[:name],
           prompt_summary: attrs[:prompt_summary] || meta[:prompt],
+          match_text: match_prompt,
           # Models often omit the explicit `todo:` link — fall back to
           # fuzzy-matching the worker's prompt against the task list so the
           # Overview tree groups it under its parent task and runtime todo
@@ -311,6 +321,20 @@ defmodule ExAthena.Orchestrator.Coordinator do
       _ ->
         state
     end
+  end
+
+  defp relink_unlinked_agents(state) do
+    agents =
+      Map.new(state.agents, fn
+        {id, %{linked_todo: nil} = info} ->
+          match = info.match_text || info.prompt_summary
+          {id, %{info | linked_todo: fuzzy_todo_match(match, state.main.todos)}}
+
+        pair ->
+          pair
+      end)
+
+    %{state | agents: agents}
   end
 
   defp maybe_put_result(info, text) when is_binary(text) and text != "",
