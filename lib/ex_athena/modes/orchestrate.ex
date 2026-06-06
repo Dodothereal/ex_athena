@@ -127,10 +127,14 @@ defmodule ExAthena.Modes.Orchestrate do
           append_prompt(state.request_template.system_prompt, String.trim(@planning_addendum))
     }
 
+    # Stream the planning turn like any ReAct turn — without this, the
+    # run's first thinking/content appears as one sudden blob at turn end.
+    {stream_cb, counters} = ExAthena.Modes.ReAct.stream_callback(state)
+
     queued_query = fn ->
       RequestQueue.with_slot(
         state.meta[:provider_atom],
-        fn -> state.provider_mod.query(request, state.provider_opts) end,
+        fn -> planning_call(state, request, stream_cb) end,
         Keyword.merge(
           state.meta[:queue_opts] || [],
           on_wait: Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
@@ -140,11 +144,16 @@ defmodule ExAthena.Modes.Orchestrate do
 
     case queued_query.() do
       {:ok, response} ->
-        if is_binary(response.thinking) and response.thinking != "" do
+        streamed_text? = counters != nil and :counters.get(counters, 1) > 0
+        streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0
+
+        if not streamed_thinking? and is_binary(response.thinking) and response.thinking != "" do
           Events.emit(state.on_event, {:thinking, response.thinking})
         end
 
-        Events.emit(state.on_event, {:content, response.text || ""})
+        if not streamed_text? and is_binary(response.text) and response.text != "" do
+          Events.emit(state.on_event, {:content, response.text})
+        end
 
         state = fold_usage(state, response)
         new_messages = state.messages ++ [ExAthena.Messages.assistant(response.text || "")]
@@ -287,6 +296,12 @@ defmodule ExAthena.Modes.Orchestrate do
   defp append_prompt(nil, addendum), do: addendum
   defp append_prompt("", addendum), do: addendum
   defp append_prompt(existing, addendum), do: existing <> "\n\n" <> addendum
+
+  defp planning_call(state, request, nil),
+    do: state.provider_mod.query(request, state.provider_opts)
+
+  defp planning_call(state, request, stream_cb),
+    do: state.provider_mod.stream(request, stream_cb, state.provider_opts)
 
   defp fold_usage(state, response) do
     budget = state.budget || ExAthena.Budget.new()

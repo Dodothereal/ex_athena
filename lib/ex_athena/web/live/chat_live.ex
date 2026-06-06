@@ -96,6 +96,10 @@ defmodule ExAthena.Web.Live.ChatLive do
         orchestrator_sid: nil,
         # Agent id (as string) whose focus view is open in Overview; nil = tree.
         overview_focus: nil,
+        # Expanded Overview sections ("task:<id>", "transcript:<agent>").
+        # Server-owned: the 100 ms snapshot patches would strip a native
+        # <details open> the user toggled client-side.
+        ov_expanded: MapSet.new(),
         gpu_stats: nil,
         # Git diff output (rendered in the Git tab)
         git_diff: nil,
@@ -308,6 +312,17 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def handle_event("unfocus_agent", _params, socket) do
     {:noreply, assign(socket, overview_focus: nil)}
+  end
+
+  def handle_event("ov_toggle", %{"key" => key}, socket) do
+    expanded = socket.assigns.ov_expanded
+
+    expanded =
+      if MapSet.member?(expanded, key),
+        do: MapSet.delete(expanded, key),
+        else: MapSet.put(expanded, key)
+
+    {:noreply, assign(socket, ov_expanded: expanded)}
   end
 
   def handle_event("set_queue_slots", %{"value" => value}, socket) do
@@ -1095,6 +1110,7 @@ defmodule ExAthena.Web.Live.ChatLive do
                       orchestrator={@orchestrator}
                       gpu={@gpu_stats}
                       focus={@overview_focus}
+                      expanded={@ov_expanded}
                     />
                   <% else %>
                     <div class="details-empty">
@@ -1672,11 +1688,113 @@ defmodule ExAthena.Web.Live.ChatLive do
           <div class="ov-working">⚡ {action}</div>
         <% end %>
 
-        <.ov_agent_card info={@orchestrator.main} main={true} />
-        <.ov_agent_card :for={agent <- @orchestrator.agents} info={agent} main={false} />
+        <.ov_agent_card info={@orchestrator.main} main={true} expanded={@expanded} />
+
+        <%= if @orchestrator.main.todos != [] do %>
+          <div class="ov-focus-label ov-tree-label">tasks</div>
+          <.task_node
+            :for={node <- task_nodes(@orchestrator)}
+            todo={node.todo}
+            agents={node.agents}
+            expanded={@expanded}
+          />
+        <% end %>
+
+        <.ov_agent_card
+          :for={agent <- orphan_agents(@orchestrator)}
+          info={agent}
+          main={false}
+          expanded={@expanded}
+        />
       <% end %>
     </div>
     """
+  end
+
+  # ── Task tree: one collapsible node per orchestrator todo ─────────
+
+  # Join main todos with the worker agents linked to them (by todo content —
+  # the linkage SpawnAgent records). Agents keep spawn order.
+  defp task_nodes(%{main: main, agents: agents}) do
+    Enum.map(main.todos, fn todo ->
+      %{todo: todo, agents: Enum.filter(agents, &(&1.linked_todo == todo.content))}
+    end)
+  end
+
+  # Workers not linked to any todo still get their own card below the tree.
+  defp orphan_agents(%{main: main, agents: agents}) do
+    todo_contents = MapSet.new(main.todos, & &1.content)
+    Enum.reject(agents, &(&1.linked_todo && MapSet.member?(todo_contents, &1.linked_todo)))
+  end
+
+  defp task_node(assigns) do
+    key = "task:#{assigns.todo.id}"
+
+    assigns =
+      assigns
+      |> assign(:summary, task_summary(assigns.agents))
+      |> assign(:key, key)
+      |> assign(:open?, MapSet.member?(assigns.expanded, key))
+
+    ~H"""
+    <div class={["ov-task", "ov-task--#{@todo.status}", @open? && "ov-task--open"]}>
+      <div class="ov-task-head" phx-click="ov_toggle" phx-value-key={@key}>
+        <span class="ov-task-arrow">▸</span>
+        <span class="ov-todo-marker">{todo_marker(@todo.status)}</span>
+        <span class="ov-task-title">{@todo.content}</span>
+        <span :if={@agents != []} class={["ov-badge", "ov-badge--#{hd(Enum.reverse(@agents)).status}"]}>
+          {badge_label(hd(Enum.reverse(@agents)).status)}
+        </span>
+      </div>
+
+      <div :if={@open?} class="ov-task-body">
+        <div :if={@summary} class="ov-task-summary">{@summary}</div>
+        <div :if={@agents == []} class="ov-task-summary ov-conclusion--derived">
+          not started — no worker assigned yet
+        </div>
+
+        <div :for={agent <- @agents} class="ov-task-worker">
+          <div class="ov-task-worker-head">
+            <button
+              class="ov-task-worker-link"
+              phx-click="focus_agent"
+              phx-value-id={to_string(agent.id)}
+              title="Open this worker's full context"
+            >
+              {agent.name || agent.id} →
+            </button>
+            <span class={["ov-badge", "ov-badge--#{agent.status}"]}>{badge_label(agent.status)}</span>
+          </div>
+
+          <div :if={agent.current_action} class="ov-agent-action">⚡ {agent.current_action}</div>
+
+          <%= if agent.todos != [] do %>
+            <div class="ov-todos ov-task-subtasks">
+              <div :for={st <- agent.todos} class={["ov-todo", "ov-todo--#{st.status}"]}>
+                <span class="ov-todo-marker">{todo_marker(st.status)}</span>
+                <span class="ov-todo-text">{st.content}</span>
+              </div>
+            </div>
+          <% end %>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # Small per-task summary: the latest conclusion from the most recent
+  # worker on this task.
+  defp task_summary([]), do: nil
+
+  defp task_summary(agents) do
+    agents
+    |> Enum.reverse()
+    |> Enum.find_value(fn agent ->
+      case List.last(agent.conclusions) do
+        %{text: text} -> text
+        _ -> nil
+      end
+    end)
   end
 
   # Focus view: one agent's full observable state — its own context. Looked
@@ -1768,6 +1886,13 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp ov_agent_card(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :transcript_open?,
+        MapSet.member?(assigns.expanded, "transcript:#{assigns.info.id}")
+      )
+
     ~H"""
     <div class={["ov-agent", !@main && "ov-agent--sub"]}>
       <div
@@ -1785,7 +1910,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       <div :if={@info.prompt_summary} class="ov-agent-prompt">{@info.prompt_summary}</div>
       <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
 
-      <%= if @info.todos != [] do %>
+      <%!-- The orchestrator's todos render as the task tree below the card;
+            worker cards (orphans without a linked task) keep their own list. --%>
+      <%= if not @main and @info.todos != [] do %>
         <div class="ov-todos">
           <div :for={todo <- @info.todos} class={["ov-todo", "ov-todo--#{todo.status}"]}>
             <span class="ov-todo-marker">{todo_marker(todo.status)}</span>
@@ -1814,15 +1941,21 @@ defmodule ExAthena.Web.Live.ChatLive do
       </div>
 
       <%= if @info.transcript_tail != [] do %>
-        <details class="ov-transcript">
-          <summary>transcript ({length(@info.transcript_tail)})</summary>
-          <div class="ov-transcript-body">
+        <div class="ov-transcript">
+          <button
+            class="ov-transcript-toggle"
+            phx-click="ov_toggle"
+            phx-value-key={"transcript:#{@info.id}"}
+          >
+            {if @transcript_open?, do: "▾", else: "▸"} transcript ({length(@info.transcript_tail)})
+          </button>
+          <div :if={@transcript_open?} class="ov-transcript-body">
             <div :for={{kind, text} <- @info.transcript_tail} class="ov-transcript-entry">
               <span class={["ov-transcript-kind", "ov-transcript-kind--#{kind}"]}>{kind}</span>
               <pre class="ov-transcript-text">{text}</pre>
             </div>
           </div>
-        </details>
+        </div>
       <% end %>
     </div>
     """
@@ -1960,6 +2093,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        orchestrator: initial_snapshot,
        orchestrator_sid: run_sid,
        overview_focus: nil,
+       ov_expanded: MapSet.new(),
        gpu_stats: gpu_stats(provider),
        error: nil
      )}

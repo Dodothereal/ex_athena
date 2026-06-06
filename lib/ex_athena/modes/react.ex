@@ -96,7 +96,7 @@ defmodule ExAthena.Modes.ReAct do
         conversation_id: Map.get(state.meta, :conversation_id)
       )
 
-    {stream_cb, counters} = maybe_stream_callback(state)
+    {stream_cb, counters} = stream_callback(state)
 
     case Telemetry.span([:ex_athena, :chat], chat_meta, fn ->
            query_or_stream(state, request, stream_cb)
@@ -533,8 +533,12 @@ defmodule ExAthena.Modes.ReAct do
   # calls arrive as `~~~tool_call` fences inside the text deltas — so also
   # filter those fences out of the visible {:content, _} stream (the loop
   # surfaces the parsed calls as {:tool_call, _} events when it runs them).
-  defp maybe_stream_callback(%State{on_event: on_event} = state)
-       when is_function(on_event, 1) do
+  # Public (but undocumented) so the planning phases of other modes
+  # (Orchestrate, PlanAndSolve) can stream their single inference turn with
+  # the same translation/suppression semantics as ReAct turns.
+  @doc false
+  def stream_callback(%State{on_event: on_event} = state)
+      when is_function(on_event, 1) do
     if function_exported?(state.provider_mod, :stream, 3) do
       non_native = not (state.capabilities[:native_tool_calls] || false)
 
@@ -547,7 +551,7 @@ defmodule ExAthena.Modes.ReAct do
     end
   end
 
-  defp maybe_stream_callback(_state), do: {nil, nil}
+  def stream_callback(_state), do: {nil, nil}
 
   # Every provider call goes through the request queue (per-call granularity)
   # so concurrent loops — especially subagents — serialize on the provider's

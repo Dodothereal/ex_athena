@@ -2139,3 +2139,83 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 
 .ov-transcript-body--full { max-height: 420px; }
+
+/* ── Task tree (Overview) ────────────────────────────────────────────── */
+
+.ov-tree-label { margin-top: 2px; }
+
+.ov-task {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.ov-task--in_progress { border-left: 2px solid var(--accent); }
+.ov-task--completed { opacity: 0.75; }
+
+.ov-task-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12.5px;
+  list-style: none;
+}
+
+.ov-task-head::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+
+.ov-task[open] > .ov-task-head::before { transform: rotate(90deg); }
+
+.ov-task-title { flex: 1; }
+.ov-task--completed .ov-task-title { text-decoration: line-through; color: var(--muted); }
+
+.ov-task-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 2px 18px;
+}
+
+.ov-task-summary {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.ov-task-worker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-left: 2px solid var(--border-light);
+  padding-left: 10px;
+}
+
+.ov-task-worker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ov-task-worker-link {
+  background: none;
+  border: none;
+  color: var(--user-accent);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.ov-task-worker-link:hover { color: var(--accent); }
+
+.ov-task-subtasks { margin-left: 2px; }

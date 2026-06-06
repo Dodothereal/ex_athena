@@ -71,6 +71,39 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert request.system_prompt =~ "todo"
   end
 
+  test "the planning turn STREAMS thinking and content deltas", %{dir: dir} do
+    test_pid = self()
+
+    events = [
+      %ExAthena.Streaming.Event{type: :thinking_delta, data: "planning "},
+      %ExAthena.Streaming.Event{type: :thinking_delta, data: "the steps"},
+      %ExAthena.Streaming.Event{type: :text_delta, data: "1. step A"}
+    ]
+
+    responses = [
+      %Response{text: "1. step A", thinking: "planning the steps", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("build it",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               mock_events: events,
+               cwd: dir,
+               tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               on_event: fn ev -> send(test_pid, {:event, ev}) end
+             )
+
+    # Deltas arrive as chunks (streamed), and the end-of-turn full-text
+    # re-emission is suppressed — no duplicated blob.
+    assert_receive {:event, {:thinking, "planning "}}
+    assert_receive {:event, {:thinking, "the steps"}}
+    assert_receive {:event, {:content, "1. step A"}}
+    refute_received {:event, {:thinking, "planning the steps"}}
+  end
+
   test "the execution addendum mandates delegation and todo upkeep", %{dir: dir} do
     test_pid = self()
 
