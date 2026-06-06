@@ -438,6 +438,194 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert_receive {:event, {:subagent_result, %{text: "Worker explored the repo."}}}
   end
 
+  test "unknown tool names in spawn args are dropped instead of crashing the worker", %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{
+              "prompt" => "explore",
+              "objective" => "explore the repo",
+              "expected_output" => "a summary",
+              # Shell commands, not ex_athena tools — observed live; the
+              # sub-loop used to raise ArgumentError and crash the worker.
+              "tools" => ["ls", "tree", "read"]
+            }
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    sub_responder = fn request ->
+      send(test_pid, {:sub_tools, request.tools})
+      %Response{text: "worker done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   memory: false
+                 ]
+               }
+             )
+
+    assert_receive {:sub_tools, tools}
+    names = Enum.map(tools, fn t -> t[:name] || t["name"] || get_in(t, [:function, :name]) end)
+    assert "read" in names
+    refute "ls" in names
+  end
+
+  test "a model-passed worker iteration cap is floored at the default", %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{
+              "prompt" => "explore",
+              "objective" => "explore the repo",
+              "expected_output" => "a summary",
+              # Live behavior: the orchestrator starved its worker with a
+              # tiny cap (5) and the worker died at error_max_turns.
+              "max_iterations" => 1
+            }
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    File.write!(Path.join(dir, "a.txt"), "x")
+    sub_counter = :counters.new(1, [:atomics])
+
+    # The worker needs 3 iterations — under the raw cap of 1 it would die.
+    sub_responder = fn _request ->
+      :counters.add(sub_counter, 1, 1)
+      n = :counters.get(sub_counter, 1)
+
+      if n <= 3 do
+        %Response{
+          text: "step #{n}",
+          tool_calls: [%ToolCall{id: "s#{n}", name: "read", arguments: %{"path" => "a#{n}.txt"}}],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      else
+        send(test_pid, :worker_finished)
+        %Response{text: "worker summary", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [ExAthena.Tools.Read],
+                   memory: false
+                 ]
+               }
+             )
+
+    assert_receive :worker_finished
+  end
+
+  test "a worker that ends without finishing surfaces an error to the orchestrator", %{dir: dir} do
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{
+              "prompt" => "explore",
+              "objective" => "explore the repo",
+              "expected_output" => "a summary"
+            }
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{
+        text: "understood, re-delegating later",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    ]
+
+    File.write!(Path.join(dir, "same.txt"), "x")
+
+    # Worker loops identically → trips its no-progress guard → error Result.
+    sub_responder = fn _request ->
+      %Response{
+        text: " ",
+        tool_calls: [%ToolCall{id: "s", name: "read", arguments: %{"path" => "same.txt"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      }
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [ExAthena.Tools.Read],
+                   memory: false
+                 ]
+               }
+             )
+
+    [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
+    [tr] = tool_msg.tool_results
+    assert tr.is_error
+    assert tr.content =~ "did not finish"
+    assert tr.content =~ "error_no_progress"
+  end
+
   test "depth-1: a subagent cannot spawn further subagents", %{dir: dir} do
     ctx =
       ExAthena.ToolContext.new(

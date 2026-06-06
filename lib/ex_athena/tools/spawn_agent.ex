@@ -147,10 +147,7 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     sub_opts =
       base_opts
-      |> Keyword.put_new(
-        :max_iterations,
-        Map.get(args, "max_iterations", @default_max_iterations)
-      )
+      |> Keyword.put_new(:max_iterations, worker_iterations(Map.get(args, "max_iterations")))
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
       |> maybe_put(:tools, resolve_tools(Map.get(args, "tools"), ctx))
       |> apply_prompt_suffix(ctx)
@@ -213,6 +210,25 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     result =
       case raw_result do
+        # The sub-loop ALWAYS returns a Result, including error terminations
+        # (error_max_turns, error_no_progress, …). An unfinished worker must
+        # surface as a tool ERROR — returning its (usually empty) text as a
+        # success left the orchestrator blind to the failure.
+        {:ok, {:ok, %ExAthena.Result{} = sub_result}}
+        when sub_result.finish_reason not in [:stop, :submitted] ->
+          _ =
+            ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
+              subagent_id: sub_id,
+              outcome: :incomplete,
+              result: sub_result,
+              isolation: finalized_isolation
+            })
+
+          {:error,
+           "worker did not finish (#{sub_result.finish_reason}). " <>
+             "Partial output: #{sub_result.text || "(none)"}. " <>
+             "Re-delegate with a narrower or clearer brief."}
+
         {:ok, {:ok, %{text: text} = sub_result}} ->
           text = truncate_result(text || "", Map.get(args, "max_result_chars"))
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
@@ -384,13 +400,29 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp truncate_result(text, _), do: text
 
+  # Worker iteration caps chosen by the model are floored at the default —
+  # live testing showed an orchestrator starving its worker with
+  # max_iterations: 5 (the worker died at error_max_turns mid-task).
+  defp worker_iterations(n) when is_integer(n), do: max(n, @default_max_iterations)
+  defp worker_iterations(_), do: @default_max_iterations
+
   # Pass names through; the loop resolves names → modules. Filter out the
-  # meta tools to avoid runaway recursion.
+  # meta tools (runaway recursion) AND any name that isn't a known tool —
+  # models invent shell-command names ("ls", "tree") which used to raise in
+  # the sub-loop's tool resolution and crash the worker. An empty result
+  # falls back to nil (inherit the default toolset).
   defp resolve_tools(nil, _ctx), do: nil
 
   defp resolve_tools(names, _ctx) when is_list(names) do
+    known = ExAthena.Tools.builtins() |> MapSet.new(& &1.name())
+
     names
     |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
+    |> Enum.filter(&MapSet.member?(known, &1))
+    |> case do
+      [] -> nil
+      filtered -> filtered
+    end
   end
 
   defp emit_event(%{assigns: %{on_event: callback}}, event) when is_function(callback, 1) do
