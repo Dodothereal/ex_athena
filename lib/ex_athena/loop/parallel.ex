@@ -108,33 +108,14 @@ defmodule ExAthena.Loop.Parallel do
       {:ok, {call_id, {result, deltas}}}, {:ok, acc, state} ->
         {:cont, {:ok, acc ++ [{call_id, result}], fold_deltas(state, deltas)}}
 
-      {:exit, {reason, _}}, {:ok, acc, state} ->
-        # One task crashed — surface as an error result for the
-        # corresponding call but don't halt. The kernel converts it to a
-        # tool-error replay message.
-        err_result =
-          Messages.tool_result("unknown", "parallel task failed: #{inspect(reason)}", true)
-
-        {:cont, {:ok, acc ++ [{nil, err_result}], state}}
-
-      {:exit, :timeout}, {:ok, acc, state} ->
-        # `on_timeout: :kill_task` yields a BARE :timeout (not the
-        # {reason, stack} crash shape) — a tool exceeding tool_timeout_ms
-        # must become an error result, never a run crash.
-        err_result =
-          Messages.tool_result(
-            "unknown",
-            "parallel tool call timed out after #{state.tool_timeout_ms || 60_000}ms",
-            true
-          )
-
-        {:cont, {:ok, acc ++ [{nil, err_result}], state}}
-
-      {:exit, reason}, {:ok, acc, state} ->
-        err_result =
-          Messages.tool_result("unknown", "parallel task failed: #{inspect(reason)}", true)
-
-        {:cont, {:ok, acc ++ [{nil, err_result}], state}}
+      {:exit, _reason}, {:ok, acc, state} ->
+        # One task timed out (`on_timeout: :kill_task` yields a BARE
+        # :timeout) or crashed ({reason, stack}). With `ordered: false` the
+        # dead task can't tell us which call it was — skip here and let
+        # merge_in_order/2 synthesize an error result for every call that
+        # came back without one, keyed by the CALL's real id so the model
+        # gets a well-formed tool-error replay instead of the run crashing.
+        {:cont, {:ok, acc, state}}
     end)
   end
 
@@ -165,11 +146,20 @@ defmodule ExAthena.Loop.Parallel do
 
   # ── Ordering ──────────────────────────────────────────────────────
 
-  # Results come back as `[{call_id, result}]` — one per input call. Re-sort
-  # them into the original call order.
+  # Results come back as `[{call_id, result}]`. Re-sort into the original
+  # call order; any call whose task died (timeout / crash) gets a synthetic
+  # error result under its own id so the transcript never contains holes.
   defp merge_in_order(calls, results) do
     by_id = Map.new(results, fn {id, r} -> {id, r} end)
-    Enum.map(calls, fn c -> Map.get(by_id, c.id) end)
+
+    Enum.map(calls, fn c ->
+      Map.get(by_id, c.id) ||
+        Messages.tool_result(
+          c.id,
+          "tool call '#{c.name}' timed out or crashed before returning",
+          true
+        )
+    end)
   end
 
   # ── Permission/hook helpers (used by the kernel, exposed here so the
