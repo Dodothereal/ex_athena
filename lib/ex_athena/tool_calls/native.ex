@@ -22,12 +22,62 @@ defmodule ExAthena.ToolCalls.Native do
 
   @spec parse(list()) :: {:ok, [ToolCall.t()]} | {:error, term()}
   def parse(calls) when is_list(calls) do
-    Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, acc} ->
-      case parse_one(call) do
-        {:ok, tc} -> {:cont, {:ok, acc ++ [tc]}}
-        {:error, _} = err -> {:halt, err}
-      end
-    end)
+    # One bad call must never kill the batch — small models emit broken
+    # JSON constantly; the loop turns sentinels into per-call repair errors.
+    parsed =
+      Enum.flat_map(calls, fn call ->
+        case parse_one(call) do
+          {:ok, tc} -> [tc]
+          {:error, _reason} -> [sentinel(call)]
+        end
+      end)
+
+    {:ok, parsed |> dedupe_exact() |> ensure_unique_ids()}
+  end
+
+  # Exact duplicates (same name + args) are a known small-model failure —
+  # executing both wastes a turn and can double-mutate; keep the first.
+  defp dedupe_exact(calls) do
+    {deduped, _seen} =
+      Enum.reduce(calls, {[], MapSet.new()}, fn tc, {acc, seen} ->
+        key = {tc.name, tc.arguments}
+        if MapSet.member?(seen, key), do: {acc, seen}, else: {[tc | acc], MapSet.put(seen, key)}
+      end)
+
+    Enum.reverse(deduped)
+  end
+
+  # Colliding ids with DIFFERENT content corrupt the transcript (two tool
+  # results for one id → strict servers 400) — re-id the later ones.
+  defp ensure_unique_ids(calls) do
+    {fixed, _seen} =
+      Enum.reduce(calls, {[], MapSet.new()}, fn tc, {acc, seen} ->
+        tc = if MapSet.member?(seen, tc.id), do: %{tc | id: generate_id()}, else: tc
+        {[tc | acc], MapSet.put(seen, tc.id)}
+      end)
+
+    Enum.reverse(fixed)
+  end
+
+  # A call we couldn't parse — keep whatever name we can find so the loop
+  # can address the error to it, and carry the raw payload for the model.
+  defp sentinel(call) do
+    name =
+      (is_map(call) &&
+         (fetch(call, "name") || fetch(call, :name) ||
+            fetch(fetch(call, "function") || fetch(call, :function) || %{}, "name"))) ||
+        "unknown"
+
+    raw =
+      (is_map(call) &&
+         (fetch(fetch(call, "function") || fetch(call, :function) || %{}, "arguments") ||
+            fetch(call, "arguments") || fetch(call, :arguments))) || call
+
+    %ToolCall{
+      id: generate_id(),
+      name: to_string(name),
+      arguments: %{"__invalid_json__" => String.slice(inspect(raw), 0, 400)}
+    }
   end
 
   defp parse_one(%ToolCall{} = tc), do: {:ok, tc}
@@ -60,6 +110,11 @@ defmodule ExAthena.ToolCalls.Native do
     build(id, name, Map.get(map, :arguments) || Map.get(map, :input) || %{})
   end
 
+  # Id-less shapes (leaked XML tool calls, hand-rolled JSON) — generate one.
+  defp parse_one(%{"name" => name} = map) when not is_struct(map) do
+    build(nil, name, Map.get(map, "arguments") || Map.get(map, "input") || %{})
+  end
+
   defp parse_one(%ReqLLM.StreamChunk{type: :tool_call, name: name, arguments: args} = chunk) do
     id = chunk.metadata && (chunk.metadata["id"] || chunk.metadata[:id])
     build(id, name, args)
@@ -87,12 +142,22 @@ defmodule ExAthena.ToolCalls.Native do
     trimmed = String.trim(str)
 
     cond do
-      trimmed == "" -> {:ok, %{}}
-      true -> Jason.decode(trimmed)
+      trimmed == "" ->
+        {:ok, %{}}
+
+      true ->
+        case Jason.decode(trimmed) do
+          {:ok, map} -> {:ok, map}
+          {:error, _} -> Jason.decode(repair_json(trimmed))
+        end
     end
   end
 
   defp normalise_arguments(other), do: {:error, {:invalid_arguments, other}}
+
+  # Minimal repair for the most common small-model JSON breakage:
+  # trailing commas before } or ].
+  defp repair_json(str), do: Regex.replace(~r/,\s*([}\]])/, str, "\\1")
 
   defp fetch(map, key) when is_map(map), do: Map.get(map, key)
   defp fetch(_, _), do: nil

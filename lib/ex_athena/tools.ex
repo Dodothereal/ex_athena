@@ -134,20 +134,53 @@ defmodule ExAthena.Tools do
   @doc """
   Build the provider-facing tool schema list — the same shape Ollama /
   OpenAI-compatible providers send on the wire.
+
+  `compact: true` (capability `compact_tool_schemas`) trims descriptions —
+  the full builtin schemas cost ~1.7k tokens on EVERY request, real money
+  on a small model's attention budget.
   """
-  @spec describe_for_provider([Spec.t()]) :: [map()]
-  def describe_for_provider(specs) do
+  @spec describe_for_provider([Spec.t()], keyword()) :: [map()]
+  def describe_for_provider(specs, opts \\ []) do
+    compact? = Keyword.get(opts, :compact, false)
+
     Enum.map(specs, fn spec ->
       %{
         type: "function",
         function: %{
           name: spec.name,
-          description: spec.description,
-          parameters: spec.schema
+          description: maybe_truncate(spec.description, compact?, 140),
+          parameters: if(compact?, do: compact_schema(spec.schema), else: spec.schema)
         }
       }
     end)
   end
+
+  defp maybe_truncate(text, false, _max), do: text
+  defp maybe_truncate(nil, _compact?, _max), do: nil
+
+  defp maybe_truncate(text, true, max) when is_binary(text) do
+    if String.length(text) > max, do: String.slice(text, 0, max) <> "…", else: text
+  end
+
+  # Walk the JSON schema and shorten verbose property descriptions; the
+  # structural fields (type/required/enum) are untouched.
+  defp compact_schema(schema) when is_map(schema) do
+    Map.new(schema, fn
+      {key, value} when key in [:description, "description"] and is_binary(value) ->
+        {key, maybe_truncate(value, true, 60)}
+
+      {key, value} when is_map(value) ->
+        {key, compact_schema(value)}
+
+      {key, value} when is_list(value) ->
+        {key, Enum.map(value, fn v -> if is_map(v), do: compact_schema(v), else: v end)}
+
+      pair ->
+        pair
+    end)
+  end
+
+  defp compact_schema(other), do: other
 
   @doc """
   Build the prompt-friendly list used by `ExAthena.ToolCalls.augment_system_prompt/3`

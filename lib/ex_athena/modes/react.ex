@@ -143,16 +143,26 @@ defmodule ExAthena.Modes.ReAct do
 
             state = record_conclusion(state, response, tool_calls)
 
-            assistant_msg = Messages.assistant(response.text, tool_calls)
+            # Reasoning rides on the message (verbatim) so providers can
+            # replay it within the current tool loop — dropping it between
+            # tool calls measurably degrades multi-step tool use on
+            # reasoning models (MiniMax ablation: −36% τ²-bench).
+            assistant_msg = Messages.assistant(response.text, tool_calls, response.thinking)
             state = %{state | messages: state.messages ++ [assistant_msg]}
 
             runner = fn call, st -> run_single_tool_call(call, st) end
+            mistakes_before = state.consecutive_mistakes
 
             case Parallel.run(tool_calls, state, runner) do
               {:ok, tool_messages, state} ->
+                # Mistakes count at most ONCE per turn — a single turn with
+                # 3 hallucinated calls used to terminate the run before the
+                # model ever saw the redirect errors (turn-boundary
+                # counting; the guard measures consecutive BAD TURNS).
                 state = %{
                   state
-                  | messages: state.messages ++ tool_messages,
+                  | consecutive_mistakes: min(state.consecutive_mistakes, mistakes_before + 1),
+                    messages: state.messages ++ tool_messages,
                     tool_calls_made: state.tool_calls_made + length(tool_calls)
                 }
 
@@ -278,6 +288,22 @@ defmodule ExAthena.Modes.ReAct do
     end
   end
 
+  # Parse-failure sentinel (Native.parse) — per-call repair error so the
+  # model fixes its JSON instead of the batch (or run) dying.
+  defp do_execute(%ToolCall{arguments: %{"__invalid_json__" => raw}} = call, state) do
+    result =
+      Messages.tool_result(
+        call.id,
+        "tool arguments were not valid JSON: #{raw}. " <>
+          "Re-send the #{call.name} call with corrected JSON arguments.",
+        true
+      )
+
+    state = bump_mistake(state)
+    Parallel.emit_result_events(state, call, result)
+    {result, state}
+  end
+
   defp do_execute(%ToolCall{} = call, state) do
     ctx = %{state.ctx | tool_call_id: call.id}
 
@@ -297,9 +323,7 @@ defmodule ExAthena.Modes.ReAct do
         {result, state}
 
       spec ->
-        case Telemetry.span([:ex_athena, :tool], tool_meta, fn ->
-               ExAthena.Tool.Spec.execute(spec, call.arguments, ctx)
-             end) do
+        case safe_execute(tool_meta, spec, call, ctx) do
           {:ok, %{phase_transition: new_phase} = payload} ->
             # Phase transition sentinel — special-case only in the single-tool runner.
             msg = Map.get(payload, :message, "phase -> #{new_phase}")
@@ -344,6 +368,18 @@ defmodule ExAthena.Modes.ReAct do
             after_post_hook(state, call, result)
         end
     end
+  end
+
+  # A raising tool in the SERIAL path used to crash the whole loop process
+  # (parallel tasks were already isolated) — e.g. edit with
+  # `"replace_all": "true"` (string) raising FunctionClauseError, a typical
+  # small-model arg shape. Exceptions become per-call errors.
+  defp safe_execute(tool_meta, spec, call, ctx) do
+    Telemetry.span([:ex_athena, :tool], tool_meta, fn ->
+      ExAthena.Tool.Spec.execute(spec, call.arguments, ctx)
+    end)
+  rescue
+    e -> {:error, "tool crashed: #{Exception.message(e)}"}
   end
 
   # Run PostToolUse hooks then emit events.
@@ -469,7 +505,7 @@ defmodule ExAthena.Modes.ReAct do
   defp recitation(%State{meta: %{conclusions: false}}), do: []
   defp recitation(%State{meta: %{ledger: []}}), do: []
 
-  defp recitation(%State{meta: %{ledger: [_ | _] = ledger}}) do
+  defp recitation(%State{meta: %{ledger: [_ | _] = ledger}} = state) do
     # The PREVIOUS turn's conclusion is already the most recent assistant
     # message in context — reciting it back invites recency-bias parroting
     # (a stale "waiting for user input" conclusion made the model claim it
@@ -487,7 +523,7 @@ defmodule ExAthena.Modes.ReAct do
           [progress ledger — runtime-generated reminder, not a user message]
           Conclusions so far:
           #{lines}
-          #{ledger_directive(ledger)}\
+          #{ledger_directive(state, ledger)}\
           """)
         ]
     end
@@ -496,20 +532,31 @@ defmodule ExAthena.Modes.ReAct do
   defp recitation(_state), do: []
 
   # Magentic-One-style outer-loop response to a stall: when the last
-  # conclusions are identical the agent is spinning (e.g. endless exploratory
-  # tool calls) — escalate the reminder into a corrective instruction
-  # instead of politely repeating the same ledger back.
-  defp ledger_directive(ledger) do
-    case Enum.take(ledger, -2) do
-      [%{text: same}, %{text: same}] ->
-        """
-        You are repeating yourself without making progress — change strategy NOW:
-        stop exploratory commands, record/update your todo list (todo_write),
-        and act on the next pending item (delegate it with spawn_agent if available).
-        """
+  # conclusions are identical the agent is spinning — escalate the reminder
+  # into a corrective instruction. Identical DERIVED texts ("ran bash") are
+  # weak evidence — a busy worker yields them every turn while each call
+  # differs — so those only escalate when the kernel's tool fingerprint
+  # also says the turns were unproductive.
+  defp ledger_directive(state, ledger) do
+    repeated? =
+      case Enum.take(ledger, -2) do
+        [%{text: same, source: s1}, %{text: same, source: s2}] ->
+          if s1 == :derived and s2 == :derived,
+            do: state.unproductive_iterations > 0,
+            else: true
 
-      _ ->
-        "Stay focused on the remaining work; do not repeat completed steps."
+        _ ->
+          false
+      end
+
+    if repeated? do
+      """
+      You are repeating yourself without making progress — change strategy NOW:
+      stop exploratory commands, record/update your todo list (todo_write),
+      and act on the next pending item (delegate it with spawn_agent if available).
+      """
+    else
+      "Stay focused on the remaining work; do not repeat completed steps."
     end
   end
 
@@ -518,13 +565,23 @@ defmodule ExAthena.Modes.ReAct do
   defp build_request(state) do
     %{
       state.request_template
-      | messages: state.messages ++ recitation(state),
+      | messages: state.messages ++ phase_note(state) ++ recitation(state),
         tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
     }
   end
 
-  defp tool_schemas(modules, %{native_tool_calls: true}), do: Tools.describe_for_provider(modules)
+  # Mode-supplied EPHEMERAL phase steering at the request tail (cache-safe:
+  # the system prompt and transcript prefix stay byte-stable; only the tail
+  # varies). Never persisted into state.messages.
+  defp phase_note(%State{meta: %{phase_note: note}}) when is_binary(note) and note != "",
+    do: [Messages.user(note)]
+
+  defp phase_note(_state), do: []
+
+  defp tool_schemas(modules, %{native_tool_calls: true} = caps),
+    do: Tools.describe_for_provider(modules, compact: caps[:compact_tool_schemas] == true)
+
   defp tool_schemas(_modules, _caps), do: nil
 
   defp effective_system_prompt(%State{capabilities: %{native_tool_calls: true}} = state),

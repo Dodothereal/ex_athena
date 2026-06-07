@@ -40,11 +40,12 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   @behaviour ExAthena.Tool
 
-  # One tool call ≈ one iteration on local models — 10 turns starved real
-  # exploration tasks (observed: error_max_turns at 10 with the worker mid-
-  # task). Match the kernel's default; the worker's no-progress guard is the
-  # runaway protection.
-  @default_max_iterations 25
+  # One tool call ≈ one iteration on local models — 10, then 25 turns kept
+  # starving real tasks (observed: error_max_turns with the worker mid-task).
+  # Tool-output caps now bound per-turn context growth, so a triple budget
+  # is safe; the worker's no-progress guard is the runaway protection.
+  # Matches the kernel default; smaller explicit args are floored UP.
+  @default_max_iterations 75
 
   @impl true
   def name, do: "spawn_agent"
@@ -135,7 +136,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   def execute(_, _), do: {:error, :missing_prompt}
 
   defp do_execute(args, prompt, ctx) do
-    timeout = Map.get(args, "timeout_ms", 300_000)
+    # 30 min wall clock — must cover the 75-iteration budget on a local
+    # model at 30–90s/turn plus single-slot queue waits (a 300s default
+    # brutal-killed workers ~4-8 turns in, discarding all progress).
+    timeout = Map.get(args, "timeout_ms", 1_800_000)
     prompt = compose_worker_prompt(prompt, args, ctx.cwd)
 
     {agent_def, base_opts} = resolve_agent(args, ctx)
@@ -487,7 +491,14 @@ defmodule ExAthena.Tools.SpawnAgent do
   # models invent shell-command names ("ls", "tree") which used to raise in
   # the sub-loop's tool resolution and crash the worker. An empty result
   # falls back to nil (inherit the default toolset).
-  defp resolve_tools(nil, _ctx), do: nil
+  # Default worker toolset = all builtins MINUS the loop-control tools:
+  # spawn_agent (depth-1 — the schema would only invite rejected calls and
+  # cost prompt tokens every turn) and plan_mode.
+  defp resolve_tools(nil, _ctx) do
+    ExAthena.Tools.builtins()
+    |> Enum.map(& &1.name())
+    |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
+  end
 
   defp resolve_tools(names, _ctx) when is_list(names) do
     known = ExAthena.Tools.builtins() |> MapSet.new(& &1.name())

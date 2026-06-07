@@ -77,11 +77,13 @@ defmodule ExAthena.Modes.OrchestrateTest do
 
     # Exploration agents are MANDATORY: no direct exploration tools at all
     # (live testing: given read/glob, a small model explores directly every
-    # time and never delegates, burning all planning turns). Todo upkeep is
-    # available in EVERY phase.
+    # time and never delegates). The toolset is IDENTICAL across phases —
+    # tool schemas render into the prompt prefix, so a phase-varying
+    # toolset breaks prefix caching on local servers.
     assert "spawn_agent" in names
     assert "ask_user" in names
     assert "todo_write" in names
+    assert "finish" in names
     refute "read" in names
     refute "glob" in names
     refute "grep" in names
@@ -90,11 +92,47 @@ defmodule ExAthena.Modes.OrchestrateTest do
     refute "write" in names
     refute "edit" in names
 
-    # Plan-first: the draft plan is recorded via todo_write before anything
-    # else; exploration agents are mandated for any investigation.
+    # The union protocol (plan-first + delegation) lives in the system
+    # prompt, byte-stable across phases.
     assert request.system_prompt =~ "draft plan"
     assert request.system_prompt =~ "todo_write"
     assert request.system_prompt =~ "explore"
+
+    # Phase steering is EPHEMERAL, at the request tail (cache-safe) —
+    # never persisted into the transcript.
+    last = List.last(request.messages)
+    assert last.role == :user
+    assert last.content =~ "PLANNING"
+  end
+
+  test "the system prompt is BYTE-STABLE across planning and executing (prefix cache)", %{
+    dir: dir
+  } do
+    test_pid = self()
+
+    responses = [
+      fn _n, request ->
+        send(test_pid, {:planning_sp, request.system_prompt})
+        %Response{text: "1. step A", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end,
+      fn _n, request ->
+        send(test_pid, {:exec_sp, request.system_prompt})
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    ]
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("build it",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser],
+               mode: :orchestrate
+             )
+
+    assert_receive {:planning_sp, planning_sp}
+    assert_receive {:exec_sp, exec_sp}
+    assert planning_sp == exec_sp
   end
 
   test "planning may DELEGATE exploration across turns, then a tool-free plan transitions to executing",
@@ -272,8 +310,71 @@ defmodule ExAthena.Modes.OrchestrateTest do
              )
 
     # Observed live: the 60_000 Request default became receive_timeout and
-    # killed workers whose prompts made exo prompt-process >60s.
-    assert_receive {:worker_timeout, 300_000}
+    # killed workers whose prompts made exo prompt-process >60s. The spawn
+    # wall clock (30 min) covers the full 75-iteration worker budget.
+    assert_receive {:worker_timeout, 1_800_000}
+  end
+
+  test "the default worker budget covers a 30-turn task (tripled for small models)", %{dir: dir} do
+    File.write!(Path.join(dir, "f.txt"), "x")
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{id: "t1", name: "spawn_agent", arguments: %{"prompt" => "long task"}}
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    # Worker needs 31 turns: 30 DISTINCT tool calls (one per turn — the
+    # local-model rhythm), then the final summary. Died at the old 25-cap.
+    sub_counter = :counters.new(1, [:atomics])
+
+    sub_responder = fn _request ->
+      :counters.add(sub_counter, 1, 1)
+      n = :counters.get(sub_counter, 1)
+
+      if n <= 30 do
+        %Response{
+          text: "CONCLUSION: step #{n} done.",
+          tool_calls: [
+            %ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "f.txt", "offset" => n}}
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      else
+        %Response{text: "worker summary", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [ExAthena.Tools.Read],
+                   memory: false
+                 ]
+               }
+             )
+
+    [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
+    [tr] = tool_msg.tool_results
+    refute tr.is_error
+    assert tr.content =~ "worker summary"
   end
 
   test "a worker given an explicit tools list ALWAYS keeps todo_write", %{dir: dir} do

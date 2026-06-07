@@ -47,6 +47,11 @@ defmodule ExAthena.Providers.ReqLLM do
   # boundary independently of other ex_athena components.
   @log_prefix "[ExAthena.ReqLLM]"
 
+  # Per-turn completion cap (distinct from the context window). Generous
+  # enough for a full thinking block + answer; prevents one runaway turn
+  # from eating the whole context.
+  @default_completion_tokens 8_192
+
   @impl ExAthena.Provider
   def capabilities do
     %{
@@ -192,8 +197,38 @@ defmodule ExAthena.Providers.ReqLLM do
         str -> [%ReqLLM.Message{role: :system, content: [ReqLLM.Message.ContentPart.text(str)]}]
       end
 
-    converted = Enum.map(messages, &to_req_llm_message/1)
+    converted = messages |> apply_rolling_reasoning() |> Enum.map(&to_req_llm_message/1)
     {:ok, base ++ converted}
+  end
+
+  @doc false
+  # Rolling-checkpoint reasoning replay (June-2026 consensus — Qwen3+
+  # template behavior, DeepSeek/MiniMax/Kimi/Anthropic guidance): reasoning
+  # is replayed for assistant messages WITHIN the current tool loop (after
+  # the last user message) and dropped for completed turns. req_llm's
+  # OpenAI encoder drops :thinking parts outbound, so replay re-injects the
+  # verbatim reasoning inline as <think> in the content — the
+  # deepseek-legacy / MiniMax inline convention; templates that don't want
+  # it prune it. Withholding is the lossy direction.
+  def apply_rolling_reasoning(messages) do
+    last_user_idx =
+      messages
+      |> Enum.with_index()
+      |> Enum.reduce(-1, fn
+        {%Message{role: :user}, idx}, _acc -> idx
+        _, acc -> acc
+      end)
+
+    messages
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {%Message{role: :assistant, reasoning: r} = msg, idx}
+      when is_binary(r) and r != "" and idx > last_user_idx ->
+        %{msg | content: "<think>\n#{r}\n</think>\n\n#{msg.content || ""}"}
+
+      {msg, _idx} ->
+        msg
+    end)
   end
 
   @doc false
@@ -288,9 +323,14 @@ defmodule ExAthena.Providers.ReqLLM do
         api_key: api_key,
         base_url: base_url,
         openai_compatible_backend: req_llm_backend,
-        max_tokens: request.max_tokens,
-        temperature: request.temperature,
-        top_p: request.top_p,
+        # Completion cap (NOT the context window): unbounded per-turn output
+        # lets a thinking model ramble a whole context away in one turn.
+        max_tokens: request.max_tokens || @default_completion_tokens,
+        # Qwen's official thinking/coding profile (0.6/0.95) — never greedy
+        # (official guidance: greedy causes "endless repetitions"), never
+        # server-default-hot. Explicit request values always win.
+        temperature: request.temperature || 0.6,
+        top_p: request.top_p || 0.95,
         stop: request.stop,
         tools: to_req_llm_tools(request.tools),
         tool_choice: request.tool_choice,
@@ -459,8 +499,21 @@ defmodule ExAthena.Providers.ReqLLM do
         text -> text
       end
 
+    # Local servers/templates sometimes leak <think> blocks (or an orphan
+    # leading "…</think>") into content instead of reasoning_content —
+    # the leaked CoT then persists into history, bloats every later turn,
+    # and corrupts conclusions/no-progress checks. Route it to thinking.
+    {text, leaked} = split_leaked_thinking(extract_text(resp))
+
+    thinking =
+      case {thinking, leaked} do
+        {t, nil} -> t
+        {nil, l} -> l
+        {t, l} -> t <> "\n" <> l
+      end
+
     %Response{
-      text: extract_text(resp),
+      text: text,
       thinking: thinking,
       tool_calls: extract_tool_calls(resp),
       finish_reason: resp.finish_reason,
@@ -470,6 +523,34 @@ defmodule ExAthena.Providers.ReqLLM do
       raw: resp
     }
   end
+
+  @doc false
+  def split_leaked_thinking(text) when is_binary(text) do
+    cond do
+      String.contains?(text, "<think>") ->
+        leaked =
+          ~r/<think>(.*?)<\/think>/s
+          |> Regex.scan(text, capture: :all_but_first)
+          |> Enum.map_join("\n", fn [t] -> String.trim(t) end)
+
+        clean = text |> String.replace(~r/<think>.*?<\/think>/s, "") |> String.trim()
+        {clean, if(leaked == "", do: nil, else: leaked)}
+
+      # Orphan close tag: the template stripped the opening <think>, so
+      # everything before "</think>" is reasoning.
+      String.contains?(text, "</think>") ->
+        [leaked, rest] = String.split(text, "</think>", parts: 2)
+        {String.trim(rest), leaked |> String.trim() |> non_empty()}
+
+      true ->
+        {text, nil}
+    end
+  end
+
+  def split_leaked_thinking(other), do: {other, nil}
+
+  defp non_empty(""), do: nil
+  defp non_empty(s), do: s
 
   defp extract_text(%ReqLLM.Response{message: nil}), do: ""
 
@@ -870,7 +951,10 @@ defmodule ExAthena.Providers.ReqLLM do
   # ── Error mapping ─────────────────────────────────────────────────
 
   defp to_error(%{status: status} = raw) when is_integer(status) do
-    Error.new(Error.from_status(status), "req_llm error",
+    kind =
+      if context_overflow?(raw), do: :context_length_exceeded, else: Error.from_status(status)
+
+    Error.new(kind, "req_llm error",
       provider: :req_llm,
       status: status,
       raw: raw
@@ -878,7 +962,28 @@ defmodule ExAthena.Providers.ReqLLM do
   end
 
   defp to_error(reason) do
-    Error.new(:server_error, inspect(reason), provider: :req_llm, raw: reason)
+    kind = if context_overflow?(reason), do: :context_length_exceeded, else: :server_error
+    Error.new(kind, inspect(reason), provider: :req_llm, raw: reason)
+  end
+
+  # OpenAI-compatible local servers (exo/llama.cpp/vLLM/ollama) signal
+  # context overflow with 400/500 + a message body, never a clean 413 —
+  # without sniffing, the loop's compact-and-retry path is dead code and
+  # runs die :error_during_execution instead of compacting.
+  @doc false
+  def context_overflow?(raw) do
+    raw
+    |> inspect(limit: 2_000)
+    |> String.downcase()
+    |> then(fn text ->
+      String.contains?(text, "context length") or
+        String.contains?(text, "context_length") or
+        String.contains?(text, "maximum context") or
+        String.contains?(text, "too many tokens") or
+        String.contains?(text, "exceeds the context") or
+        String.contains?(text, "prompt is too long") or
+        String.contains?(text, "context window")
+    end)
   end
 
   # ── llm_db context resolution ─────────────────────────────────────

@@ -261,8 +261,11 @@ defmodule ExAthena.Loop.ConclusionsLoopTest do
     test_pid = self()
     counter = :counters.new(1, [:atomics])
 
-    # Three identical exploratory turns (no marker → derived "ran read"),
-    # then a terminal turn. The 3rd+ request's recitation must escalate.
+    # Three GENUINELY identical turns (same tool + same args + blank text →
+    # the kernel's unproductive signal fires), then a terminal turn. The
+    # 3rd request's recitation must escalate. Derived conclusions with
+    # DIFFERING tool args must NOT escalate (that was a misfire killing
+    # busy workers — see ledger_directive/2).
     responder = fn request ->
       :counters.add(counter, 1, 1)
       n = :counters.get(counter, 1)
@@ -272,7 +275,7 @@ defmodule ExAthena.Loop.ConclusionsLoopTest do
         %Response{
           text: " ",
           tool_calls: [
-            %ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "f#{n}.txt"}}
+            %ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "f.txt"}}
           ],
           finish_reason: :tool_calls,
           provider: :mock

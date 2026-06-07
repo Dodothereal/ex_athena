@@ -52,7 +52,7 @@ defmodule ExAthena.Messages do
     @moduledoc "A single turn in the conversation."
 
     @enforce_keys [:role]
-    defstruct [:role, :content, :tool_calls, :tool_results, :name, pin: false]
+    defstruct [:role, :content, :tool_calls, :tool_results, :name, :reasoning, pin: false]
 
     @type role :: :system | :user | :assistant | :tool
     @type t :: %__MODULE__{
@@ -61,6 +61,10 @@ defmodule ExAthena.Messages do
             tool_calls: [ToolCall.t()] | nil,
             tool_results: [ToolResult.t()] | nil,
             name: String.t() | nil,
+            # Raw chain-of-thought for this assistant turn (verbatim; kept
+            # out of content). Replayed within the CURRENT tool loop only
+            # (rolling checkpoint) — see Providers.ReqLLM.
+            reasoning: String.t() | nil,
             pin: boolean()
           }
   end
@@ -73,10 +77,11 @@ defmodule ExAthena.Messages do
   def user(parts) when is_list(parts),
     do: %Message{role: :user, content: parts}
 
-  @doc "Build an assistant message (optionally with tool calls)."
-  @spec assistant(String.t() | nil, [ToolCall.t()] | nil) :: Message.t()
-  def assistant(content, tool_calls \\ nil),
-    do: %Message{role: :assistant, content: content, tool_calls: tool_calls}
+  @doc "Build an assistant message (optionally with tool calls and reasoning)."
+  @spec assistant(String.t() | nil, [ToolCall.t()] | nil, String.t() | nil) :: Message.t()
+  def assistant(content, tool_calls \\ nil, reasoning \\ nil) do
+    %Message{role: :assistant, content: content, tool_calls: tool_calls, reasoning: reasoning}
+  end
 
   @doc "Build a system message."
   @spec system(String.t()) :: Message.t()

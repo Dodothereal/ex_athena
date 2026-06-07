@@ -58,26 +58,59 @@ defmodule ExAthena.ToolCalls do
 
   def extract(%{text: text}, %{native_tool_calls: false}) when is_binary(text) do
     with {:ok, []} <- TextTagged.parse(text) do
-      if looks_like_raw_json?(text), do: RawJson.parse(text), else: {:ok, []}
+      cond do
+        String.contains?(text, "<tool_call>") -> parse_xml_tool_calls(text)
+        bare_json_message?(text) -> RawJson.parse(text)
+        true -> {:ok, []}
+      end
     end
   end
 
   def extract(%{text: text}, _caps) when is_binary(text) do
     # Native was claimed (or unknown) but came back empty — cascade through
-    # text-tagged fences then bare-JSON as fallback tiers.
+    # the leak-rescue tiers. exo/MLX servers are known to leak Qwen-style
+    # <tool_call> XML into content with tool_calls: null; small non-native
+    # models emit bare JSON. The bare-JSON tier requires the message to BE
+    # the JSON — prose merely QUOTING a call (terminal answers, examples)
+    # must never execute.
     cond do
       String.contains?(text, "~~~tool_call") -> TextTagged.parse(text)
-      looks_like_raw_json?(text) -> RawJson.parse(text)
+      String.contains?(text, "<tool_call>") -> parse_xml_tool_calls(text)
+      bare_json_message?(text) -> RawJson.parse(text)
       true -> {:ok, []}
     end
   end
 
   def extract(_response, _caps), do: {:ok, []}
 
-  # Cheap pre-check before running the balanced-brace scanner. Both keys must
-  # appear in the text to be worth attempting full parse.
-  defp looks_like_raw_json?(text) do
-    String.contains?(text, ~s("name")) and String.contains?(text, ~s("arguments"))
+  # Qwen3+-style leaked tool calls: <tool_call>{"name":…,"arguments":…}</tool_call>
+  defp parse_xml_tool_calls(text) do
+    calls =
+      ~r/<tool_call>\s*(\{.*?\})\s*<\/tool_call>/s
+      |> Regex.scan(text, capture: :all_but_first)
+      |> Enum.flat_map(fn [json] ->
+        case Jason.decode(json) do
+          {:ok, %{"name" => _} = map} -> [map]
+          _ -> []
+        end
+      end)
+
+    case calls do
+      [] -> {:ok, []}
+      list -> Native.parse(list)
+    end
+  end
+
+  # The message IS a tool call (after stripping any think block): it must
+  # start with the JSON itself, not mention one mid-prose.
+  defp bare_json_message?(text) do
+    stripped =
+      text
+      |> String.replace(~r/<think>.*?<\/think>/s, "")
+      |> String.trim()
+
+    String.starts_with?(stripped, ["{", "["]) and
+      String.contains?(stripped, ~s("name")) and String.contains?(stripped, ~s("arguments"))
   end
 
   @doc """

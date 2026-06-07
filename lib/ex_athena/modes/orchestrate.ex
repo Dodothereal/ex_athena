@@ -27,41 +27,43 @@ defmodule ExAthena.Modes.Orchestrate do
 
   alias ExAthena.Loop.State
 
-  @planning_addendum """
-  ## Planning phase
-  FIRST record a draft plan with todo_write based on what you already
-  know — include an "Explore …" todo as step 1 when investigation is
-  needed. Recording todos ends planning; exploration then runs as
-  delegated workers on those todos.
-  - You CANNOT read files or fetch URLs yourself — ALL exploration goes
-    through spawn_agent workers (agent: "explore" with a focused brief);
-    the worker reports back a summary without filling your context.
-  - Each todo must be small and self-contained enough to hand to a worker
-    that cannot see this conversation.
-  - If you truly cannot draft any plan yet, reply with a short numbered
-    plan in text (no tool calls) — that also ends planning.
-  """
-
-  @execution_addendum """
+  # ONE byte-stable protocol for both phases — phase-varying system prompts
+  # (and toolsets) break prefix caching on local servers at token ~0.
+  # Phase steering rides as an EPHEMERAL tail note instead (meta[:phase_note]).
+  @protocol_addendum """
   ## Orchestration protocol
-  You are the orchestrator. Work strictly through your todo list:
-  1. First, record your plan with todo_write (one todo per step).
-  2. Delegate each substantial step to spawn_agent. Workers cannot see this
-     conversation — every spawn needs a self-contained brief (objective,
-     expected_output, tool_guidance, boundaries) and `todo:` set to the
-     exact todo content the worker handles.
-  3. After each worker returns, update todo_write (mark completed, add newly
-     discovered steps). ALWAYS send the FULL list — completed items
+  You are the orchestrator. You NEVER read files, fetch URLs, or run
+  commands yourself — delegate ALL exploration and execution to
+  spawn_agent workers (agent: "explore" with a focused brief for
+  read-only research). Work strictly through your todo list:
+  1. FIRST record a draft plan with todo_write (one todo per step) based
+     on what you already know — include an "Explore …" todo as step 1
+     when investigation is needed. Each todo must be small and
+     self-contained enough to hand to a worker that cannot see this
+     conversation.
+  2. Delegate each substantial step to spawn_agent. Workers cannot see
+     this conversation — every spawn needs a self-contained brief
+     (objective, expected_output, tool_guidance, boundaries) and `todo:`
+     set to the exact todo content the worker handles.
+  3. After each worker returns, update todo_write (mark completed, add
+     newly discovered steps). ALWAYS send the FULL list — completed items
      included, new todos appended at the end; never drop finished work.
      Record decisions only — never restate worker output verbatim.
-  3b. Never delegate work that is not on the todo list — FIRST add the todo
-     with todo_write, THEN spawn the worker with `todo:` set to it. One
-     todo per worker; do not bundle several steps into one spawn.
-  4. Effort scaling: one worker for a simple step, two for comparisons.
+  4. Never delegate work that is not on the todo list — FIRST add the
+     todo with todo_write, THEN spawn the worker with `todo:` set to it.
+     One todo per worker; do not bundle several steps into one spawn.
+  5. Effort scaling: one worker for a simple step, two for comparisons.
      Read-only research workers may run in parallel; only ONE worker that
      writes/edits files at a time.
-  5. When every todo is completed, call finish with a deliverable
+  6. When every todo is completed, call finish with a deliverable
      summarizing the outcome.
+  """
+
+  @planning_note """
+  [orchestration runtime] PLANNING: no plan is recorded yet — your next
+  action should be todo_write with your draft plan (or spawn ONE explore
+  worker first if you cannot draft anything). A tool-free numbered plan in
+  text also works.\
   """
 
   @worker_suffix """
@@ -82,16 +84,11 @@ defmodule ExAthena.Modes.Orchestrate do
   # prompt for weak models.
   @orchestrator_tools ~w(todo_write spawn_agent finish ask_user)
 
-  # Planning phase: DELEGATION-ONLY. Live testing showed that given direct
-  # read/glob, a small model explores directly every turn and never
-  # delegates — so exploration agents are mandatory in every phase. Any
-  # direct tool attempt gets the redirect error from ReAct
-  # (unknown_tool_error → "delegate via spawn_agent"). Todo upkeep is
-  # available in EVERY phase; recording todos IS producing the plan.
-  @planning_tools ~w(todo_write spawn_agent ask_user)
-
   # Exploration during planning is bounded — after this many planning turns
   # the runtime forces the transition to execution with what is known.
+  # (Planning uses the SAME coordination toolset as executing — tool
+  # schemas render into the prompt prefix, so phase-varying toolsets break
+  # prefix caching.)
   @max_planning_turns 8
 
   # Auto-delegation watchdog: with pending todos, after this many
@@ -110,7 +107,7 @@ defmodule ExAthena.Modes.Orchestrate do
     request_template = %{
       state.request_template
       | system_prompt:
-          append_prompt(state.request_template.system_prompt, String.trim(@execution_addendum))
+          append_prompt(state.request_template.system_prompt, String.trim(@protocol_addendum))
     }
 
     {:ok,
@@ -120,9 +117,7 @@ defmodule ExAthena.Modes.Orchestrate do
            phase: :planning,
            todos: [],
            turns_without_spawn: 0,
-           planning_turns: 0,
-           # Planning swaps these in per turn; executing uses the state's own.
-           planning_specs: Enum.filter(state.tool_specs, &(&1.name in @planning_tools))
+           planning_turns: 0
          },
          # Uncapped by design (user-directed): the orchestrator runs until
          # the todos are done. The no-progress guard, mistake counter,
@@ -132,6 +127,9 @@ defmodule ExAthena.Modes.Orchestrate do
          max_concurrency: min(state.max_concurrency, slot_cap(state)),
          tool_specs: Enum.filter(state.tool_specs, &(&1.name in @orchestrator_tools)),
          ctx: %{state.ctx | assigns: assigns},
+         # Ephemeral phase steering (request tail, never persisted) —
+         # cleared by to_executing/1.
+         meta: Map.put(state.meta, :phase_note, String.trim(@planning_note)),
          request_template: request_template
      }}
   end
@@ -147,38 +145,24 @@ defmodule ExAthena.Modes.Orchestrate do
 
   @impl true
   def iterate(%State{mode_state: %{phase: :planning} = mode_state} = state) do
-    # Planning is itself a (delegation-only) ReAct phase: the orchestrator
-    # may spawn exploration workers across several turns. Planning ends when
-    # the plan exists — either a TOOL-FREE reply OR a todo_write (recording
-    # todos IS the plan). The executing toolset/prompt (set in init) is
-    # restored afterwards.
+    # Planning is plain ReAct with the SAME toolset/system prompt as
+    # executing (byte-stable prefix for cache reuse) — only an ephemeral
+    # tail note (meta[:phase_note]) steers the phase. Planning ends when
+    # the plan exists: a todo_write (the todo list IS the plan) or a
+    # tool-free reply.
     prev_count = length(state.messages)
 
-    planning_state = %{
-      state
-      | tool_specs: mode_state.planning_specs,
-        request_template: %{
-          state.request_template
-          | system_prompt:
-              append_prompt(
-                state.request_template.system_prompt,
-                String.trim(@planning_addendum)
-              )
-        }
-    }
-
-    case ExAthena.Modes.ReAct.iterate(planning_state) do
+    case ExAthena.Modes.ReAct.iterate(state) do
       {:halt, halted} ->
         if halted.meta[:finish_reason] == :stop do
           # The tool-free plan turn — transition instead of terminating.
-          {:continue, halted |> restore_executing(state) |> to_executing()}
+          {:continue, to_executing(halted)}
         else
           # Real terminations (errors, finish tool) propagate untouched.
-          {:halt, restore_executing(halted, state)}
+          {:halt, halted}
         end
 
       {:continue, new_state} ->
-        new_state = restore_executing(new_state, state)
         todos = extract_todos(Enum.drop(new_state.messages, prev_count))
         turns = (mode_state[:planning_turns] || 0) + 1
 
@@ -209,13 +193,53 @@ defmodule ExAthena.Modes.Orchestrate do
     prev_count = length(state.messages)
 
     case ExAthena.Modes.ReAct.iterate(state) do
-      {:continue, new_state} -> watchdog(new_state, prev_count)
-      other -> other
+      {:continue, new_state} ->
+        watchdog(new_state, prev_count)
+
+      {:halt, halted} ->
+        maybe_nudge_stop(halted)
+
+      other ->
+        other
     end
   end
 
   def iterate(%State{} = state) do
     ExAthena.Modes.ReAct.iterate(state)
+  end
+
+  # Small models routinely narrate intent ("I will now create the post")
+  # with no tool call — a bare-text :stop with PENDING todos would end the
+  # run mid-task as "success". Nudge once; honor the second stop.
+  defp maybe_nudge_stop(halted) do
+    pending =
+      Enum.filter(halted.mode_state[:todos] || [], fn t ->
+        field(t, :status) in [nil, "pending", "in_progress"]
+      end)
+
+    cond do
+      halted.meta[:finish_reason] != :stop or pending == [] ->
+        {:halt, halted}
+
+      halted.mode_state[:stop_nudged] ->
+        {:halt, halted}
+
+      true ->
+        note =
+          ExAthena.Messages.user(
+            "[orchestration runtime] You stopped with PENDING todos: " <>
+              Enum.map_join(pending, "; ", &field(&1, :content)) <>
+              ". Delegate the next one with spawn_agent, or call finish if the task is truly done."
+          )
+
+        {:continue,
+         %{
+           halted
+           | messages: halted.messages ++ [note],
+             mode_state: Map.put(halted.mode_state, :stop_nudged, true),
+             meta: Map.delete(halted.meta, :finish_reason)
+         }}
+    end
   end
 
   # ── Auto-delegation watchdog ──────────────────────────────────────
@@ -336,19 +360,13 @@ defmodule ExAthena.Modes.Orchestrate do
   defp append_prompt("", addendum), do: addendum
   defp append_prompt(existing, addendum), do: existing <> "\n\n" <> addendum
 
-  # Planning runs ReAct with a swapped toolset/prompt — the executing
-  # versions (set in init) are restored on every returned state.
-  defp restore_executing(new_state, %State{tool_specs: specs, request_template: template}) do
-    %{new_state | tool_specs: specs, request_template: template}
-  end
-
-  # The tool-free plan turn set finish_reason :stop — clear it and switch
-  # phases so the run continues into execution.
+  # Switch phases: clear the stale :stop set by a tool-free plan turn and
+  # drop the ephemeral planning tail note.
   defp to_executing(state) do
     %{
       state
       | mode_state: Map.put(state.mode_state, :phase, :executing),
-        meta: Map.delete(state.meta, :finish_reason)
+        meta: state.meta |> Map.delete(:finish_reason) |> Map.delete(:phase_note)
     }
   end
 end

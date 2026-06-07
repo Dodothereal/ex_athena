@@ -87,7 +87,11 @@ defmodule ExAthena.Loop do
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
 
-  @default_max_iterations 25
+  # One tool call ≈ one iteration on small local models — 25 starved real
+  # tasks. Tool-output caps (bash/read/web_fetch) keep per-turn context
+  # growth bounded, so a triple budget is safe; the no-progress guard,
+  # mistake counter, and compaction remain the runaway protection.
+  @default_max_iterations 75
   @default_max_mistakes 3
   @default_max_unproductive_iterations 3
   @default_max_concurrency 4
@@ -528,14 +532,19 @@ defmodule ExAthena.Loop do
   end
 
   defp extract_final_text(%State{messages: messages}) do
-    # The last assistant message's content is the final text. Errors with no
-    # final assistant message leave text nil (callers can still inspect
-    # halted_reason / finish_reason).
+    # The last NON-BLANK assistant message's content is the final text.
+    # Error terminations cut runs mid-flight on tool-call-only turns whose
+    # text channel is whitespace after <think>-fence filtering — skipping
+    # blanks hands callers the run's last real observation instead of "\n\n".
+    # Errors with no non-blank assistant message leave text nil.
     messages
     |> Enum.reverse()
     |> Enum.find_value(nil, fn
-      %{role: :assistant, content: c} when is_binary(c) -> c
-      _ -> nil
+      %{role: :assistant, content: c} when is_binary(c) ->
+        if String.trim(c) == "", do: nil, else: c
+
+      _ ->
+        nil
     end)
   end
 

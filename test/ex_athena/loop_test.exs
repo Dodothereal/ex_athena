@@ -478,6 +478,40 @@ defmodule ExAthena.LoopTest do
   end
 
   describe "finish tool — structured completion signal" do
+    test "Result.text on error terminations is the last NON-BLANK assistant text", %{dir: dir} do
+      File.write!(Path.join(dir, "f.txt"), "x")
+
+      # Turn 1 has real prose; the model then spins blank tool-call-only
+      # turns (thinking-heavy local models emit "\n\n" after fence filtering)
+      # into the no-progress guard. The blank turns must not win.
+      prose_turn = %Response{
+        text: "found the services dir",
+        tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "f.txt"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      }
+
+      blank_turn = %Response{
+        text: "\n\n",
+        tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "f.txt"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      }
+
+      responses = [prose_turn, blank_turn, blank_turn, blank_turn, blank_turn]
+
+      assert {:ok, result} =
+               Loop.run("go",
+                 provider: :mock,
+                 mock: [responder: script(responses)],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Read]
+               )
+
+      assert result.finish_reason == :error_no_progress
+      assert result.text == "found the services dir"
+    end
+
     test "model calling finish halts with :submitted and captures deliverable", %{dir: dir} do
       responses = [
         %Response{

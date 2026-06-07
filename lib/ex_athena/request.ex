@@ -72,7 +72,10 @@ defmodule ExAthena.Request do
       temperature: Keyword.get(opts, :temperature),
       top_p: Keyword.get(opts, :top_p),
       stop: Keyword.get(opts, :stop),
-      timeout_ms: Keyword.get(opts, :timeout_ms, 60_000),
+      # 300s default: local backends prompt-process large agent transcripts
+      # for minutes before the first streamed byte — a 60s receive_timeout
+      # killed workers mid-prefill ("Stream failed: :timeout").
+      timeout_ms: Keyword.get(opts, :timeout_ms, 300_000),
       tools: Keyword.get(opts, :tools),
       tool_choice: Keyword.get(opts, :tool_choice),
       response_format: Keyword.get(opts, :response_format),
