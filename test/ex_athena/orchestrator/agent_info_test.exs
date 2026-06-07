@@ -255,6 +255,39 @@ defmodule ExAthena.Orchestrator.AgentInfoTest do
       assert a2.status == :completed
     end
 
+    test "rewrites NEVER erase completed todos (small models drop finished work)" do
+      info =
+        new()
+        |> AgentInfo.set_todos([
+          %{"content" => "Examine blog patterns", "status" => "completed"},
+          %{"content" => "Examine service markdown", "status" => "completed"},
+          %{"content" => "Add Ollama.md", "status" => "pending"}
+        ])
+
+      [done1, done2, _pending] = info.todos
+
+      # The model rewrites with ONLY the remaining work — history must survive.
+      info =
+        AgentInfo.set_todos(info, [%{"content" => "Add Ollama.md", "status" => "in_progress"}])
+
+      assert [a, b, c] = info.todos
+      assert {a.id, a.content, a.status} == {done1.id, "Examine blog patterns", :completed}
+      assert {b.id, b.content, b.status} == {done2.id, "Examine service markdown", :completed}
+      assert {c.content, c.status} == {"Add Ollama.md", :in_progress}
+    end
+
+    test "rewrites CAN drop pending todos (plan pruning is legitimate)" do
+      info =
+        new()
+        |> AgentInfo.set_todos([
+          %{"content" => "keep me", "status" => "pending"},
+          %{"content" => "drop me", "status" => "pending"}
+        ])
+        |> AgentInfo.set_todos([%{"content" => "keep me", "status" => "in_progress"}])
+
+      assert [%{content: "keep me", status: :in_progress}] = info.todos
+    end
+
     test "enforces a single in_progress item (later ones demoted to pending)" do
       info =
         new()

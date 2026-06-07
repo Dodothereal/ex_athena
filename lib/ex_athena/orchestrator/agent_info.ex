@@ -229,7 +229,19 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   @spec set_todos(t(), [map()]) :: t()
   def set_todos(info, raw_todos) when is_list(raw_todos) do
     {todos, next_id} = assign_ids(raw_todos, info.todos, info.next_todo_id)
-    %{info | todos: enforce_single_in_progress(todos), next_todo_id: next_id}
+
+    # Small models rewrite the list with only the REMAINING work, silently
+    # erasing finished tasks (and orphaning their done workers in the tree).
+    # Completed items missing from a rewrite are retained, in their original
+    # order, ahead of the new list. Pending items may be dropped (pruning).
+    rewritten = MapSet.new(todos, & &1.content)
+
+    kept_history =
+      Enum.filter(info.todos, fn todo ->
+        todo.status == :completed and not MapSet.member?(rewritten, todo.content)
+      end)
+
+    %{info | todos: enforce_single_in_progress(kept_history ++ todos), next_todo_id: next_id}
   end
 
   @doc "Flip one todo to completed by id (runtime-derived completion)."

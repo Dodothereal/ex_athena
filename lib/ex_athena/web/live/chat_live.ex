@@ -1799,33 +1799,34 @@ defmodule ExAthena.Web.Live.ChatLive do
           <% end %>
 
         </div>
-
-        <%!-- ONE thinking & actions expander PER TASK, aggregating its
-              workers' chat-style transcripts (attempts in spawn order). --%>
-        <% transcript_count = @agents |> Enum.map(&length(&1.transcript_tail)) |> Enum.sum() %>
-        <%= if transcript_count > 0 do %>
-          <div class="ov-transcript ov-task-transcript">
-            <button
-              class="ov-transcript-toggle"
-              phx-click="ov_toggle"
-              phx-value-key={"task-transcript:#{@todo.id}"}
-            >
-              {if MapSet.member?(@expanded, "task-transcript:#{@todo.id}"), do: "▾", else: "▸"} thinking & actions ({transcript_count})
-            </button>
-            <div
-              :if={MapSet.member?(@expanded, "task-transcript:#{@todo.id}")}
-              class="ov-transcript-body"
-            >
-              <%= for agent <- @agents, agent.transcript_tail != [] do %>
-                <div :if={length(@agents) > 1} class="ov-focus-label">
-                  {agent.name || agent.id}
-                </div>
-                <.ov_agent_chat tail={agent.transcript_tail} />
-              <% end %>
-            </div>
-          </div>
-        <% end %>
       </div>
+
+      <%!-- ONE thinking & actions expander PER TASK — sits below the task,
+            always visible (independent of the task's own expansion),
+            aggregating its workers' chat-style transcripts in spawn order. --%>
+      <% transcript_count = @agents |> Enum.map(&length(&1.transcript_tail)) |> Enum.sum() %>
+      <%= if transcript_count > 0 do %>
+        <div class="ov-transcript ov-task-transcript">
+          <button
+            class="ov-transcript-toggle"
+            phx-click="ov_toggle"
+            phx-value-key={"task-transcript:#{@todo.id}"}
+          >
+            {if MapSet.member?(@expanded, "task-transcript:#{@todo.id}"), do: "▾", else: "▸"} thinking & actions ({transcript_count})
+          </button>
+          <div
+            :if={MapSet.member?(@expanded, "task-transcript:#{@todo.id}")}
+            class="ov-transcript-body"
+          >
+            <%= for agent <- @agents, agent.transcript_tail != [] do %>
+              <div :if={length(@agents) > 1} class="ov-focus-label">
+                {agent.name || agent.id}
+              </div>
+              <.ov_agent_chat tail={agent.transcript_tail} />
+            <% end %>
+          </div>
+        </div>
+      <% end %>
     </div>
     """
   end
@@ -1996,6 +1997,22 @@ defmodule ExAthena.Web.Live.ChatLive do
         <span class={["ov-badge", "ov-badge--#{@info.status}"]}>{badge_label(@info.status)}</span>
       </div>
 
+      <%!-- The node's own thinking & actions — directly at the top of the body. --%>
+      <%= if @info.transcript_tail != [] do %>
+        <div class="ov-transcript">
+          <button
+            class="ov-transcript-toggle"
+            phx-click="ov_toggle"
+            phx-value-key={"transcript:#{@info.id}"}
+          >
+            {if @transcript_open?, do: "▾", else: "▸"} thinking & actions ({length(@info.transcript_tail)})
+          </button>
+          <div :if={@transcript_open?} class="ov-transcript-body">
+            <.ov_agent_chat tail={@info.transcript_tail} />
+          </div>
+        </div>
+      <% end %>
+
       <div :if={@info.prompt_summary} class="ov-agent-prompt">{@info.prompt_summary}</div>
       <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
 
@@ -2029,20 +2046,6 @@ defmodule ExAthena.Web.Live.ChatLive do
         <% end %>
       </div>
 
-      <%= if @info.transcript_tail != [] do %>
-        <div class="ov-transcript">
-          <button
-            class="ov-transcript-toggle"
-            phx-click="ov_toggle"
-            phx-value-key={"transcript:#{@info.id}"}
-          >
-            {if @transcript_open?, do: "▾", else: "▸"} transcript ({length(@info.transcript_tail)})
-          </button>
-          <div :if={@transcript_open?} class="ov-transcript-body">
-            <.ov_agent_chat tail={@info.transcript_tail} />
-          </div>
-        </div>
-      <% end %>
     </div>
     """
   end

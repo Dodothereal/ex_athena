@@ -51,8 +51,9 @@ defmodule ExAthena.Modes.Orchestrate do
      expected_output, tool_guidance, boundaries) and `todo:` set to the
      exact todo content the worker handles.
   3. After each worker returns, update todo_write (mark completed, add newly
-     discovered steps). Record decisions only — never restate worker output
-     verbatim.
+     discovered steps). ALWAYS send the FULL list — completed items
+     included, new todos appended at the end; never drop finished work.
+     Record decisions only — never restate worker output verbatim.
   3b. Never delegate work that is not on the todo list — FIRST add the todo
      with todo_write, THEN spawn the worker with `todo:` set to it. One
      todo per worker; do not bundle several steps into one spawn.
