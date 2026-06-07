@@ -41,7 +41,7 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert Mode.resolve(:orchestrate) == ExAthena.Modes.Orchestrate
   end
 
-  test "planning turns carry READ-ONLY exploration tools and the planning addendum", %{dir: dir} do
+  test "planning turns carry DELEGATION-ONLY tools and the planning addendum", %{dir: dir} do
     test_pid = self()
 
     responses = [
@@ -68,40 +68,48 @@ defmodule ExAthena.Modes.OrchestrateTest do
                provider: :mock,
                mock: [responder: scripted(responses)],
                cwd: dir,
-               tools: ExAthena.Tools.builtins(),
+               tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser],
                mode: :orchestrate
              )
 
     assert_receive {:planning_request, request}
     names = schema_names(request.tools)
 
-    # Quick exploration AND delegated exploration are allowed while planning…
-    assert "read" in names
-    assert "glob" in names
-    assert "grep" in names
-    assert "web_fetch" in names
+    # Exploration agents are MANDATORY: no direct exploration tools at all
+    # (live testing: given read/glob, a small model explores directly every
+    # time and never delegates, burning all planning turns). Todo upkeep is
+    # available in EVERY phase.
     assert "spawn_agent" in names
-    # …but nothing that mutates.
+    assert "ask_user" in names
+    assert "todo_write" in names
+    refute "read" in names
+    refute "glob" in names
+    refute "grep" in names
+    refute "web_fetch" in names
     refute "bash" in names
     refute "write" in names
     refute "edit" in names
 
     assert request.system_prompt =~ "numbered plan"
-    # The prompt pushes exploration agents over direct reads.
+    # The prompt mandates exploration agents.
     assert request.system_prompt =~ "explore"
   end
 
-  test "planning may explore across turns, then a tool-free plan transitions to executing", %{
-    dir: dir
-  } do
-    File.write!(Path.join(dir, "f.txt"), "x")
+  test "planning may DELEGATE exploration across turns, then a tool-free plan transitions to executing",
+       %{dir: dir} do
     test_pid = self()
 
     responses = [
-      # Planning turn 1: explores with a read-only tool.
+      # Planning turn 1: delegates exploration to a worker.
       %Response{
-        text: "Let me look first.",
-        tool_calls: [%ToolCall{id: "p1", name: "read", arguments: %{"path" => "f.txt"}}],
+        text: "Let me have a worker look first.",
+        tool_calls: [
+          %ToolCall{
+            id: "p1",
+            name: "spawn_agent",
+            arguments: %{"prompt" => "explore the repo structure and report back"}
+          }
+        ],
         finish_reason: :tool_calls,
         provider: :mock
       },
@@ -119,8 +127,17 @@ defmodule ExAthena.Modes.OrchestrateTest do
                provider: :mock,
                mock: [responder: scripted(responses)],
                cwd: dir,
+               memory: false,
                tools: ExAthena.Tools.builtins(),
-               mode: :orchestrate
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [text: "repo uses NimblePublisher under web/priv"],
+                   tools: [],
+                   memory: false
+                 ]
+               }
              )
 
     assert_receive {:exec_request, request}
@@ -168,6 +185,98 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert_receive {:event, {:thinking, "the steps"}}
     assert_receive {:event, {:content, "1. step A"}}
     refute_received {:event, {:thinking, "planning the steps"}}
+  end
+
+  test "recording todos DURING planning ends planning (the plan is the todo list)", %{dir: dir} do
+    test_pid = self()
+
+    todos_args = %{
+      "todos" => [
+        %{"content" => "create the blog post", "status" => "pending"},
+        %{"content" => "publish it", "status" => "pending"}
+      ]
+    }
+
+    responses = [
+      # Planning turn 1: the model records its plan straight into todo_write
+      # (observed live — rejecting this burned the turn).
+      %Response{
+        text: "I have what I need. Recording my plan.",
+        tool_calls: [%ToolCall{id: "t1", name: "todo_write", arguments: todos_args}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      # Next turn must be EXECUTING.
+      fn _n, request ->
+        send(test_pid, {:exec_request, request})
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    ]
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("build it",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate
+             )
+
+    assert_receive {:exec_request, request}
+    names = schema_names(request.tools)
+    assert "finish" in names
+    assert request.system_prompt =~ "Orchestration protocol"
+    refute request.system_prompt =~ "Planning phase"
+  end
+
+  test "a worker given an explicit tools list ALWAYS keeps todo_write", %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{"prompt" => "do the step", "tools" => ["read"]}
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    sub_responder = fn request ->
+      send(test_pid, {:worker_request, request})
+      %Response{text: "worker done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   memory: false
+                 ]
+               }
+             )
+
+    assert_receive {:worker_request, request}
+    names = schema_names(request.tools)
+    assert "read" in names
+    # The worker contract demands todo upkeep — it can never be stripped.
+    assert "todo_write" in names
   end
 
   test "the execution addendum mandates delegation and todo upkeep", %{dir: dir} do
