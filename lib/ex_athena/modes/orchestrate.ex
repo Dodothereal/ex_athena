@@ -71,9 +71,11 @@ defmodule ExAthena.Modes.Orchestrate do
   You are a sub-agent responsible for ONE step of a larger task.
   - Maintain your own todo list with todo_write as you work.
   - End EVERY response with a line: CONCLUSION: <one sentence>.
-  - Your FINAL message must be a self-contained summary (max 300 words):
-    findings, decisions, files changed. The orchestrator sees only that
-    summary.
+  - Your FINAL message is the ONLY thing the orchestrator sees — make it a
+    complete, self-contained report: every concrete fact discovered (exact
+    paths, file names, patterns, config/frontmatter formats, snippets),
+    decisions made, and files changed. Completeness beats brevity — never
+    summarize away specifics the next step will need (up to ~800 words).
   """
 
   # The orchestrator gets coordination tools ONLY — no specialist tools on
@@ -321,7 +323,9 @@ defmodule ExAthena.Modes.Orchestrate do
         "use any available tools (read, glob, grep, bash, write, edit) as needed",
       "boundaries" => "do only this step; do not start other todos",
       "todo" => content,
-      "max_result_chars" => 2_000,
+      # Generous: exploration reports carry exact paths/patterns the next
+      # step needs — a 2k cap was destroying the discovered detail.
+      "max_result_chars" => 8_000,
       "timeout_ms" => 1_800_000
     }
 

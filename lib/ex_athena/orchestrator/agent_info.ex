@@ -97,7 +97,9 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   # event has already made the status terminal — so it must bypass the
   # terminal guard below.
   def apply_event(info, {:result_note, text}) when is_binary(text) do
-    %{info | result: truncate(text, 600)}
+    # Generous: the contribution box scrolls; clipping exploration reports
+    # to a snippet hid the discovered detail.
+    %{info | result: truncate(text, 4_000)}
   end
 
   def apply_event(%__MODULE__{status: status} = info, _event) when status in @terminal, do: info

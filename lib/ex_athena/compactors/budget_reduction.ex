@@ -88,7 +88,11 @@ defmodule ExAthena.Compactors.BudgetReduction do
        when is_binary(content) do
     if byte_size(content) > max_chars do
       ref = generate_ref()
-      placeholder = "[truncated; full=#{byte_size(content)} chars; ref=#{ref}]"
+      # Honest placeholder: there is no reload-by-ref mechanism — advertising
+      # one invited hallucinated tool calls. Tell the model how to recover.
+      placeholder =
+        "[old output cleared to save context (#{byte_size(content)} chars, ref=#{ref}) — " <>
+          "re-run the tool with narrower arguments if needed]"
 
       new_archive =
         Map.put(archive, ref, %{

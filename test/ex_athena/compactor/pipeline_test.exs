@@ -264,7 +264,7 @@ defmodule ExAthena.Compactor.PipelineTest do
              Pipeline.compact(state, %{tokens: 7_000, max_tokens: 10_000})
 
     [_user, %Message{tool_results: [tr]}] = new_messages
-    assert tr.content =~ "[truncated"
+    assert tr.content =~ "[old output cleared"
     assert metadata.stages_applied == [:budget_reduction]
   end
 end

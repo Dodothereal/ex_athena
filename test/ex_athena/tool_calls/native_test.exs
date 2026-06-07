@@ -43,7 +43,7 @@ defmodule ExAthena.ToolCalls.NativeTest do
       assert is_binary(id) and byte_size(id) > 0
     end
 
-    test "returns error for StreamChunk with nil name" do
+    test "a StreamChunk with nil name becomes a repairable sentinel (never a batch failure)" do
       chunk = %ReqLLM.StreamChunk{
         type: :tool_call,
         name: nil,
@@ -51,7 +51,9 @@ defmodule ExAthena.ToolCalls.NativeTest do
         metadata: %{}
       }
 
-      assert {:error, :missing_tool_name} = Native.parse([chunk])
+      assert {:ok, [sentinel]} = Native.parse([chunk])
+      assert sentinel.name == "unknown"
+      assert is_binary(sentinel.arguments["__invalid_json__"])
     end
   end
 end

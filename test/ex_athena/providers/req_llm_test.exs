@@ -16,8 +16,8 @@ defmodule ExAthena.Providers.ReqLLMTest do
       assert Adapter.capabilities().structured_output == true
     end
 
-    test "returns max_tokens: 8_192 as conservative fallback" do
-      assert Adapter.capabilities().max_tokens == 8_192
+    test "returns max_tokens: 32_768 as conservative fallback" do
+      assert Adapter.capabilities().max_tokens == 32_768
     end
   end
 
@@ -28,17 +28,17 @@ defmodule ExAthena.Providers.ReqLLMTest do
     end
 
     test "with empty opts returns conservative fallback" do
-      assert Adapter.capabilities([]).max_tokens == 8_192
+      assert Adapter.capabilities([]).max_tokens == 32_768
     end
 
     test "with provider tag but no model returns conservative fallback" do
       opts = [req_llm_provider_tag: "openai"]
-      assert Adapter.capabilities(opts).max_tokens == 8_192
+      assert Adapter.capabilities(opts).max_tokens == 32_768
     end
 
     test "with a model not in llm_db returns conservative fallback" do
       opts = [model: "custom-local:7b", req_llm_provider_tag: "openai"]
-      assert Adapter.capabilities(opts).max_tokens == 8_192
+      assert Adapter.capabilities(opts).max_tokens == 32_768
     end
 
     test "uses llm_db context for known openai model" do

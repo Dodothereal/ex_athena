@@ -165,5 +165,10 @@ defmodule ExAthena.Tools.Grep do
     output
     |> String.split("\n", trim: true)
     |> Enum.take(max)
+    # A line count is not a size cap — one minified-JS match line can be
+    # hundreds of KB. Hard-cap each line too.
+    |> Enum.map(fn line ->
+      if byte_size(line) > 500, do: binary_part(line, 0, 500) <> "…[line truncated]", else: line
+    end)
   end
 end

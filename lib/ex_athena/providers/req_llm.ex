@@ -59,7 +59,10 @@ defmodule ExAthena.Providers.ReqLLM do
       streaming: true,
       json_mode: true,
       structured_output: true,
-      max_tokens: 8_192,
+      # Context-window fallback when the server doesn't report one. 8k made
+      # compaction fire destructively at ~5k tokens on 32k+ local models;
+      # every 2024+ local model serves ≥32k.
+      max_tokens: 32_768,
       supports_resume: false,
       supports_system_prompt: true,
       supports_temperature: true,

@@ -56,8 +56,8 @@ defmodule ExAthena.ToolCallsTest do
       refute is_nil(id)
     end
 
-    test "rejects malformed JSON arguments" do
-      assert {:error, _} =
+    test "malformed JSON arguments become a repairable sentinel (never a batch failure)" do
+      assert {:ok, [sentinel]} =
                Native.parse([
                  %{
                    "type" => "function",
@@ -65,6 +65,9 @@ defmodule ExAthena.ToolCallsTest do
                    "function" => %{"name" => "t", "arguments" => "{not json"}
                  }
                ])
+
+      assert sentinel.name == "t"
+      assert is_binary(sentinel.arguments["__invalid_json__"])
     end
 
     test "parses an empty list into an empty list" do

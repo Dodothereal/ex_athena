@@ -42,7 +42,7 @@ defmodule ExAthena.Compactors.BudgetReductionTest do
              BudgetReduction.compact_stage(state, %{tokens: 5_000, max_tokens: 100_000})
 
     [_user, %Message{tool_results: [tr]}] = new_state.messages
-    assert tr.content =~ "[truncated; full=20000 chars; ref="
+    assert tr.content =~ "[old output cleared to save context (20000 chars, ref="
     assert new_estimate.tokens < 5_000
 
     # Archive holds the original payload, keyed by the generated ref.
@@ -72,7 +72,7 @@ defmodule ExAthena.Compactors.BudgetReductionTest do
 
     [first, second, _assistant, fourth] = new_state.messages
     assert hd(first.tool_results).content == small
-    assert hd(second.tool_results).content =~ "[truncated"
+    assert hd(second.tool_results).content =~ "[old output cleared"
     assert hd(fourth.tool_results).content == small
   end
 end

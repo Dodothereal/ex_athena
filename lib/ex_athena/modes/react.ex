@@ -104,6 +104,8 @@ defmodule ExAthena.Modes.ReAct do
       {:ok, response} ->
         # Accumulate usage + cost before considering termination.
         state = fold_usage(state, response)
+        # A successful call re-arms the transient-error retry budget.
+        state = put_in(state.meta[:retried_transient?], false)
 
         # Providers with server-side conversation state (e.g. the Claude Code
         # CLI) report a session id; keep the latest so the Result can surface
@@ -218,13 +220,28 @@ defmodule ExAthena.Modes.ReAct do
         {:error, :error_prompt_too_long}
 
       {:error, reason} ->
-        state =
-          %{state | halted_reason: reason}
-          |> set_finish_reason(:error_during_execution)
+        # One bounded retry for TRANSIENT provider failures — a single exo
+        # hiccup / transport blip used to kill whole runs (Req doesn't
+        # retry POSTs). Anything else, or a second failure, halts.
+        if transient_error?(reason) and not state.meta[:retried_transient?] do
+          state = put_in(state.meta[:retried_transient?], true)
+          Process.sleep(2_000)
+          do_iterate(state, request)
+        else
+          state =
+            %{state | halted_reason: reason}
+            |> set_finish_reason(:error_during_execution)
 
-        {:halt, state}
+          {:halt, state}
+        end
     end
   end
+
+  defp transient_error?(%ExAthena.Error{kind: kind}),
+    do: kind in [:server_error, :timeout, :transport, :rate_limited]
+
+  defp transient_error?(:timeout), do: true
+  defp transient_error?(_), do: false
 
   # Fire ChatParams hooks. Returns {:ok, request, state} (possibly with
   # injected messages appended) or {:halt, reason} when a hook bailed.
