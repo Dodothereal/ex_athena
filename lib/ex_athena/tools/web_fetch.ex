@@ -19,12 +19,22 @@ defmodule ExAthena.Tools.WebFetch do
   @default_timeout 10_000
   @max_bytes 1_000_000
 
+  # A raw 1MB page flooded 9B workers' contexts (observed live: stream
+  # timeouts + starved workers). Oversized bodies are summarized by a
+  # tool-less model call when summarizer config is available, else truncated.
+  @default_max_chars 20_000
+  # How much of an oversized page the summarizer reads (fits a small model).
+  @summary_window_chars 60_000
+  @summarize_timeout_ms 600_000
+
   @impl true
   def name, do: "web_fetch"
 
   @impl true
   def description,
-    do: "GET a public URL (http/https only). Returns up to 1 MB of body text."
+    do:
+      "GET a public URL (http/https only). Oversized pages are summarized " <>
+        "(pass `query` for targeted fact extraction) or truncated to max_chars."
 
   @impl true
   def schema do
@@ -32,7 +42,16 @@ defmodule ExAthena.Tools.WebFetch do
       type: "object",
       properties: %{
         url: %{type: "string"},
-        timeout_ms: %{type: "integer"}
+        timeout_ms: %{type: "integer"},
+        max_chars: %{
+          type: "integer",
+          description: "Cap on returned content (default #{@default_max_chars})."
+        },
+        query: %{
+          type: "string",
+          description:
+            "What you are looking for on the page — used to extract the relevant facts when the page is too large to return whole."
+        }
       },
       required: ["url"]
     }
@@ -42,17 +61,19 @@ defmodule ExAthena.Tools.WebFetch do
   def parallel_safe?, do: true
 
   @impl true
-  def execute(%{"url" => url} = args, _ctx) when is_binary(url) do
+  def execute(%{"url" => url} = args, ctx) when is_binary(url) do
     timeout = Map.get(args, "timeout_ms", @default_timeout)
 
     with {:ok, uri} <- validate(url),
          {:ok, body, status} <- fetch(uri, timeout) do
+      {body, truncated?} = handle_body(body, args, ctx)
+
       ui = %{
         kind: :webpage,
         payload: %{
           url: URI.to_string(uri),
           status: status,
-          truncated?: String.ends_with?(body, "[...truncated...]")
+          truncated?: truncated?
         }
       }
 
@@ -61,6 +82,69 @@ defmodule ExAthena.Tools.WebFetch do
   end
 
   def execute(_, _), do: {:error, :missing_url}
+
+  @doc false
+  # Post-fetch overflow handling (public for tests — no network involved).
+  # Returns {body, truncated?}.
+  def handle_body(body, args, ctx) do
+    max_chars = args |> Map.get("max_chars", @default_max_chars) |> min(@max_bytes)
+
+    cond do
+      String.length(body) <= max_chars ->
+        {body, false}
+
+      summary = summarize(body, Map.get(args, "query"), ctx) ->
+        {"[summarized from #{String.length(body)} chars — refetch with max_chars for raw content]\n" <>
+           summary, true}
+
+      true ->
+        marker =
+          "\n\n[...truncated — page is #{String.length(body)} chars; " <>
+            "refetch with max_chars or pass `query` to extract facts...]"
+
+        {String.slice(body, 0, max_chars) <> marker, true}
+    end
+  end
+
+  # Tool-less single-pass extraction through the same provider config the
+  # host gives workers (flows through the GPU request queue like any call).
+  # Any failure falls back to plain truncation — never breaks the fetch.
+  defp summarize(body, query, ctx) do
+    case Map.get(ctx.assigns || %{}, :spawn_agent_opts) do
+      opts when is_list(opts) and opts != [] ->
+        window = String.slice(body, 0, @summary_window_chars)
+
+        goal =
+          if is_binary(query) and query != "",
+            do: "Extract every fact relevant to: #{query}",
+            else: "Summarize the important facts"
+
+        prompt =
+          "#{goal}\n\nFrom this fetched web page content " <>
+            "(first #{String.length(window)} of #{String.length(body)} chars):\n\n#{window}"
+
+        run_opts =
+          opts
+          |> Keyword.take([:provider, :model, :base_url, :mock, :api_key, :permission_mode])
+          |> Keyword.merge(
+            tools: [],
+            memory: false,
+            conclusions: false,
+            max_iterations: 1,
+            timeout_ms: @summarize_timeout_ms
+          )
+
+        case ExAthena.Loop.run(prompt, run_opts) do
+          {:ok, %ExAthena.Result{text: text}} when is_binary(text) and text != "" -> text
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
 
   defp validate(url) do
     uri = URI.parse(url)

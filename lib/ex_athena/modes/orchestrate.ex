@@ -29,17 +29,17 @@ defmodule ExAthena.Modes.Orchestrate do
 
   @planning_addendum """
   ## Planning phase
-  You are PLANNING. Understand the task, then produce the plan:
-  - You CANNOT read files or fetch URLs yourself — in every phase, ALL
-    exploration goes through worker agents. To investigate, call
-    spawn_agent with agent: "explore" and a focused brief; the worker
-    reports back a summary without filling your context.
-  - One focused exploration worker is usually enough; two at most.
-  - When you understand enough, reply with ONLY a short numbered plan
-    (no tool calls). Each step must be small and self-contained enough to
-    hand to a worker that cannot see this conversation. That tool-free
-    reply ends planning; you will then record the steps with todo_write
-    and delegate them.
+  FIRST record a draft plan with todo_write based on what you already
+  know — include an "Explore …" todo as step 1 when investigation is
+  needed. Recording todos ends planning; exploration then runs as
+  delegated workers on those todos.
+  - You CANNOT read files or fetch URLs yourself — ALL exploration goes
+    through spawn_agent workers (agent: "explore" with a focused brief);
+    the worker reports back a summary without filling your context.
+  - Each todo must be small and self-contained enough to hand to a worker
+    that cannot see this conversation.
+  - If you truly cannot draft any plan yet, reply with a short numbered
+    plan in text (no tool calls) — that also ends planning.
   """
 
   @execution_addendum """

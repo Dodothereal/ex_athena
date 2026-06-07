@@ -77,6 +77,9 @@ defmodule ExAthena.Result do
             # lets callers (e.g. SpawnAgent) salvage what a run learned even
             # when it terminated with an error.
             conclusions: [],
+            # The run's final todo list (latest successful todo_write) —
+            # failed workers hand back Completed/Remaining through this.
+            todos: [],
             telemetry: %{},
             no_progress_snapshot: nil
 
@@ -96,6 +99,7 @@ defmodule ExAthena.Result do
           provider: atom() | module() | nil,
           session_id: String.t() | nil,
           conclusions: [map()],
+          todos: [map()],
           telemetry: map(),
           no_progress_snapshot: [Message.t()] | nil
         }

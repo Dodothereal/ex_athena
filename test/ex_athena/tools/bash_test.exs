@@ -28,6 +28,21 @@ defmodule ExAthena.Tools.BashTest do
     assert ui.payload.exit_code == 7
   end
 
+  test "huge output is capped (head + tail) instead of flooding the context", %{ctx: ctx} do
+    # ~1.2 MB of output — observed live: `find .` dumps blew a worker's
+    # context to 204k tokens and starved it to error_max_turns.
+    assert {:ok, output, _ui} = Bash.execute(%{"command" => "seq 1 200000"}, ctx)
+
+    assert String.length(output) <= 17_000
+    assert output =~ "exit 0"
+    # Head survives…
+    assert output =~ "\n1\n2\n"
+    # …the tail survives (exit-adjacent lines often carry the signal)…
+    assert output =~ "200000"
+    # …and the cut is explicit so the model narrows the command.
+    assert output =~ "truncated"
+  end
+
   test "runs in the context's cwd", %{dir: dir, ctx: ctx} do
     assert {:ok, output, _ui} = Bash.execute(%{"command" => "pwd"}, ctx)
     # macOS symlinks /tmp → /private/tmp; compare the resolved path.

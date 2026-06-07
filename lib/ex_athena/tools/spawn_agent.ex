@@ -17,9 +17,11 @@ defmodule ExAthena.Tools.SpawnAgent do
       to whatever the parent had (minus PlanMode + SpawnAgent to avoid loops).
     * `max_iterations` (optional, default 10) — cap on agent-loop iterations.
     * `system_prompt` (optional) — system prompt override for the sub-agent.
-    * `cwd` (optional) — working directory for the sub-agent. Defaults to the
-      parent's cwd. Useful when delegating work on a different project so the
-      sub-agent loads the correct `AGENTS.md` and operates in the right tree.
+
+  Workers ALWAYS run in the parent's working directory — there is no
+  model-facing cwd arg (models passed junk paths and workers explored the
+  wrong project). Hosts may still override via
+  `ctx.assigns[:spawn_agent_opts][:cwd]`.
 
   Inherits the parent's provider / model / permissions unless overridden in
   `ctx.assigns[:spawn_agent_opts]`.
@@ -74,11 +76,6 @@ defmodule ExAthena.Tools.SpawnAgent do
         tools: %{type: "array", items: %{type: "string"}},
         max_iterations: %{type: "integer"},
         system_prompt: %{type: "string"},
-        cwd: %{
-          type: "string",
-          description:
-            "Working directory for the sub-agent. Defaults to the parent's cwd. Use this to point the sub-agent at a different project directory."
-        },
         todo: %{
           type: "string",
           description:
@@ -139,7 +136,7 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp do_execute(args, prompt, ctx) do
     timeout = Map.get(args, "timeout_ms", 300_000)
-    prompt = compose_worker_prompt(prompt, args)
+    prompt = compose_worker_prompt(prompt, args, ctx.cwd)
 
     {agent_def, base_opts} = resolve_agent(args, ctx)
 
@@ -148,6 +145,11 @@ defmodule ExAthena.Tools.SpawnAgent do
     sub_opts =
       base_opts
       |> Keyword.put_new(:max_iterations, worker_iterations(Map.get(args, "max_iterations")))
+      # The worker's per-REQUEST timeout defaults to the spawn timeout —
+      # the 60s Request default became receive_timeout and killed workers
+      # whose grown prompts made local backends prompt-process >60s before
+      # the first streamed byte ("Stream failed: :timeout").
+      |> Keyword.put_new(:timeout_ms, timeout)
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
       |> maybe_put(:tools, resolve_tools(Map.get(args, "tools"), ctx))
       |> apply_prompt_suffix(ctx)
@@ -332,7 +334,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp blank?(_), do: false
 
   # Fold the brief into the worker's opening message so it is self-contained.
-  defp compose_worker_prompt(prompt, args) do
+  defp compose_worker_prompt(prompt, args, cwd) do
     brief =
       @brief_fields
       |> Enum.map(fn f -> {f, Map.get(args, f)} end)
@@ -340,6 +342,10 @@ defmodule ExAthena.Tools.SpawnAgent do
       |> Enum.map_join("\n", fn {f, v} ->
         "#{f |> String.replace("_", " ") |> String.capitalize()}: #{v}"
       end)
+
+    # Pin the worker to the parent's project explicitly — paths in the brief
+    # are relative to it, and the worker must never wander elsewhere.
+    brief = append_cwd_line(brief, cwd)
 
     if brief == "" do
       prompt
@@ -411,21 +417,57 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp deliverable_text(%ExAthena.Result{deliverable: d}) when is_binary(d) and d != "", do: d
   defp deliverable_text(_), do: nil
 
+  defp append_cwd_line(brief, cwd) when is_binary(cwd) and cwd != "" do
+    line =
+      "Working directory: #{cwd} — all paths are relative to this project; never work outside it."
+
+    if brief == "", do: line, else: brief <> "\n" <> line
+  end
+
+  defp append_cwd_line(brief, _cwd), do: brief
+
   # Salvage an unfinished worker's learnings: its conclusions ledger (and
   # any final text) as a compact digest the orchestrator can build on.
+  # Structured handoff so the retry skips finished work: completed and
+  # remaining sub-todos, plus the worker's STATED findings (derived
+  # "ran bash" noise only as a last resort).
   defp conclusions_digest(%ExAthena.Result{} = sub_result) do
-    lines =
-      sub_result.conclusions
-      |> Enum.take(-5)
-      |> Enum.map(fn c -> "- #{c.text}" end)
+    {completed, remaining} =
+      Enum.split_with(sub_result.todos, fn t ->
+        (t["status"] || t[:status]) in ["completed", :completed]
+      end)
+
+    findings =
+      case Enum.filter(sub_result.conclusions, &(&1.source == :stated)) do
+        [] -> Enum.take(sub_result.conclusions, -3)
+        stated -> Enum.take(stated, -3)
+      end
 
     text = String.trim(sub_result.text || "")
-    lines = if text != "", do: lines ++ ["- #{truncate_result(text, 300)}"], else: lines
 
-    case lines do
+    sections =
+      [
+        section("Completed", completed, "✔"),
+        section("Remaining", remaining, "◻"),
+        case findings do
+          [] -> nil
+          fs -> "Findings:\n" <> Enum.map_join(fs, "\n", &"- #{&1.text}")
+        end,
+        if(text != "", do: truncate_result(text, 300))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case sections do
       [] -> "(nothing recorded)"
-      _ -> Enum.join(lines, "\n")
+      _ -> Enum.join(sections, "\n")
     end
+  end
+
+  defp section(_label, [], _marker), do: nil
+
+  defp section(label, todos, marker) do
+    items = Enum.map_join(todos, " ", fn t -> "#{marker} #{t["content"] || t[:content]}" end)
+    "#{label}: #{items}"
   end
 
   defp truncate_result(text, max) when is_integer(max) and max > 0 do
@@ -454,8 +496,13 @@ defmodule ExAthena.Tools.SpawnAgent do
     |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
     |> Enum.filter(&MapSet.member?(known, &1))
     |> case do
-      [] -> nil
-      filtered -> filtered
+      [] ->
+        nil
+
+      filtered ->
+        # The worker contract demands todo upkeep — todo_write can never be
+        # stripped by an explicit tools list.
+        if "todo_write" in filtered, do: filtered, else: filtered ++ ["todo_write"]
     end
   end
 
@@ -469,11 +516,15 @@ defmodule ExAthena.Tools.SpawnAgent do
   # ── Agent + isolation resolution ──────────────────────────────────
 
   defp resolve_agent(args, ctx) do
-    effective_cwd = Map.get(args, "cwd") || ctx.cwd
+    # Workers ALWAYS run in the parent's project directory. A model-facing
+    # cwd arg used to exist here — live testing showed models passing junk
+    # paths and workers exploring the wrong project entirely. Host-level
+    # overrides via spawn_agent_opts[:cwd] still win (put_new below).
+    _ = args
 
     base_opts =
       (ctx.assigns[:spawn_agent_opts] || [])
-      |> Keyword.put_new(:cwd, effective_cwd)
+      |> Keyword.put_new(:cwd, ctx.cwd)
 
     case Map.get(args, "agent") do
       nil ->

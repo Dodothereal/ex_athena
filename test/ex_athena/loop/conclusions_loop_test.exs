@@ -330,6 +330,33 @@ defmodule ExAthena.Loop.ConclusionsLoopTest do
     assert Enum.map(result.conclusions, & &1.text) == ["found the config.", "all wired up."]
   end
 
+  test "the Result carries the run's final todo list", %{dir: dir} do
+    todos = [
+      %{"content" => "step A", "status" => "completed"},
+      %{"content" => "step B", "status" => "pending"}
+    ]
+
+    responses = [
+      %Response{
+        text: "tracking",
+        tool_calls: [%ToolCall{id: "t1", name: "todo_write", arguments: %{"todos" => todos}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               tools: [ExAthena.Tools.TodoWrite]
+             )
+
+    assert result.todos == todos
+  end
+
   defp ledger_message?(%{content: content}) when is_binary(content),
     do: content =~ "[progress ledger"
 

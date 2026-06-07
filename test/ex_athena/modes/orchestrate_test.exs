@@ -90,8 +90,10 @@ defmodule ExAthena.Modes.OrchestrateTest do
     refute "write" in names
     refute "edit" in names
 
-    assert request.system_prompt =~ "numbered plan"
-    # The prompt mandates exploration agents.
+    # Plan-first: the draft plan is recorded via todo_write before anything
+    # else; exploration agents are mandated for any investigation.
+    assert request.system_prompt =~ "draft plan"
+    assert request.system_prompt =~ "todo_write"
     assert request.system_prompt =~ "explore"
   end
 
@@ -230,6 +232,50 @@ defmodule ExAthena.Modes.OrchestrateTest do
     refute request.system_prompt =~ "Planning phase"
   end
 
+  test "a worker's REQUEST timeout matches the spawn timeout, not the 60s default", %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{id: "t1", name: "spawn_agent", arguments: %{"prompt" => "do the step"}}
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    sub_responder = fn request ->
+      send(test_pid, {:worker_timeout, request.timeout_ms})
+      %Response{text: "worker done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    # Observed live: the 60_000 Request default became receive_timeout and
+    # killed workers whose prompts made exo prompt-process >60s.
+    assert_receive {:worker_timeout, 300_000}
+  end
+
   test "a worker given an explicit tools list ALWAYS keeps todo_write", %{dir: dir} do
     test_pid = self()
 
@@ -277,6 +323,78 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert "read" in names
     # The worker contract demands todo upkeep — it can never be stripped.
     assert "todo_write" in names
+  end
+
+  test "a worker ALWAYS runs in the parent's cwd — model-supplied cwd is ignored", %{dir: dir} do
+    # Marker exists ONLY in the parent's project dir.
+    File.write!(Path.join(dir, "marker.txt"), "parent-data")
+    elsewhere = Path.join(System.tmp_dir!(), "elsewhere_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(elsewhere)
+    on_exit(fn -> File.rm_rf!(elsewhere) end)
+
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            # The model tries to point the worker at another directory.
+            arguments: %{"prompt" => "read marker.txt", "cwd" => elsewhere}
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    sub_counter = :counters.new(1, [:atomics])
+
+    sub_responder = fn request ->
+      :counters.add(sub_counter, 1, 1)
+
+      case :counters.get(sub_counter, 1) do
+        1 ->
+          %Response{
+            text: "",
+            tool_calls: [%ToolCall{id: "r1", name: "read", arguments: %{"path" => "marker.txt"}}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          send(test_pid, {:worker_messages, request.messages})
+          %Response{text: "worker done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [ExAthena.Tools.Read],
+                   memory: false
+                 ]
+               }
+             )
+
+    assert_receive {:worker_messages, messages}
+    [tool_msg] = Enum.filter(messages, &(&1.role == :tool))
+    [tr] = tool_msg.tool_results
+    # Relative read resolved against the PARENT's cwd, not "elsewhere".
+    assert tr.content =~ "parent-data"
   end
 
   test "the execution addendum mandates delegation and todo upkeep", %{dir: dir} do
@@ -839,6 +957,89 @@ defmodule ExAthena.Modes.OrchestrateTest do
     # The worker's learnings survive the failure: its conclusions ledger is
     # digested into the error so the orchestrator keeps the knowledge.
     assert tr.content =~ "ran read"
+  end
+
+  test "a failed worker hands back Completed/Remaining so the retry skips finished work", %{
+    dir: dir
+  } do
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{id: "t1", name: "spawn_agent", arguments: %{"prompt" => "explore the repo"}}
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    worker_todos = %{
+      "todos" => [
+        %{"content" => "examined blog controller", "status" => "completed"},
+        %{"content" => "review nimble usage", "status" => "pending"}
+      ]
+    }
+
+    # Worker: records sub-todos with a STATED finding, then spins into the
+    # no-progress guard (same blank looping turn repeated).
+    sub_counter = :counters.new(1, [:atomics])
+
+    sub_responder = fn _request ->
+      :counters.add(sub_counter, 1, 1)
+
+      case :counters.get(sub_counter, 1) do
+        1 ->
+          %Response{
+            text: "CONCLUSION: blog controller uses NimblePublisher pattern.",
+            tool_calls: [
+              %ToolCall{id: "w1", name: "todo_write", arguments: worker_todos}
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{
+            text: " ",
+            tool_calls: [
+              %ToolCall{id: "w2", name: "read", arguments: %{"path" => "nope.txt"}}
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+      end
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.Read],
+                   memory: false
+                 ]
+               }
+             )
+
+    [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
+    [tr] = tool_msg.tool_results
+    assert tr.is_error
+    # Structured handoff: completed AND remaining work, plus stated findings
+    # (not "ran bash" noise).
+    assert tr.content =~ "Completed"
+    assert tr.content =~ "examined blog controller"
+    assert tr.content =~ "Remaining"
+    assert tr.content =~ "review nimble usage"
+    assert tr.content =~ "NimblePublisher pattern"
   end
 
   test "calling a phase-unavailable builtin redirects the model to delegate", %{dir: dir} do

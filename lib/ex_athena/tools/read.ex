@@ -10,6 +10,11 @@ defmodule ExAthena.Tools.Read do
 
   Result is the file contents with lines prefixed by `<lineno>\\t` so the model
   can reference specific lines the way Claude Code does.
+
+  Oversized output never floods the context: a whole-file read of a large
+  structured file returns a line-ranged OUTLINE ("lines 12–80: def foo")
+  the model can drill into via offset/limit; unstructured files and huge
+  explicit windows are head-capped with an explicit marker.
   """
 
   @behaviour ExAthena.Tool
@@ -17,6 +22,14 @@ defmodule ExAthena.Tools.Read do
   alias ExAthena.ToolContext
 
   @max_bytes 2_000_000
+  # Same context-protection budget as bash output.
+  @max_output_chars 16_000
+  @head_chars 12_000
+  @max_outline_entries 150
+
+  # Structural anchors for the outline — language-generic top-level
+  # constructs (Elixir, JS/TS, Python, Ruby, markdown headers).
+  @anchor_re ~r/^(defmodule|defprotocol|defimpl|\s{0,2}(def|defp|defmacro|describe|test|setup)\b|\s*(class|function|interface|module|const\s+\w+\s*=|export)\b|\#{1,3}\s)/
 
   @impl true
   def name, do: "read"
@@ -48,7 +61,7 @@ defmodule ExAthena.Tools.Read do
          :ok <- check_size(stat),
          :ok <- check_regular(stat),
          {:ok, body} <- File.read(path) do
-      formatted = format(body, args)
+      formatted = body |> format(args) |> guard_output(body, args)
 
       offset = Map.get(args, "offset")
       limit = Map.get(args, "limit")
@@ -64,6 +77,64 @@ defmodule ExAthena.Tools.Read do
 
       {:ok, formatted, ui}
     end
+  end
+
+  # Keep oversized reads from flooding the context. Whole-file reads of
+  # structured files become a line-ranged outline; everything else is
+  # head-capped with an explicit re-read hint.
+  defp guard_output(formatted, body, args) when byte_size(formatted) > @max_output_chars do
+    explicit_window? = Map.get(args, "offset") != nil or Map.get(args, "limit") != nil
+
+    case if(explicit_window?, do: nil, else: outline(body)) do
+      nil ->
+        total = body |> String.split("\n") |> length()
+
+        String.slice(formatted, 0, @head_chars) <>
+          "\n…[truncated — file has #{total} lines; re-read with offset/limit for the rest]…"
+
+      outline ->
+        outline
+    end
+  end
+
+  defp guard_output(formatted, _body, _args), do: formatted
+
+  # Line-ranged structural outline: "lines 12–80: def foo(bar)". Returns
+  # nil when the file has too little structure to outline usefully.
+  defp outline(body) do
+    lines = String.split(body, "\n")
+    total = length(lines)
+
+    anchors =
+      lines
+      |> Enum.with_index(1)
+      |> Enum.filter(fn {line, _n} -> Regex.match?(@anchor_re, line) end)
+
+    if length(anchors) < 3 do
+      nil
+    else
+      anchors = Enum.take(anchors, @max_outline_entries)
+
+      entries =
+        anchors
+        |> Enum.chunk_every(2, 1)
+        |> Enum.map_join("\n", fn
+          [{line, n}, {_next, next_n}] -> "lines #{n}–#{next_n - 1}: #{anchor_label(line)}"
+          [{line, n}] -> "lines #{n}–#{total}: #{anchor_label(line)}"
+        end)
+
+      capped_note =
+        if length(anchors) == @max_outline_entries,
+          do: "\n…[outline capped at #{@max_outline_entries} entries]…",
+          else: ""
+
+      "[file too large to return whole: #{total} lines — outline below; " <>
+        "re-read with offset/limit for specific ranges]\n" <> entries <> capped_note
+    end
+  end
+
+  defp anchor_label(line) do
+    line |> String.trim() |> String.slice(0, 80)
   end
 
   defp line_range(_body, nil, nil), do: nil
@@ -99,10 +170,18 @@ defmodule ExAthena.Tools.Read do
   defp check_regular(%File.Stat{type: type}), do: {:error, {:not_a_regular_file, type}}
 
   defp format(body, args) do
+    # Number from the file's REAL line, not 1 — otherwise offset reads
+    # mislabel every line and the model cites wrong locations.
+    start_line =
+      case Map.get(args, "offset") do
+        o when is_integer(o) and o > 0 -> o
+        _ -> 1
+      end
+
     body
     |> String.split("\n")
     |> slice(args)
-    |> Enum.with_index(1)
+    |> Enum.with_index(start_line)
     |> Enum.map_join("\n", fn {line, idx} -> "#{idx}\t#{line}" end)
   end
 

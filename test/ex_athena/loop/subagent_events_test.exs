@@ -63,7 +63,8 @@ defmodule ExAthena.Loop.SubagentEventsTest do
                }
              )
 
-    assert_receive {:athena, {:subagent_spawn, %{id: sub_id, prompt: "sub task"}}}
+    # The composed worker prompt appends the working-directory pin.
+    assert_receive {:athena, {:subagent_spawn, %{id: sub_id, prompt: "sub task" <> _}}}
     assert_receive {:athena, {:subagent_result, %{id: ^sub_id, text: "sub finished"}}}
   end
 end

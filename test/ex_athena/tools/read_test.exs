@@ -66,4 +66,69 @@ defmodule ExAthena.Tools.ReadTest do
 
     assert ui.payload.line_range == {3, 4}
   end
+
+  test "offset slices keep REAL file line numbers (not restarting at 1)", %{dir: dir, ctx: ctx} do
+    path = Path.join(dir, "big.txt")
+    File.write!(path, Enum.join(Enum.map(1..10, &"line-#{&1}"), "\n"))
+
+    assert {:ok, body, _ui} =
+             Read.execute(%{"path" => "big.txt", "offset" => 3, "limit" => 2}, ctx)
+
+    # The prefix must be the file's own line number so the model can cite
+    # and re-read exact ranges.
+    assert body =~ "3\tline-3"
+    assert body =~ "4\tline-4"
+  end
+
+  test "a huge code file WITHOUT offset returns an outline with line ranges", %{
+    dir: dir,
+    ctx: ctx
+  } do
+    path = Path.join(dir, "huge.ex")
+
+    content =
+      Enum.map_join(1..400, "\n", fn i ->
+        "  def fun_#{i}(x) do\n" <>
+          String.duplicate("    x = x + 1 # padding padding padding padding\n", 4) <> "  end\n"
+      end)
+
+    File.write!(path, "defmodule Huge do\n" <> content <> "\nend\n")
+
+    assert {:ok, body, _ui} = Read.execute(%{"path" => "huge.ex"}, ctx)
+
+    # Compact outline instead of a context-flooding dump…
+    assert String.length(body) < 17_000
+    assert body =~ "outline"
+    assert body =~ "offset"
+    # …with line-ranged entries pointing back into the file.
+    assert body =~ ~r/lines 1[–-]/
+    assert body =~ "defmodule Huge"
+    assert body =~ "def fun_1"
+  end
+
+  test "a huge file with NO structure falls back to head + explicit marker", %{
+    dir: dir,
+    ctx: ctx
+  } do
+    path = Path.join(dir, "huge.txt")
+    File.write!(path, String.duplicate("plain data row with some content here\n", 3_000))
+
+    assert {:ok, body, _ui} = Read.execute(%{"path" => "huge.txt"}, ctx)
+
+    assert String.length(body) < 17_000
+    assert body =~ "truncated"
+    assert body =~ "offset"
+    assert body =~ "1\tplain data"
+  end
+
+  test "an explicit huge window is still capped", %{dir: dir, ctx: ctx} do
+    path = Path.join(dir, "huge.txt")
+    File.write!(path, String.duplicate("plain data row with some content here\n", 3_000))
+
+    assert {:ok, body, _ui} =
+             Read.execute(%{"path" => "huge.txt", "offset" => 1, "limit" => 99_999}, ctx)
+
+    assert String.length(body) < 17_000
+    assert body =~ "truncated"
+  end
 end

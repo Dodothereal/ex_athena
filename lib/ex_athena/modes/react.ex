@@ -156,6 +156,11 @@ defmodule ExAthena.Modes.ReAct do
                     tool_calls_made: state.tool_calls_made + length(tool_calls)
                 }
 
+                # Track the run's latest successful todo list (like the
+                # conclusions ledger) — exposed on Result.todos so failed
+                # workers can hand back Completed/Remaining.
+                state = record_todos(state, tool_calls, tool_messages)
+
                 # Turn-boundary reset on any success — see ADR adr-1-reset-consecutive-mistakes-at-turn-boundary.md.
                 state =
                   if any_tool_success?(tool_messages),
@@ -418,6 +423,26 @@ defmodule ExAthena.Modes.ReAct do
   # rolling ledger (recited at the request tail next turn). Disabled via
   # `conclusions: false` on the run.
   @ledger_size 10
+
+  # Latest SUCCESSFUL todo_write list → state.meta[:todos] (Result.todos).
+  defp record_todos(state, tool_calls, tool_messages) do
+    successful_ids =
+      tool_messages
+      |> Enum.flat_map(fn
+        %{role: :tool, tool_results: trs} when is_list(trs) -> trs
+        _ -> []
+      end)
+      |> Enum.reject(&(&1.is_error == true))
+      |> MapSet.new(& &1.tool_call_id)
+
+    tool_calls
+    |> Enum.filter(&(&1.name == "todo_write" and MapSet.member?(successful_ids, &1.id)))
+    |> List.last()
+    |> case do
+      nil -> state
+      tc -> %{state | meta: Map.put(state.meta, :todos, List.wrap(tc.arguments["todos"]))}
+    end
+  end
 
   defp record_conclusion(%State{meta: %{conclusions: false}} = state, _response, _calls),
     do: state

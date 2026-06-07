@@ -484,6 +484,7 @@ defmodule ExAthena.Loop do
       provider: state.provider_mod,
       session_id: state.meta[:provider_session_id],
       conclusions: state.meta[:ledger] || [],
+      todos: state.meta[:todos] || [],
       telemetry: %{},
       no_progress_snapshot: state.no_progress_snapshot
     }

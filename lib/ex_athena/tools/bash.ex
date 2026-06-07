@@ -18,6 +18,14 @@ defmodule ExAthena.Tools.Bash do
   @default_timeout 120_000
   @max_timeout 600_000
 
+  # Output cap: an uncapped `find .` dumped megabytes into a worker's
+  # context (observed live: 204k input tokens by iteration 24 → starved to
+  # error_max_turns). Head + tail survive; the cut is explicit so the model
+  # narrows the command instead of assuming it saw everything.
+  @max_output_chars 16_000
+  @head_chars 12_000
+  @tail_chars 4_000
+
   # Patterns that mark a command as a write/destructive operation. Anything
   # NOT matching is treated as read-only. Used by `Permissions.check_phase/3`
   # to allow read-only bash invocations in :plan phase while still blocking
@@ -118,7 +126,7 @@ defmodule ExAthena.Tools.Bash do
             collect(port, [data | acc], deadline, command, started_at)
 
           {^port, {:exit_status, code}} ->
-            body = acc |> Enum.reverse() |> IO.iodata_to_binary()
+            body = acc |> Enum.reverse() |> IO.iodata_to_binary() |> cap_output()
             duration_ms = System.monotonic_time(:millisecond) - started_at
             llm = "exit #{code}\n" <> body
 
@@ -139,6 +147,19 @@ defmodule ExAthena.Tools.Bash do
             {:error, :timeout}
         end
     end
+  end
+
+  defp cap_output(body) when byte_size(body) <= @max_output_chars, do: body
+
+  defp cap_output(body) do
+    cut = byte_size(body) - @head_chars - @tail_chars
+
+    head = binary_part(body, 0, @head_chars)
+    tail = binary_part(body, byte_size(body) - @tail_chars, @tail_chars)
+
+    head <>
+      "\n…[truncated #{cut} chars — narrow the command (use head/grep/max_results)]…\n" <>
+      tail
   end
 
   defp kill(port) do
