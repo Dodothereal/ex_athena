@@ -49,6 +49,9 @@ defmodule ExAthena.Modes.Orchestrate do
      newly discovered steps). ALWAYS send the FULL list — completed items
      included, new todos appended at the end; never drop finished work.
      Record decisions only — never restate worker output verbatim.
+     Treat NEGATIVE findings ("X does not exist") as SETTLED facts: never
+     re-delegate a search for something already reported absent. Record
+     the absence and move on to the next step of the plan.
   4. Never delegate work that is not on the todo list — FIRST add the
      todo with todo_write, THEN spawn the worker with `todo:` set to it.
      One todo per worker; do not bundle several steps into one spawn.
@@ -71,11 +74,15 @@ defmodule ExAthena.Modes.Orchestrate do
   You are a sub-agent responsible for ONE step of a larger task.
   - Maintain your own todo list with todo_write as you work.
   - End EVERY response with a line: CONCLUSION: <one sentence>.
+  - Record NEGATIVE findings explicitly ("X does not exist", "no blog
+    directory") in your conclusions and final report — never re-search
+    for something already established absent.
   - Your FINAL message is the ONLY thing the orchestrator sees — make it a
     complete, self-contained report: every concrete fact discovered (exact
     paths, file names, patterns, config/frontmatter formats, snippets),
-    decisions made, and files changed. Completeness beats brevity — never
-    summarize away specifics the next step will need (up to ~800 words).
+    NEGATIVE findings, decisions made, and files changed. Completeness
+    beats brevity — never summarize away specifics the next step will
+    need (up to ~800 words).
   """
 
   # The orchestrator gets coordination tools ONLY — no specialist tools on

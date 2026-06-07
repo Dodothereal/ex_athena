@@ -61,4 +61,76 @@ defmodule ExAthena.ConclusionsTest do
       assert Conclusions.from_turn(nil, []) == :none
     end
   end
+
+  describe "from_turn/3 — thinking as a source (Qwen-style turns)" do
+    # Thinking models put EVERYTHING in <think>; the text channel of a
+    # tool-call turn is blank. Without these sources every conclusion was
+    # the useless "ran bash" fallback.
+    test "a CONCLUSION marker inside thinking wins over the derived fallback" do
+      thinking = "Let me check the dirs first.\nCONCLUSION: no blog directory exists yet."
+
+      assert {:ok, %{text: "no blog directory exists yet.", source: :stated}} =
+               Conclusions.from_turn("", thinking, ["bash"])
+    end
+
+    test "a marker in TEXT still wins over one in thinking" do
+      assert {:ok, %{text: "from text.", source: :stated}} =
+               Conclusions.from_turn(
+                 "CONCLUSION: from text.",
+                 "CONCLUSION: from thinking.",
+                 []
+               )
+    end
+
+    test "blank text + markerless thinking → the WHOLE thinking blob is the conclusion" do
+      # Tail-only extraction yielded forward-looking junk ("Let me
+      # explore…") and prompt nagging didn't bind the model — so the full
+      # reasoning carries the turn's record instead.
+      thinking = """
+      I listed the directories.
+
+      The project has web/priv/services but no blog directory at all.
+
+      Let me check the controllers next.
+      """
+
+      assert {:ok, %{text: text, source: :thinking}} =
+               Conclusions.from_turn("", thinking, ["bash"])
+
+      assert text =~ "I listed the directories."
+      assert text =~ "no blog directory"
+      assert text =~ "Let me check the controllers next."
+    end
+
+    test "a huge thinking blob is truncated, head-first" do
+      thinking = String.duplicate("reasoning ", 500)
+
+      assert {:ok, %{text: text, source: :thinking}} =
+               Conclusions.from_turn("", thinking, ["bash"])
+
+      assert String.length(text) <= 1_001
+    end
+
+    test "the TEXT tail skips forward-looking intent paragraphs and picks the finding" do
+      text = """
+      The project has web/priv/services with 6 markdown files but no blog
+      directory exists at all.
+
+      Let me start by looking at the blog controller to understand the pattern.
+      """
+
+      assert {:ok, %{text: out, source: :tail}} = Conclusions.from_turn(text, nil, ["bash"])
+      assert out =~ "no blog"
+      refute out =~ "Let me"
+    end
+
+    test "all-intent text still falls back to its last paragraph" do
+      assert {:ok, %{text: "Let me explore the directories first.", source: :tail}} =
+               Conclusions.from_turn("Let me explore the directories first.", nil, ["bash"])
+    end
+
+    test "no text, no thinking, tools only → derived (unchanged)" do
+      assert {:ok, %{source: :derived}} = Conclusions.from_turn("", nil, ["bash"])
+    end
+  end
 end

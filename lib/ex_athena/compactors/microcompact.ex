@@ -74,7 +74,13 @@ defmodule ExAthena.Compactors.Microcompact do
   defp do_collapse([head | tail], acc, runs, threshold, excerpt_chars) do
     case take_tool_run(head, tail) do
       {[_, _, _ | _] = run, rest} when length(run) >= threshold ->
-        {[summarise_run(run, excerpt_chars) | acc], rest}
+        # Rewrite each result IN PLACE (excerpted) — collapsing N tool
+        # messages into one summary orphaned the parent assistant's
+        # tool_calls (strict servers 400 on unmatched tool_call_id) and
+        # the id-less summary message was re-sent as a USER message.
+        excerpted = Enum.map(run, &excerpt_message(&1, excerpt_chars))
+
+        {Enum.reverse(excerpted) ++ acc, rest}
         |> then(fn {a, r} -> do_collapse(r, a, runs + 1, threshold, excerpt_chars) end)
 
       {_short_or_none, _} ->
@@ -110,31 +116,28 @@ defmodule ExAthena.Compactors.Microcompact do
 
   # ── Run rendering ────────────────────────────────────────────────
 
-  defp summarise_run(run, excerpt_chars) do
-    bullets =
-      Enum.map_join(run, "\n", fn %Message{tool_results: [tr | _]} ->
-        body =
-          tr.content
-          |> to_string()
-          |> String.slice(0, excerpt_chars)
-          |> truncate_marker(byte_size(to_string(tr.content)), excerpt_chars)
+  # Excerpt one tool message, keeping its tool_call_id pairing intact.
+  defp excerpt_message(%Message{tool_results: [tr | rest]} = msg, excerpt_chars) do
+    content = to_string(tr.content)
 
-        "  - call #{tr.tool_call_id}: #{body}"
-      end)
+    if byte_size(content) <= excerpt_chars do
+      msg
+    else
+      body =
+        content
+        |> String.slice(0, excerpt_chars)
+        |> truncate_marker(byte_size(content), excerpt_chars)
 
-    %Message{
-      role: :tool,
-      content: nil,
-      tool_results: [],
-      name: "microcompact",
-      tool_calls: nil
-    }
-    |> Map.put(:content, """
-    [microcompact: #{length(run)} tool results elided]
-
-    #{bullets}
-    """)
+      %{
+        msg
+        | tool_results: [
+            %{tr | content: "[microcompact excerpt] " <> body, ui_payload: nil} | rest
+          ]
+      }
+    end
   end
+
+  defp excerpt_message(msg, _), do: msg
 
   defp truncate_marker(prefix, original_size, excerpt_chars) when original_size > excerpt_chars,
     do: prefix <> " […]"

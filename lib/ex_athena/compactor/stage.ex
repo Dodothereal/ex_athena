@@ -53,11 +53,17 @@ defmodule ExAthena.Compactor.Stage do
   """
   @spec default_pipeline() :: [module()]
   def default_pipeline do
+    # ObservationMask is the workhorse (JetBrains/Anthropic evidence:
+    # aging out old tool results beats summarization for agent loops);
+    # Summary stays the last resort. ContextCollapse was REMOVED from the
+    # default: its meta[:compact_view] is read by nothing, yet it lowered
+    # the token estimate — short-circuiting Summary while the real prompt
+    # stayed oversized (overflow persisted).
     [
       ExAthena.Compactors.BudgetReduction,
       ExAthena.Compactors.Snip,
+      ExAthena.Compactors.ObservationMask,
       ExAthena.Compactors.Microcompact,
-      ExAthena.Compactors.ContextCollapse,
       ExAthena.Compactors.Summary
     ]
   end

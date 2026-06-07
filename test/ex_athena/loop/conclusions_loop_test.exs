@@ -212,6 +212,55 @@ defmodule ExAthena.Loop.ConclusionsLoopTest do
     refute message_text(ledger) =~ "step 2 done."
   end
 
+  test "recitation truncates thinking entries and ages out stale ones", %{dir: dir} do
+    File.write!(Path.join(dir, "f.txt"), "x")
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    # 6 blank-text tool turns with DISTINCT thinking blobs (Qwen rhythm).
+    responder = fn request ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      send(test_pid, {:request, n, request.messages})
+
+      if n <= 6 do
+        %Response{
+          text: "",
+          thinking: "marker_iter_#{n - 1} " <> String.duplicate("reasoning ", 80),
+          tool_calls: [
+            %ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "f.txt", "offset" => n}}
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      else
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    Loop.run("go",
+      provider: :mock,
+      mock: [responder: responder],
+      cwd: dir,
+      tools: [ExAthena.Tools.Read]
+    )
+
+    # Request 6: ledger has iterations 0..4; older (recited) = 0..3 with
+    # last_iter = 4. Thinking entries older than 3 iterations (iteration 0)
+    # are aged OUT — stale reasoning is a re-execution hazard. Recent ones
+    # stay, truncated to ~200 chars (full blobs cost ~2k tokens/turn).
+    assert_receive {:request, 6, msgs}
+    ledger = Enum.find(msgs, &ledger_message?/1)
+    assert ledger
+
+    text = message_text(ledger)
+    refute text =~ "marker_iter_0"
+    assert text =~ "marker_iter_3"
+
+    # Each recited entry is truncated — the 800+ char blob never appears whole.
+    refute text =~ String.duplicate("reasoning ", 40)
+  end
+
   test "blank or repeated text no longer counts as productivity", %{dir: dir} do
     File.write!(Path.join(dir, "f.txt"), "x")
 

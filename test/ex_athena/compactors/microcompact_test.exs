@@ -36,14 +36,16 @@ defmodule ExAthena.Compactors.MicrocompactTest do
     assert :skip = Microcompact.compact_stage(state, %{tokens: 10, max_tokens: 1_000})
   end
 
-  test "collapses a run of 3+ adjacent tool messages into a single summary" do
+  test "excerpts a run of 3+ adjacent tool messages IN PLACE (pairing preserved)" do
+    long = fn tag -> tag <> "-" <> String.duplicate("x", 500) end
+
     messages =
       [
         %Message{role: :user, content: "go"},
-        tool_msg("c1", "alpha-result"),
-        tool_msg("c2", "beta-result"),
-        tool_msg("c3", "gamma-result"),
-        tool_msg("c4", "delta-result"),
+        tool_msg("c1", long.("alpha")),
+        tool_msg("c2", long.("beta")),
+        tool_msg("c3", long.("gamma")),
+        tool_msg("c4", long.("delta")),
         %Message{role: :assistant, content: "ok"},
         # Live suffix — stays untouched.
         %Message{role: :user, content: "more"},
@@ -60,13 +62,18 @@ defmodule ExAthena.Compactors.MicrocompactTest do
     assert {:ok, new_state, new_estimate} =
              Microcompact.compact_stage(state, %{tokens: 1_000, max_tokens: 10_000})
 
-    # The 3-message run inside the work window (live-suffix takes the 4th)
-    # collapses into a single summary message.
-    summary = Enum.find(new_state.messages, &match?(%Message{name: "microcompact"}, &1))
-    assert summary
-    assert summary.content =~ "[microcompact: 3 tool results elided]"
-    assert summary.content =~ "alpha-result"
-    assert summary.content =~ "gamma-result"
+    # Each message in the run is excerpted IN PLACE — collapsing them into
+    # one summary used to orphan the parents' tool_call ids (strict
+    # servers 400) and re-send the id-less summary as a user message.
+    tool_msgs = Enum.filter(new_state.messages, &(&1.role == :tool))
+    assert length(tool_msgs) == 4
+    assert Enum.map(tool_msgs, fn m -> hd(m.tool_results).tool_call_id end) == ~w(c1 c2 c3 c4)
+
+    [a, _b, c, d] = tool_msgs
+    assert hd(a.tool_results).content =~ "[microcompact excerpt] alpha"
+    assert hd(c.tool_results).content =~ "[microcompact excerpt] gamma"
+    # Live suffix window (last 4 messages) untouched.
+    assert hd(d.tool_results).content =~ String.duplicate("x", 500)
 
     # Token budget went down.
     assert new_estimate.tokens < 1_000

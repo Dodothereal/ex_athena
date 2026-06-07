@@ -135,7 +135,12 @@ defmodule ExAthena.Compactors.Summary do
         "\n\nSummarise the following conversation turns as a single paragraph " <>
         "focusing on decisions, tool results, and open questions. Be terse."
 
-    req_messages = middle ++ [Messages.user(instruction)]
+    # Render the middle as a TEXT transcript instead of replaying the raw
+    # messages — the slice can open on tool messages whose paired
+    # assistant call lives outside it, and strict OpenAI-compatible
+    # servers 400 on orphaned tool results.
+    transcript = Enum.map_join(middle, "\n", &render_line/1)
+    req_messages = [Messages.user(transcript <> "\n\n" <> instruction)]
 
     request = %Request{
       messages: req_messages,
@@ -158,6 +163,23 @@ defmodule ExAthena.Compactors.Summary do
     end
   end
 
+  defp render_line(%{role: :tool, tool_results: [tr | _]}) when not is_nil(tr) do
+    "[tool result] " <> String.slice(to_string(tr.content || ""), 0, 500)
+  end
+
+  defp render_line(%{role: role, content: content, tool_calls: calls}) do
+    calls_part =
+      case calls do
+        list when is_list(list) and list != [] ->
+          " [calls: " <> Enum.map_join(list, ", ", & &1.name) <> "]"
+
+        _ ->
+          ""
+      end
+
+    "[#{role}] " <> String.slice(to_string(content || ""), 0, 1_000) <> calls_part
+  end
+
   defp split_messages(messages, pinned_count, live_count) do
     total = length(messages)
 
@@ -167,8 +189,23 @@ defmodule ExAthena.Compactors.Summary do
 
       true ->
         {prefix, rest} = Enum.split(messages, pinned_count)
-        {middle, suffix} = Enum.split(rest, max(0, length(rest) - live_count))
+        split_at = max(0, length(rest) - live_count)
+        # Snap the middle/suffix boundary so the live suffix never STARTS
+        # with tool messages whose paired assistant call got summarized
+        # away (orphaned tool_result → 400 on strict servers). Grow the
+        # suffix backwards until it opens on a non-tool message.
+        split_at = snap_to_pair_boundary(rest, split_at)
+        {middle, suffix} = Enum.split(rest, split_at)
         {prefix, middle, suffix}
+    end
+  end
+
+  defp snap_to_pair_boundary(_rest, 0), do: 0
+
+  defp snap_to_pair_boundary(rest, split_at) do
+    case Enum.at(rest, split_at) do
+      %{role: :tool} -> snap_to_pair_boundary(rest, split_at - 1)
+      _ -> split_at
     end
   end
 

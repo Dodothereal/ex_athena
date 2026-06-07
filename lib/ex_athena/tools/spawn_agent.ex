@@ -40,12 +40,11 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   @behaviour ExAthena.Tool
 
-  # One tool call ≈ one iteration on local models — 10, then 25 turns kept
-  # starving real tasks (observed: error_max_turns with the worker mid-task).
-  # Tool-output caps now bound per-turn context growth, so a triple budget
-  # is safe; the worker's no-progress guard is the runaway protection.
-  # Matches the kernel default; smaller explicit args are floored UP.
-  @default_max_iterations 75
+  # One tool call ≈ one iteration on local models. 25 turns (user-tuned):
+  # with tool-output caps + the Completed/Remaining failure handoff, a
+  # worker that runs out hands its progress to a narrower retry instead of
+  # burning an hour spinning. Smaller explicit args are floored UP.
+  @default_max_iterations 25
 
   @impl true
   def name, do: "spawn_agent"

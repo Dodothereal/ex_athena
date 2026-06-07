@@ -435,38 +435,59 @@ defmodule ExAthena.Providers.ReqLLM do
     if Keyword.get(opts, :openai_compatible_backend) == :exo do
       model = raw_model_id(request, opts)
 
-      # :timeout_ms in provider opts is the *request* timeout (UIs set it to
-      # hours); the instance-await deadline must stay independent, so only
-      # exo-namespaced keys override Chat.Exo's defaults (250 ms / 10 s).
-      exo_opts =
-        Keyword.take(opts, [:base_url]) ++
-          take_renamed(opts,
-            exo_poll_interval_ms: :poll_interval_ms,
-            exo_instance_timeout_ms: :timeout_ms
-          )
+      # Positive presence is cached briefly — the preflight used to add an
+      # HTTP GET + :global.trans to EVERY provider call in the loop. Keyed
+      # by base_url + model so distinct servers never share an entry.
+      cache_key = {:exo_instance_ok, Keyword.get(opts, :base_url), model}
 
-      case ExAthena.Chat.Exo.ensure_instance(model, exo_opts) do
-        :ok ->
-          :ok
+      cached_at =
+        case :persistent_term.get(cache_key, nil) do
+          nil -> nil
+          ts -> ts
+        end
 
-        {:error, :exo_unreachable} ->
-          {:error,
-           Error.new(:transport, "exo is unreachable at the configured base_url",
-             provider: :req_llm,
-             raw: :exo_unreachable
-           )}
-
-        {:error, reason} ->
-          {:error,
-           Error.new(
-             :server_error,
-             "exo has no active instance for #{model} (#{inspect(reason)})",
-             provider: :req_llm,
-             raw: reason
-           )}
+      if is_integer(cached_at) and
+           System.monotonic_time(:millisecond) - cached_at < 30_000 do
+        :ok
+      else
+        do_ensure_exo_instance(request, opts, model, cache_key)
       end
     else
       :ok
+    end
+  end
+
+  defp do_ensure_exo_instance(_request, opts, model, cache_key) do
+    # :timeout_ms in provider opts is the *request* timeout (UIs set it to
+    # hours); the instance-await deadline must stay independent, so only
+    # exo-namespaced keys override Chat.Exo's defaults (250 ms / 10 s).
+    exo_opts =
+      Keyword.take(opts, [:base_url]) ++
+        take_renamed(opts,
+          exo_poll_interval_ms: :poll_interval_ms,
+          exo_instance_timeout_ms: :timeout_ms
+        )
+
+    case ExAthena.Chat.Exo.ensure_instance(model, exo_opts) do
+      :ok ->
+        :persistent_term.put(cache_key, System.monotonic_time(:millisecond))
+        :ok
+
+      {:error, :exo_unreachable} ->
+        {:error,
+         Error.new(:transport, "exo is unreachable at the configured base_url",
+           provider: :req_llm,
+           raw: :exo_unreachable
+         )}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(
+           :server_error,
+           "exo has no active instance for #{model} (#{inspect(reason)})",
+           provider: :req_llm,
+           raw: reason
+         )}
     end
   end
 

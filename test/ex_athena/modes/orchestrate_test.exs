@@ -315,7 +315,7 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert_receive {:worker_timeout, 1_800_000}
   end
 
-  test "the default worker budget covers a 30-turn task (tripled for small models)", %{dir: dir} do
+  test "the default worker budget covers a 20-turn task", %{dir: dir} do
     File.write!(Path.join(dir, "f.txt"), "x")
 
     responses = [
@@ -331,15 +331,15 @@ defmodule ExAthena.Modes.OrchestrateTest do
       %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
     ]
 
-    # Worker needs 31 turns: 30 DISTINCT tool calls (one per turn — the
-    # local-model rhythm), then the final summary. Died at the old 25-cap.
+    # Worker needs 21 turns: 20 DISTINCT tool calls (one per turn — the
+    # local-model rhythm), then the final summary.
     sub_counter = :counters.new(1, [:atomics])
 
     sub_responder = fn _request ->
       :counters.add(sub_counter, 1, 1)
       n = :counters.get(sub_counter, 1)
 
-      if n <= 30 do
+      if n <= 20 do
         %Response{
           text: "CONCLUSION: step #{n} done.",
           tool_calls: [

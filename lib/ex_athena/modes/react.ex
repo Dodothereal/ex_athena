@@ -501,7 +501,11 @@ defmodule ExAthena.Modes.ReAct do
     do: state
 
   defp record_conclusion(state, response, tool_calls) do
-    case ExAthena.Conclusions.from_turn(response.text, Enum.map(tool_calls, & &1.name)) do
+    case ExAthena.Conclusions.from_turn(
+           response.text,
+           response.thinking,
+           Enum.map(tool_calls, & &1.name)
+         ) do
       {:ok, %{text: text, source: source}} ->
         entry = %{iteration: state.iterations, text: text, source: source}
         Events.emit(state.on_event, {:conclusion, entry})
@@ -528,12 +532,29 @@ defmodule ExAthena.Modes.ReAct do
     # (a stale "waiting for user input" conclusion made the model claim it
     # was still waiting AFTER the answer arrived). Recite only the older
     # entries; the stall directive still considers the full ledger.
-    case Enum.drop(ledger, -1) do
+    last_iter = List.last(ledger).iteration
+
+    older =
+      ledger
+      |> Enum.drop(-1)
+      # Stale REASONING is a re-execution hazard: old "Let me check X…"
+      # intents recited back can anchor the model into redoing completed
+      # actions. Thinking-sourced entries age out after 3 iterations;
+      # stated/tail findings persist (they're distilled facts).
+      |> Enum.reject(fn e -> e.source == :thinking and last_iter - e.iteration > 3 end)
+
+    case older do
       [] ->
         []
 
       older ->
-        lines = Enum.map_join(older, "\n", fn e -> "- (iteration #{e.iteration}) #{e.text}" end)
+        # Whole thinking blobs live in the UI/failure digests; the per-turn
+        # recitation carries a ~200-char excerpt (full blobs would prefill
+        # ~2k extra tokens EVERY turn on a 1-slot GPU).
+        lines =
+          Enum.map_join(older, "\n", fn e ->
+            "- (iteration #{e.iteration}) #{recitation_text(e)}"
+          end)
 
         [
           Messages.user("""
@@ -547,6 +568,12 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   defp recitation(_state), do: []
+
+  defp recitation_text(%{source: :thinking, text: text}) do
+    if String.length(text) > 200, do: String.slice(text, 0, 200) <> "…", else: text
+  end
+
+  defp recitation_text(%{text: text}), do: text
 
   # Magentic-One-style outer-loop response to a stall: when the last
   # conclusions are identical the agent is spinning — escalate the reminder

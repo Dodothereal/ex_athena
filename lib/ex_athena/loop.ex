@@ -87,11 +87,7 @@ defmodule ExAthena.Loop do
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
 
-  # One tool call ≈ one iteration on small local models — 25 starved real
-  # tasks. Tool-output caps (bash/read/web_fetch) keep per-turn context
-  # growth bounded, so a triple budget is safe; the no-progress guard,
-  # mistake counter, and compaction remain the runaway protection.
-  @default_max_iterations 75
+  @default_max_iterations 25
   @default_max_mistakes 3
   @default_max_unproductive_iterations 3
   @default_max_concurrency 4
@@ -436,23 +432,38 @@ defmodule ExAthena.Loop do
 
   @doc false
   def compute_tool_fingerprint(prev_state, new_state) do
-    new_state.messages
-    |> Enum.drop(length(prev_state.messages))
-    |> Enum.flat_map(fn
-      %{role: :assistant, tool_calls: calls} when is_list(calls) -> calls
-      _ -> []
-    end)
-    |> Enum.map(fn tc ->
-      args_bin =
-        cond do
-          is_nil(tc.arguments) -> "{}"
-          is_binary(tc.arguments) -> tc.arguments
-          true -> Jason.encode!(tc.arguments)
-        end
+    new_msgs = Enum.drop(new_state.messages, length(prev_state.messages))
 
-      {tc.name, args_bin}
-    end)
-    |> Enum.sort()
+    calls =
+      new_msgs
+      |> Enum.flat_map(fn
+        %{role: :assistant, tool_calls: calls} when is_list(calls) -> calls
+        _ -> []
+      end)
+      |> Enum.map(fn tc ->
+        args_bin =
+          cond do
+            is_nil(tc.arguments) -> "{}"
+            is_binary(tc.arguments) -> tc.arguments
+            true -> Jason.encode!(tc.arguments)
+          end
+
+        {tc.name, args_bin}
+      end)
+      |> Enum.sort()
+
+    # Fold in a hash of the turn's tool RESULTS: a legitimately repeated
+    # call whose OUTPUT changes (re-running tests after an edit, polling a
+    # build) is progress, not a stall — name+args alone killed those runs.
+    results_hash =
+      new_msgs
+      |> Enum.flat_map(fn
+        %{role: :tool, tool_results: trs} when is_list(trs) -> Enum.map(trs, & &1.content)
+        _ -> []
+      end)
+      |> :erlang.phash2()
+
+    {calls, results_hash}
   end
 
   # ── Result construction ───────────────────────────────────────────
@@ -772,8 +783,12 @@ defmodule ExAthena.Loop do
   # forgets the marker still produces a usable conclusion.
   @conclusion_contract """
   ## Conclusion protocol
-  End EVERY response with a final line of exactly this form:
-  CONCLUSION: <one sentence stating what you concluded or decided this turn>
+  End EVERY reply — including replies that call tools — with a final line
+  of exactly this form, as VISIBLE text OUTSIDE your thinking (after the
+  </think> block, never inside it):
+  CONCLUSION: <one sentence stating what you LEARNED or decided this turn>
+  State findings ("X uses YAML frontmatter", "no blog directory exists"),
+  not intentions ("let me check X").
   """
 
   defp apply_conclusion_contract(request, false), do: request
