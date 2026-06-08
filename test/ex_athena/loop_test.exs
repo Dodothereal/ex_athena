@@ -512,6 +512,48 @@ defmodule ExAthena.LoopTest do
       assert result.text == "found the services dir"
     end
 
+    test "a finite-cap loop nearing its limit gets a wrap-up tail directive", %{dir: dir} do
+      File.write!(Path.join(dir, "f.txt"), "x")
+      test_pid = self()
+      counter = :counters.new(1, [:atomics])
+
+      # Keep making (distinct) tool calls so no-progress never trips — the
+      # only thing that should stop it is the cap. Capture each request.
+      responder = fn request ->
+        :counters.add(counter, 1, 1)
+        n = :counters.get(counter, 1)
+        send(test_pid, {:req, n, request.messages})
+
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "f.txt", "offset" => n}}
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      end
+
+      Loop.run("go",
+        provider: :mock,
+        mock: [responder: responder],
+        cwd: dir,
+        max_iterations: 5,
+        tools: [ExAthena.Tools.Read]
+      )
+
+      # Early turns: no wrap-up pressure.
+      assert_receive {:req, 1, msgs1}
+      refute Enum.any?(msgs1, fn m -> is_binary(m.content) and m.content =~ "wrap up" end)
+
+      # Late turns (near the cap): a wrap-up directive appears at the tail.
+      assert_receive {:req, 5, msgs5}
+
+      assert Enum.any?(msgs5, fn m ->
+               is_binary(m.content) and m.content =~ "wrap up" and m.content =~ "final"
+             end)
+    end
+
     test "model calling finish halts with :submitted and captures deliverable", %{dir: dir} do
       responses = [
         %Response{

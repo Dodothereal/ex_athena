@@ -54,8 +54,22 @@ defmodule ExAthena.Compactors.Snip do
 
   # ── Internals ────────────────────────────────────────────────────
 
+  # Tool names whose results must survive snipping: todo_write is task
+  # state; spawn_agent results are worker summaries — the orchestrator's
+  # ONLY knowledge of completed work (re-running one costs a full worker).
+  @protected_tools ~w(todo_write spawn_agent)
+
   defp snip_old_tool_messages(messages, pin_floor, suffix_floor, age_threshold) do
     indexed = Enum.with_index(messages)
+
+    protected_ids =
+      for %Message{role: :assistant, tool_calls: calls} <- messages,
+          is_list(calls),
+          call <- calls,
+          call.name in @protected_tools,
+          into: MapSet.new() do
+        call.id
+      end
 
     # Pre-compute index of last assistant turn so we can verify "model
     # has integrated this tool result already" cheaply.
@@ -76,6 +90,9 @@ defmodule ExAthena.Compactors.Snip do
           idx < pin_floor or idx >= suffix_floor ->
             {acc ++ [msg], c}
 
+          protected_result?(msg, protected_ids) ->
+            {acc ++ [msg], c}
+
           tool_message_old_enough?(msg, idx, last_assistant_idx, age_threshold) ->
             {acc ++ [snip_marker(msg)], c + 1}
 
@@ -86,6 +103,11 @@ defmodule ExAthena.Compactors.Snip do
 
     {result, count}
   end
+
+  defp protected_result?(%Message{role: :tool, tool_results: [tr | _]}, protected_ids),
+    do: MapSet.member?(protected_ids, tr.tool_call_id)
+
+  defp protected_result?(_, _), do: false
 
   defp tool_message_old_enough?(%Message{role: :tool}, idx, last_assistant_idx, age_threshold)
        when is_integer(last_assistant_idx) do

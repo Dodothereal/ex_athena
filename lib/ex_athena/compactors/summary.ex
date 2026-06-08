@@ -151,7 +151,16 @@ defmodule ExAthena.Compactors.Summary do
       timeout_ms: 30_000
     }
 
-    case state.provider_mod.query(request, state.provider_opts) do
+    # Through the GPU queue: a compaction call must not oversubscribe a
+    # 1-slot local backend while a sibling worker is mid-call.
+    result =
+      ExAthena.RequestQueue.with_slot(
+        state.meta[:provider_atom],
+        fn -> state.provider_mod.query(request, state.provider_opts) end,
+        state.meta[:queue_opts] || []
+      )
+
+    case result do
       {:ok, %{text: text} = response} when is_binary(text) and text != "" ->
         {:ok, text, response.usage}
 

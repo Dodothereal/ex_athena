@@ -2145,6 +2145,14 @@ defmodule ExAthena.Web.Live.ChatLive do
             permission_mode: :accept_edits,
             coordinator: coordinator,
             on_event: on_event,
+            # Conclusion summarizer is OFF for local thinking models: exo/
+            # Qwen3.5 ignore `/no_think` and req_llm's OpenAI path can't
+            # forward `enable_thinking: false`, so the micro-call always
+            # spends its whole budget inside <think> and returns a fragment
+            # the quality gate discards — pure waste. The quality-gated raw
+            # thinking blob is already a good conclusion. Enable only for
+            # providers that separate reasoning (Alibaba, cloud).
+            conclusion_summarizer: false,
             timeout_ms: 24 * 60 * 60 * 1000
           ]
           |> maybe_put_model(model)

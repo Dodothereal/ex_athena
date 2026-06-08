@@ -98,8 +98,9 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   # terminal guard below.
   def apply_event(info, {:result_note, text}) when is_binary(text) do
     # Generous: the contribution box scrolls; clipping exploration reports
-    # to a snippet hid the discovered detail.
-    %{info | result: truncate(text, 4_000)}
+    # to a snippet hid the discovered detail. Matches auto_delegate's
+    # max_result_chars (8k).
+    %{info | result: truncate(text, 8_000)}
   end
 
   def apply_event(%__MODULE__{status: status} = info, _event) when status in @terminal, do: info

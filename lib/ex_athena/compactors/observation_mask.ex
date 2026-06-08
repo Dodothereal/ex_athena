@@ -30,7 +30,10 @@ defmodule ExAthena.Compactors.ObservationMask do
 
   @keep_last 5
   @min_reclaim_chars 10_000
-  @protected_tools ~w(todo_write)
+  # todo_write = task state; spawn_agent results = worker summaries — the
+  # ORCHESTRATOR'S ONLY KNOWLEDGE of completed work. "Re-run the tool" for
+  # a masked spawn means paying a full 30-min worker again.
+  @protected_tools ~w(todo_write spawn_agent)
   @placeholder_prefix "[output cleared to save context"
 
   @impl true

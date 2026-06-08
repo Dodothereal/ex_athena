@@ -15,7 +15,7 @@ defmodule ExAthena.Tools.SpawnAgent do
       automatically; explicit args still override.
     * `tools` (optional) — list of tool names to expose to the sub-agent; defaults
       to whatever the parent had (minus PlanMode + SpawnAgent to avoid loops).
-    * `max_iterations` (optional, default 10) — cap on agent-loop iterations.
+    * `max_iterations` (optional, default 25, floored UP to 25) — worker loop budget.
     * `system_prompt` (optional) — system prompt override for the sub-agent.
 
   Workers ALWAYS run in the parent's working directory — there is no
@@ -83,20 +83,19 @@ defmodule ExAthena.Tools.SpawnAgent do
         },
         objective: %{
           type: "string",
-          description: "What the worker must accomplish (required in orchestrate mode)."
+          description: "What the worker must accomplish."
         },
         expected_output: %{
           type: "string",
-          description: "Exactly what the worker should return (required in orchestrate mode)."
+          description: "Exactly what the worker should return."
         },
         tool_guidance: %{
           type: "string",
-          description: "Which tools/sources to use (required in orchestrate mode)."
+          description: "Which tools/sources to use."
         },
         boundaries: %{
           type: "string",
-          description:
-            "What is out of scope / must not be touched (required in orchestrate mode)."
+          description: "What is out of scope / must not be touched."
         },
         max_result_chars: %{
           type: "integer",
@@ -122,23 +121,42 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   @impl true
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
-    if Map.get(ctx.assigns || %{}, :subagent?, false) do
-      # Depth-1 rail (Claude Code's own rule): workers finish their step and
-      # report back — they never spawn further workers.
-      {:error,
-       "nested subagents are not allowed (depth 1): finish this step yourself and report back"}
-    else
-      do_execute(fill_brief_defaults(args, ctx), prompt, ctx)
+    assigns = ctx.assigns || %{}
+    todo = Map.get(args, "todo")
+
+    cond do
+      Map.get(assigns, :subagent?, false) ->
+        # Depth-1 rail (Claude Code's own rule): workers finish their step
+        # and report back — they never spawn further workers.
+        {:error,
+         "nested subagents are not allowed (depth 1): finish this step yourself and report back"}
+
+      is_binary(todo) and MapSet.member?(Map.get(assigns, :completed_todos, MapSet.new()), todo) ->
+        # Don't-repeat-steps rail: a completed todo must never re-run a
+        # 30-min worker. Short-circuit instantly.
+        {:error,
+         "Step #{inspect(todo)} is already complete — do not re-run it. " <>
+           "Build on the recorded findings and move to the next pending todo."}
+
+      true ->
+        do_execute(fill_brief_defaults(args, ctx), prompt, ctx)
     end
   end
 
   def execute(_, _), do: {:error, :missing_prompt}
 
   defp do_execute(args, prompt, ctx) do
-    # 30 min wall clock — must cover the 75-iteration budget on a local
-    # model at 30–90s/turn plus single-slot queue waits (a 300s default
-    # brutal-killed workers ~4-8 turns in, discarding all progress).
-    timeout = Map.get(args, "timeout_ms", 1_800_000)
+    # 30 min wall clock — covers the 25-iteration budget on a local model
+    # at 30–90s/turn plus single-slot queue waits. NOT model-controllable:
+    # small models supplied self-sabotaging 30–60s budgets that killed the
+    # worker after one turn (same lesson as cwd). Host override only, via
+    # spawn_agent_opts[:timeout_ms].
+    timeout =
+      case (ctx.assigns[:spawn_agent_opts] || [])[:timeout_ms] do
+        n when is_integer(n) and n > 0 -> n
+        _ -> 1_800_000
+      end
+
     prompt = compose_worker_prompt(prompt, args, ctx.cwd)
 
     {agent_def, base_opts} = resolve_agent(args, ctx)
@@ -249,11 +267,19 @@ defmodule ExAthena.Tools.SpawnAgent do
              "Re-delegate with a narrower or clearer brief, building on those findings."}
 
         {:ok, {:ok, %{text: text} = sub_result}} ->
-          # A worker that ends via the finish tool has its output in
-          # `deliverable`, not `text` — without the fallback its
-          # contribution arrives empty (note: "" is truthy, hence blank?).
-          text = if blank?(text), do: deliverable_text(sub_result) || "", else: text
-          text = truncate_result(text, Map.get(args, "max_result_chars"))
+          # A thinking-model worker often ends with a BLANK text channel —
+          # its report (and a `finish` deliverable) may be empty while all
+          # the findings live in its conclusions ledger (the captured
+          # <think> blobs). Fall back text → deliverable → conclusions so
+          # the orchestrator never receives an empty summary for real work.
+          text =
+            cond do
+              not blank?(text) -> text
+              d = deliverable_text(sub_result) -> d
+              true -> conclusions_digest(sub_result)
+            end
+
+          text = truncate_result(text, Map.get(args, "max_result_chars") || 8_000)
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
           _ =
@@ -293,6 +319,7 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
+          notify_failure(ctx, sub_id, "crashed: #{inspect(reason)}")
           {:error, {:sub_agent_crashed, reason}}
 
         nil ->
@@ -303,10 +330,24 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
+          notify_failure(ctx, sub_id, "timed out after #{timeout}ms — progress discarded")
           {:error, {:sub_agent_timeout, timeout}}
       end
 
     result
+  end
+
+  # Killed/crashed workers never emit their own {:done} — without this the
+  # Overview row stays RUNNING until the whole run ends.
+  defp notify_failure(ctx, sub_id, text) do
+    case Map.get(ctx.assigns || %{}, :agent_event_sink) do
+      sink when is_function(sink, 2) ->
+        sink.(sub_id, {:result_note, text})
+        sink.(sub_id, {:done, %ExAthena.Result{finish_reason: :error_during_execution}})
+
+      _ ->
+        :ok
+    end
   end
 
   defp maybe_put(kw, _key, nil), do: kw
@@ -530,8 +571,6 @@ defmodule ExAthena.Tools.SpawnAgent do
     # cwd arg used to exist here — live testing showed models passing junk
     # paths and workers exploring the wrong project entirely. Host-level
     # overrides via spawn_agent_opts[:cwd] still win (put_new below).
-    _ = args
-
     base_opts =
       (ctx.assigns[:spawn_agent_opts] || [])
       |> Keyword.put_new(:cwd, ctx.cwd)

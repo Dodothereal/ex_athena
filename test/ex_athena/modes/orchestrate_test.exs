@@ -278,7 +278,14 @@ defmodule ExAthena.Modes.OrchestrateTest do
       %Response{
         text: "delegating",
         tool_calls: [
-          %ToolCall{id: "t1", name: "spawn_agent", arguments: %{"prompt" => "do the step"}}
+          # The model tries to set a self-sabotaging 30s budget — a 9B
+          # worker on exo runs 30-90s PER TURN, so this would kill it after
+          # one turn. The runtime must ignore the model-supplied timeout.
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{"prompt" => "do the step", "timeout_ms" => 30_000}
+          }
         ],
         finish_reason: :tool_calls,
         provider: :mock
@@ -656,7 +663,9 @@ defmodule ExAthena.Modes.OrchestrateTest do
 
     assert state.max_concurrency == 1
     assert state.ctx.assigns[:strict_spawn] == true
-    assert state.ctx.assigns[:subagent_prompt_suffix] =~ "CONCLUSION"
+    # The worker contract demands a complete final report (the CONCLUSION
+    # line comes from the kernel's own contract, not this suffix).
+    assert state.ctx.assigns[:subagent_prompt_suffix] =~ "Worker contract"
     assert state.mode_state.phase == :planning
   end
 
@@ -1239,6 +1248,543 @@ defmodule ExAthena.Modes.OrchestrateTest do
     [tr] = tool_msg.tool_results
     refute tr.is_error
     assert tr.content =~ "NimblePublisher pattern"
+  end
+
+  test "a FAILED todo_write does NOT end planning (audit P0)", %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      # Planning turn 1: todo_write with INVALID args → tool error.
+      %Response{
+        text: "",
+        tool_calls: [%ToolCall{id: "t1", name: "todo_write", arguments: %{"wrong" => true}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      # Still planning? The request tail tells us.
+      fn _n, request ->
+        send(test_pid, {:request2, request})
+        %Response{text: "1. do A", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end,
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate
+             )
+
+    assert_receive {:request2, request}
+    # The rejected todo_write must not have transitioned the phase.
+    assert List.last(request.messages).content =~ "PLANNING"
+  end
+
+  test "finish DURING planning is redirected, not honored as success", %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{
+        text: "",
+        tool_calls: [
+          %ToolCall{id: "f1", name: "finish", arguments: %{"deliverable" => "did nothing"}}
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      fn _n, request ->
+        send(test_pid, {:request2, request})
+
+        %Response{
+          text: "ok, planning properly now",
+          tool_calls: [],
+          finish_reason: :stop,
+          provider: :mock
+        }
+      end,
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate
+             )
+
+    refute result.finish_reason == :submitted
+    assert_receive {:request2, request}
+
+    # The redirect is delivered as a TOOL RESULT for the orphaned finish
+    # call (keeps the transcript valid for strict servers).
+    assert Enum.any?(request.messages, fn m ->
+             m.role == :tool and is_list(m.tool_results) and
+               Enum.any?(m.tool_results, &(&1.content =~ "before recording any plan"))
+           end)
+  end
+
+  test "finish with PENDING todos gets one nudge; the second finish is honored", %{dir: dir} do
+    todos_args = %{
+      "todos" => [%{"content" => "write the post", "status" => "pending"}]
+    }
+
+    finish_call = %ToolCall{id: "f", name: "finish", arguments: %{"deliverable" => "done-ish"}}
+
+    responses = [
+      # Planning: record the plan (transitions to executing).
+      %Response{
+        text: "",
+        tool_calls: [%ToolCall{id: "t1", name: "todo_write", arguments: todos_args}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      # Executing: premature finish with the todo still pending → nudged.
+      %Response{text: "", tool_calls: [finish_call], finish_reason: :tool_calls, provider: :mock},
+      # Insists → honored.
+      %Response{
+        text: "",
+        tool_calls: [%{finish_call | id: "f2"}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      }
+    ]
+
+    assert {:ok, %Result{finish_reason: :submitted}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate
+             )
+  end
+
+  test "auto-delegation never respawns the SAME todo (repeat guard)", %{dir: dir} do
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    todos_args = %{
+      "todos" => [
+        %{"content" => "write the blog post", "status" => "pending"},
+        %{"content" => "publish it", "status" => "pending"}
+      ]
+    }
+
+    # The model records todos once, then NEVER spawns and never rewrites
+    # todos — the runtime must delegate todo 1, then todo 2, then STOP
+    # auto-delegating (not loop on todo 1 forever).
+    responder = fn _request ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          %Response{
+            text: "",
+            tool_calls: [%ToolCall{id: "t1", name: "todo_write", arguments: todos_args}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        n when n <= 7 ->
+          # Spawn-less busywork: rewrites the SAME todos every turn.
+          %Response{
+            text: "organizing ##{n}",
+            tool_calls: [%ToolCall{id: "t#{n}", name: "todo_write", arguments: todos_args}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    sub_responder = fn request ->
+      send(test_pid, {:worker_prompt, List.first(request.messages).content})
+      %Response{text: "worker done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               memory: false,
+               max_iterations: 12,
+               tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    assert_receive {:worker_prompt, p1}
+    assert p1 =~ "write the blog post"
+    assert_receive {:worker_prompt, p2}
+    assert p2 =~ "publish it"
+    # No third auto-delegation — both todos already attempted.
+    refute_receive {:worker_prompt, _}, 200
+  end
+
+  test "a bare-text stop with NO plan recorded is nudged, not silent success", %{dir: dir} do
+    # Planning: a tool-free "plan" transitions to executing with NO todos.
+    # The first executing turn is also bare text → must be nudged to record
+    # a plan, NOT honored as success having delegated nothing.
+    counter = :counters.new(1, [:atomics])
+
+    responder = fn _request ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        n when n <= 2 ->
+          %Response{
+            text: "I'll figure it out as I go.",
+            tool_calls: [],
+            finish_reason: :stop,
+            provider: :mock
+          }
+
+        # After the nudge, record a plan and finish properly.
+        3 ->
+          %Response{
+            text: "",
+            tool_calls: [
+              %ToolCall{
+                id: "t1",
+                name: "todo_write",
+                arguments: %{"todos" => [%{"content" => "do it", "status" => "completed"}]}
+              }
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{
+            text: "",
+            tool_calls: [
+              %ToolCall{id: "f", name: "finish", arguments: %{"deliverable" => "done"}}
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+      end
+    end
+
+    test_pid = self()
+    on_event = fn ev -> send(test_pid, {:event, ev}) end
+
+    assert {:ok, %Result{finish_reason: :submitted}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               memory: false,
+               max_iterations: 10,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate,
+               on_event: on_event
+             )
+
+    # It did not silently succeed on the second bare-text stop.
+    assert :counters.get(counter, 1) >= 4
+  end
+
+  test "a finish redirect leaves NO orphaned tool_call (strict-server safe)", %{dir: dir} do
+    # finish during planning → redirected. The continued transcript must
+    # not contain an assistant finish tool_call without a paired result.
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    responder = fn request ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          %Response{
+            text: "",
+            tool_calls: [
+              %ToolCall{id: "f1", name: "finish", arguments: %{"deliverable" => "nothing"}}
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        2 ->
+          send(test_pid, {:request2, request})
+
+          %Response{
+            text: "ok planning now",
+            tool_calls: [],
+            finish_reason: :stop,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    Loop.run("go",
+      provider: :mock,
+      mock: [responder: responder],
+      cwd: dir,
+      memory: false,
+      tools: ExAthena.Tools.builtins(),
+      mode: :orchestrate
+    )
+
+    assert_receive {:request2, request}
+
+    # Every assistant finish tool_call must have a matching tool result.
+    call_ids =
+      for m <- request.messages,
+          m.role == :assistant,
+          is_list(m.tool_calls),
+          c <- m.tool_calls,
+          into: MapSet.new(),
+          do: c.id
+
+    result_ids =
+      for m <- request.messages,
+          m.role == :tool,
+          is_list(m.tool_results),
+          r <- m.tool_results,
+          into: MapSet.new(),
+          do: r.tool_call_id
+
+    orphans = MapSet.difference(call_ids, result_ids)
+    assert MapSet.size(orphans) == 0
+  end
+
+  test "a worker that finishes with BLANK text salvages its summary from conclusions", %{
+    dir: dir
+  } do
+    File.write!(Path.join(dir, "f.txt"), "x")
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{id: "t1", name: "spawn_agent", arguments: %{"prompt" => "explore"}}
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    # Thinking-model worker: every turn's text channel is blank, all the
+    # findings live in <think>. Its final :stop turn is blank text too →
+    # extract_final_text returns "" → the orchestrator would see nothing.
+    sub_counter = :counters.new(1, [:atomics])
+
+    sub_responder = fn _request ->
+      :counters.add(sub_counter, 1, 1)
+
+      case :counters.get(sub_counter, 1) do
+        1 ->
+          %Response{
+            text: "",
+            thinking: "Looking around the project for the content layout.",
+            tool_calls: [%ToolCall{id: "r1", name: "read", arguments: %{"path" => "f.txt"}}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{
+            text: "",
+            thinking:
+              "Services live in web/priv/services as markdown with YAML frontmatter; " <>
+                "there is no blog directory yet.",
+            tool_calls: [],
+            finish_reason: :stop,
+            provider: :mock
+          }
+      end
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [ExAthena.Tools.Read],
+                   memory: false
+                 ]
+               }
+             )
+
+    [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
+    [tr] = tool_msg.tool_results
+    refute tr.is_error
+    # The orchestrator receives the worker's findings, not an empty string.
+    assert tr.content =~ "no blog directory"
+  end
+
+  test "a spawn for an already-COMPLETED todo is short-circuited (no worker runs)", %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      # Record a plan with ALL todos completed (so nothing legitimately
+      # pending triggers an auto-delegation — isolates the redundant spawn).
+      %Response{
+        text: "",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "todo_write",
+            arguments: %{
+              "todos" => [%{"content" => "explore structure", "status" => "completed"}]
+            }
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      # Model wrongly re-delegates the COMPLETED todo.
+      %Response{
+        text: "",
+        tool_calls: [
+          %ToolCall{
+            id: "t2",
+            name: "spawn_agent",
+            arguments: %{"prompt" => "explore again", "todo" => "explore structure"}
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    sub_responder = fn _request ->
+      send(test_pid, :worker_ran)
+      %Response{text: "should not run", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               max_iterations: 8,
+               tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    # The redundant worker never ran — the spawn was short-circuited.
+    refute_received :worker_ran
+
+    # The model got an "already complete" error result for the re-delegation.
+    tool_msgs = Enum.filter(result.messages, &(&1.role == :tool))
+
+    assert Enum.any?(tool_msgs, fn m ->
+             Enum.any?(m.tool_results || [], fn r ->
+               r.is_error == true and r.content =~ "already complete"
+             end)
+           end)
+  end
+
+  test "executing turns carry a plan-status tail with findings + next pending", %{dir: dir} do
+    test_pid = self()
+
+    todos = %{
+      "todos" => [
+        %{"content" => "explore structure", "status" => "completed"},
+        %{"content" => "write the post", "status" => "pending"}
+      ]
+    }
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      # Record the plan AND report the explore finding via a worker.
+      %Response{
+        text: "",
+        tool_calls: [%ToolCall{id: "t1", name: "todo_write", arguments: todos}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{
+        text: "",
+        tool_calls: [
+          %ToolCall{
+            id: "t2",
+            name: "spawn_agent",
+            arguments: %{"prompt" => "explore", "todo" => "explore structure"}
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      # Capture the NEXT request's tail — it should show the plan status.
+      fn _n, request ->
+        send(test_pid, {:exec_request, request})
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    ]
+
+    Loop.run("go",
+      provider: :mock,
+      mock: [responder: scripted(responses)],
+      cwd: dir,
+      memory: false,
+      max_iterations: 8,
+      tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+      mode: :orchestrate,
+      assigns: %{
+        spawn_agent_opts: [
+          provider: :mock,
+          mock: [text: "no blog directory exists; services live in web/priv/services"],
+          tools: [],
+          memory: false
+        ]
+      }
+    )
+
+    assert_receive {:exec_request, request}
+
+    tail =
+      request.messages |> Enum.map(& &1.content) |> Enum.filter(&is_binary/1) |> Enum.join("\n")
+
+    assert tail =~ "Plan status"
+    # Completed todo shown with its worker's finding.
+    assert tail =~ "explore structure"
+    assert tail =~ "no blog directory"
+    # The next pending item is flagged.
+    assert tail =~ "write the post"
   end
 
   test "depth-1: a subagent cannot spawn further subagents", %{dir: dir} do

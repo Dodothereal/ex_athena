@@ -71,7 +71,12 @@ defmodule ExAthena.Agents.Sidechain do
       iterations: Map.get(r, :iterations),
       tool_calls_made: Map.get(r, :tool_calls_made),
       duration_ms: Map.get(r, :duration_ms),
-      cost_usd: Map.get(r, :cost_usd)
+      cost_usd: Map.get(r, :cost_usd),
+      # Persist the captured reasoning + task state so a worker's run can be
+      # post-mortem'd (conclusion quality, what it learned) — without these
+      # a blank-text worker's sidechain is opaque.
+      conclusions: Map.get(r, :conclusions, []),
+      todos: Map.get(r, :todos, [])
     }
   end
 

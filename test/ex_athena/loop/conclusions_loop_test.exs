@@ -261,6 +261,137 @@ defmodule ExAthena.Loop.ConclusionsLoopTest do
     refute text =~ String.duplicate("reasoning ", 40)
   end
 
+  test "conclusion_summarizer: true distills thinking blobs via a micro LLM call", %{dir: dir} do
+    File.write!(Path.join(dir, "f.txt"), "x")
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    responder = fn request ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      first_content = request.messages |> List.first() |> Map.get(:content) |> to_string()
+
+      cond do
+        # The summarize micro-call: tool-less, tiny, distinct prompt.
+        first_content =~ "Summarize this reasoning" ->
+          send(test_pid, {:summarize_request, request})
+
+          %Response{
+            text: "the services dir has 6 markdown files",
+            tool_calls: [],
+            finish_reason: :stop,
+            provider: :mock
+          }
+
+        n == 1 ->
+          %Response{
+            text: "",
+            thinking: "long reasoning about services " <> String.duplicate("x", 300),
+            tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "f.txt"}}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        true ->
+          %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read],
+               conclusion_summarizer: true,
+               on_event: collector()
+             )
+
+    # The micro-call is tool-less and disables thinking (a reasoning model
+    # would otherwise spend the whole budget inside <think> and return a
+    # one-word fragment — observed live: "ize", "learned", "was").
+    assert_receive {:summarize_request, sreq}
+    assert sreq.tools in [nil, []]
+    assert sreq.max_tokens >= 200
+    assert List.first(sreq.messages).content =~ "/no_think"
+
+    # The distilled summary becomes the conclusion (source :stated — it IS
+    # a real conclusion now, persisting in recitation).
+    assert_receive {:event,
+                    {:conclusion,
+                     %{text: "the services dir has 6 markdown files", source: :stated}}}
+
+    assert Enum.any?(result.conclusions, &(&1.text == "the services dir has 6 markdown files"))
+  end
+
+  test "a fragment summary is REJECTED — the readable thinking blob is kept", %{dir: dir} do
+    File.write!(Path.join(dir, "f.txt"), "x")
+    counter = :counters.new(1, [:atomics])
+
+    responder = fn request ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      first = request.messages |> List.first() |> Map.get(:content) |> to_string()
+
+      cond do
+        # Summarizer returns a useless fragment (thinking ate the budget).
+        first =~ "Summarize this reasoning" ->
+          %Response{text: "Services", tool_calls: [], finish_reason: :stop, provider: :mock}
+
+        n == 1 ->
+          %Response{
+            text: "",
+            thinking: "I found a blog controller but no dedicated blog directory under web/priv.",
+            tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "f.txt"}}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        true ->
+          %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read],
+               conclusion_summarizer: true
+             )
+
+    # The fragment "Services" is discarded; the full blob survives.
+    first = List.first(result.conclusions)
+    assert first.source == :thinking
+    assert first.text =~ "no dedicated blog directory"
+  end
+
+  test "without the flag, thinking blobs stay raw (no surprise calls)", %{dir: dir} do
+    File.write!(Path.join(dir, "f.txt"), "x")
+
+    responses = [
+      %Response{
+        text: "",
+        thinking: "raw reasoning blob",
+        tool_calls: [%ToolCall{id: "c1", name: "read", arguments: %{"path" => "f.txt"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read]
+             )
+
+    assert [%{text: "raw reasoning blob", source: :thinking} | _] = result.conclusions
+  end
+
   test "blank or repeated text no longer counts as productivity", %{dir: dir} do
     File.write!(Path.join(dir, "f.txt"), "x")
 

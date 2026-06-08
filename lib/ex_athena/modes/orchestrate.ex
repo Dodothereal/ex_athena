@@ -37,8 +37,10 @@ defmodule ExAthena.Modes.Orchestrate do
   spawn_agent workers (agent: "explore" with a focused brief for
   read-only research). Work strictly through your todo list:
   1. FIRST record a draft plan with todo_write (one todo per step) based
-     on what you already know — include an "Explore …" todo as step 1
-     when investigation is needed. Each todo must be small and
+     on what you already know — include ONE broad "Explore …" todo as step
+     1 when investigation is needed (a single worker maps the whole
+     structure; do NOT spawn several overlapping explorers — consult its
+     report instead of re-exploring). Each todo must be small and
      self-contained enough to hand to a worker that cannot see this
      conversation.
   2. Delegate each substantial step to spawn_agent. Workers cannot see
@@ -56,8 +58,7 @@ defmodule ExAthena.Modes.Orchestrate do
      todo with todo_write, THEN spawn the worker with `todo:` set to it.
      One todo per worker; do not bundle several steps into one spawn.
   5. Effort scaling: one worker for a simple step, two for comparisons.
-     Read-only research workers may run in parallel; only ONE worker that
-     writes/edits files at a time.
+     Workers run one at a time — delegate sequentially.
   6. When every todo is completed, call finish with a deliverable
      summarizing the outcome.
   """
@@ -73,10 +74,10 @@ defmodule ExAthena.Modes.Orchestrate do
   ## Worker contract
   You are a sub-agent responsible for ONE step of a larger task.
   - Maintain your own todo list with todo_write as you work.
-  - End EVERY response with a line: CONCLUSION: <one sentence>.
   - Record NEGATIVE findings explicitly ("X does not exist", "no blog
-    directory") in your conclusions and final report — never re-search
-    for something already established absent.
+    directory") — never re-search for something already established absent.
+    If a search (glob/grep) returns no matches TWICE for the same target,
+    record it as absent and STOP searching — do not rephrase the query.
   - Your FINAL message is the ONLY thing the orchestrator sees — make it a
     complete, self-contained report: every concrete fact discovered (exact
     paths, file names, patterns, config/frontmatter formats, snippets),
@@ -124,7 +125,6 @@ defmodule ExAthena.Modes.Orchestrate do
        state
        | mode_state: %{
            phase: :planning,
-           todos: [],
            turns_without_spawn: 0,
            planning_turns: 0
          },
@@ -159,35 +159,48 @@ defmodule ExAthena.Modes.Orchestrate do
     # tail note (meta[:phase_note]) steers the phase. Planning ends when
     # the plan exists: a todo_write (the todo list IS the plan) or a
     # tool-free reply.
-    prev_count = length(state.messages)
-
     case ExAthena.Modes.ReAct.iterate(state) do
       {:halt, halted} ->
-        if halted.meta[:finish_reason] == :stop do
-          # The tool-free plan turn — transition instead of terminating.
-          {:continue, to_executing(halted)}
-        else
-          # Real terminations (errors, finish tool) propagate untouched.
-          {:halt, halted}
+        cond do
+          halted.meta[:finish_reason] == :stop ->
+            # The tool-free plan turn — transition instead of terminating.
+            {:continue, to_executing(halted)}
+
+          # A premature `finish` with NO plan would end the run as
+          # :submitted success having done nothing — redirect once.
+          match?({:submitted, _}, halted.halted_reason) and current_todos(halted) == [] ->
+            {:continue,
+             halted
+             |> redirect(
+               "[orchestration runtime] You called finish before recording any plan — " <>
+                 "record your todos with todo_write and delegate the work first."
+             )
+             |> Map.put(:halted_reason, nil)
+             |> to_executing()}
+
+          true ->
+            # Real terminations (errors) propagate untouched.
+            {:halt, halted}
         end
 
       {:continue, new_state} ->
-        todos = extract_todos(Enum.drop(new_state.messages, prev_count))
         turns = (mode_state[:planning_turns] || 0) + 1
 
         cond do
-          todos != nil ->
-            # The model recorded its plan — seed the ledger and execute.
-            {:continue, new_state |> put_watch(todos, 0) |> to_executing()}
+          # The kernel records meta[:todos] only from SUCCESSFUL todo_write
+          # calls — a rejected/invalid one must not end planning (and could
+          # not seed an empty plan).
+          new_state.meta[:todos] != state.meta[:todos] and new_state.meta[:todos] != nil ->
+            {:continue, new_state |> put_watch(0) |> to_executing()}
 
           turns >= @max_planning_turns ->
-            note =
-              ExAthena.Messages.user(
-                "[orchestration runtime] Planning budget exhausted — proceed to execution " <>
-                  "with what you know: record your todos with todo_write and delegate."
-              )
-
-            {:continue, %{new_state | messages: new_state.messages ++ [note]} |> to_executing()}
+            {:continue,
+             new_state
+             |> redirect(
+               "[orchestration runtime] Planning budget exhausted — proceed to execution " <>
+                 "with what you know: record your todos with todo_write and delegate."
+             )
+             |> to_executing()}
 
           true ->
             {:continue, put_in(new_state.mode_state[:planning_turns], turns)}
@@ -213,21 +226,25 @@ defmodule ExAthena.Modes.Orchestrate do
     end
   end
 
-  def iterate(%State{} = state) do
-    ExAthena.Modes.ReAct.iterate(state)
-  end
-
   # Small models routinely narrate intent ("I will now create the post")
-  # with no tool call — a bare-text :stop with PENDING todos would end the
-  # run mid-task as "success". Nudge once; honor the second stop.
+  # with no tool call — a bare-text :stop OR a premature `finish` with
+  # PENDING todos would end the run mid-task as "success". Nudge once;
+  # honor the second stop. (`stop_nudged` is re-armed by put_watch when a
+  # successful spawn happens or the todo list changes.)
   defp maybe_nudge_stop(halted) do
-    pending =
-      Enum.filter(halted.mode_state[:todos] || [], fn t ->
-        field(t, :status) in [nil, "pending", "in_progress"]
-      end)
+    pending = pending_todos(halted)
+    todos = current_todos(halted)
+
+    premature? =
+      halted.meta[:finish_reason] == :stop or match?({:submitted, _}, halted.halted_reason)
+
+    # A clean halt requires todos that are ALL done. `pending == []` alone
+    # is also true when NO plan was ever recorded (todos == []) — stopping
+    # there delegated nothing, so nudge to record a plan.
+    all_done? = todos != [] and pending == []
 
     cond do
-      halted.meta[:finish_reason] != :stop or pending == [] ->
+      not premature? or all_done? ->
         {:halt, halted}
 
       halted.mode_state[:stop_nudged] ->
@@ -235,20 +252,48 @@ defmodule ExAthena.Modes.Orchestrate do
 
       true ->
         note =
-          ExAthena.Messages.user(
+          if pending == [] do
+            "[orchestration runtime] You stopped without recording any plan — " <>
+              "record your todos with todo_write and delegate the work."
+          else
             "[orchestration runtime] You stopped with PENDING todos: " <>
               Enum.map_join(pending, "; ", &field(&1, :content)) <>
               ". Delegate the next one with spawn_agent, or call finish if the task is truly done."
-          )
+          end
 
         {:continue,
-         %{
-           halted
-           | messages: halted.messages ++ [note],
-             mode_state: Map.put(halted.mode_state, :stop_nudged, true),
-             meta: Map.delete(halted.meta, :finish_reason)
-         }}
+         halted
+         |> redirect(note)
+         |> Map.put(:halted_reason, nil)
+         |> put_in([Access.key(:mode_state), :stop_nudged], true)
+         |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
     end
+  end
+
+  # Deliver a runtime redirect message while keeping the transcript valid:
+  # if the last assistant turn made tool calls (e.g. `finish`), respond with
+  # a TOOL RESULT for each (strict OpenAI-compatible servers 400 on an
+  # assistant tool_call with no paired result); otherwise append a plain
+  # user note.
+  defp redirect(state, text) do
+    case List.last(state.messages) do
+      %{role: :assistant, tool_calls: [_ | _] = calls} ->
+        results =
+          Enum.map(calls, fn c -> ExAthena.Messages.tool_result(c.id, text, true) end)
+
+        %{state | messages: state.messages ++ results}
+
+      _ ->
+        %{state | messages: state.messages ++ [ExAthena.Messages.user(text)]}
+    end
+  end
+
+  defp current_todos(state), do: state.meta[:todos] || []
+
+  defp pending_todos(state) do
+    Enum.filter(current_todos(state), fn t ->
+      field(t, :status) in [nil, "pending", "in_progress"]
+    end)
   end
 
   # ── Auto-delegation watchdog ──────────────────────────────────────
@@ -259,14 +304,13 @@ defmodule ExAthena.Modes.Orchestrate do
   # decision stays observable, the effect is executed by code).
   defp watchdog(state, prev_count) do
     new_msgs = Enum.drop(state.messages, prev_count)
+    state = capture_findings(state, new_msgs)
 
     calls =
       Enum.flat_map(new_msgs, fn
         %{role: :assistant, tool_calls: tcs} when is_list(tcs) -> tcs
         _ -> []
       end)
-
-    todos = extract_todos(new_msgs) || state.mode_state[:todos] || []
 
     # Only a SUCCESSFUL spawn counts as delegation — live testing showed a
     # model repeating an invalid spawn call verbatim every turn, which must
@@ -283,39 +327,136 @@ defmodule ExAthena.Modes.Orchestrate do
 
     turns = if spawned?, do: 0, else: (state.mode_state[:turns_without_spawn] || 0) + 1
 
-    pending =
-      Enum.filter(todos, fn t ->
-        field(t, :status) in [nil, "pending", "in_progress"]
-      end)
+    # Never auto-delegate the same todo twice — a model that doesn't
+    # rewrite its todos would otherwise respawn the same first pending
+    # item every 2 turns, forever (the run is :infinity-capped).
+    delegated = state.mode_state[:auto_delegated] || MapSet.new()
 
-    if pending != [] and turns >= @max_turns_without_spawn do
-      state = auto_delegate(state, hd(pending))
-      {:continue, put_watch(state, todos, 0)}
+    fresh_pending =
+      Enum.reject(pending_todos(state), fn t -> MapSet.member?(delegated, field(t, :content)) end)
+
+    if fresh_pending != [] and turns >= @max_turns_without_spawn do
+      todo = hd(fresh_pending)
+      state = auto_delegate(state, todo)
+
+      state =
+        put_in(
+          state.mode_state[:auto_delegated],
+          MapSet.put(delegated, field(todo, :content))
+        )
+
+      {:continue, put_watch(state, 0)}
     else
-      {:continue, put_watch(state, todos, turns)}
+      {:continue, put_watch(state, turns)}
     end
   end
 
-  # The latest todo_write call's list in a message slice, or nil when none.
-  defp extract_todos(messages) do
-    messages
-    |> Enum.flat_map(fn
-      %{role: :assistant, tool_calls: tcs} when is_list(tcs) -> tcs
-      _ -> []
-    end)
-    |> Enum.filter(&(&1.name == "todo_write"))
-    |> List.last()
-    |> case do
-      nil -> nil
-      tc -> List.wrap(tc.arguments["todos"])
-    end
-  end
+  # Todos come from the KERNEL's meta[:todos] (success-filtered — see
+  # ReAct.record_todos); the mode keeps only the watch counters. A
+  # successful spawn or a changed todo list re-arms the stop nudge.
+  defp put_watch(state, turns) do
+    todos = current_todos(state)
 
-  defp put_watch(state, todos, turns) do
+    mode_state =
+      state.mode_state
+      |> Map.put(:turns_without_spawn, turns)
+      |> then(fn ms ->
+        if turns == 0 or ms[:seen_todos] != todos,
+          do: Map.delete(ms, :stop_nudged),
+          else: ms
+      end)
+      |> Map.put(:seen_todos, todos)
+
+    # Surface completed-todo contents into ctx.assigns so SpawnAgent can
+    # short-circuit a re-delegation of finished work (ctx.assigns flows
+    # into tool execution). Deterministic "don't repeat steps" rail.
+    completed =
+      for t <- todos, field(t, :status) == "completed", into: MapSet.new(), do: field(t, :content)
+
     %{
       state
-      | mode_state: Map.merge(state.mode_state, %{todos: todos, turns_without_spawn: turns})
+      | mode_state: mode_state,
+        ctx: put_assign(state.ctx, :completed_todos, completed),
+        # Live plan-status block at the request tail (ephemeral, cache-safe)
+        # — keeps the orchestrator ON its plan and surfaces what each step
+        # already established so it never re-investigates settled work.
+        meta: Map.put(state.meta, :phase_note, plan_status(state))
     }
+  end
+
+  defp put_assign(ctx, key, value),
+    do: %{ctx | assigns: Map.put(ctx.assigns || %{}, key, value)}
+
+  # Pair each completed spawn with its linked todo so the plan-status block
+  # can show "[x] step — <finding>". Findings accumulate across turns.
+  defp capture_findings(state, new_msgs) do
+    results =
+      new_msgs
+      |> Enum.flat_map(fn
+        %{role: :tool, tool_results: trs} when is_list(trs) -> trs
+        _ -> []
+      end)
+      |> Map.new(fn tr -> {tr.tool_call_id, to_string(tr.content || "")} end)
+
+    spawn_findings =
+      for %{role: :assistant, tool_calls: tcs} <- new_msgs,
+          is_list(tcs),
+          tc <- tcs,
+          tc.name == "spawn_agent",
+          todo = tc.arguments["todo"],
+          is_binary(todo),
+          result = results[tc.id],
+          is_binary(result) and result != "",
+          into: %{} do
+        {todo, truncate(result, 150)}
+      end
+
+    findings = Map.merge(state.mode_state[:findings] || %{}, spawn_findings)
+    put_in(state.mode_state[:findings], findings)
+  end
+
+  defp plan_status(state) do
+    todos = current_todos(state)
+    findings = state.mode_state[:findings] || %{}
+
+    if todos == [] do
+      nil
+    else
+      {lines, _flagged} =
+        Enum.map_reduce(todos, false, fn t, flagged_next ->
+          content = field(t, :content)
+          status = field(t, :status)
+          marker = todo_marker(status)
+
+          suffix =
+            cond do
+              status == "completed" and is_binary(findings[content]) ->
+                " — #{findings[content]}"
+
+              status not in ["completed"] and not flagged_next ->
+                "  ← work on THIS next"
+
+              true ->
+                ""
+            end
+
+          flag? = flagged_next or status not in ["completed"]
+          {"  #{marker} #{content}#{suffix}", flag?}
+        end)
+
+      "[orchestration runtime] Plan status:\n" <>
+        Enum.join(lines, "\n") <>
+        "\nDo NOT re-investigate completed steps or re-search facts already established above."
+    end
+  end
+
+  defp todo_marker("completed"), do: "[x]"
+  defp todo_marker("in_progress"), do: "[~]"
+  defp todo_marker(_), do: "[ ]"
+
+  defp truncate(text, max) do
+    text = String.trim(text)
+    if String.length(text) > max, do: String.slice(text, 0, max) <> "…", else: text
   end
 
   defp auto_delegate(state, todo) do
@@ -332,8 +473,7 @@ defmodule ExAthena.Modes.Orchestrate do
       "todo" => content,
       # Generous: exploration reports carry exact paths/patterns the next
       # step needs — a 2k cap was destroying the discovered detail.
-      "max_result_chars" => 8_000,
-      "timeout_ms" => 1_800_000
+      "max_result_chars" => 8_000
     }
 
     ctx = %{

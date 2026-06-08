@@ -507,6 +507,7 @@ defmodule ExAthena.Modes.ReAct do
            Enum.map(tool_calls, & &1.name)
          ) do
       {:ok, %{text: text, source: source}} ->
+        {text, source} = maybe_summarize_conclusion(state, text, source)
         entry = %{iteration: state.iterations, text: text, source: source}
         Events.emit(state.on_event, {:conclusion, entry})
 
@@ -516,6 +517,62 @@ defmodule ExAthena.Modes.ReAct do
       :none ->
         state
     end
+  end
+
+  # Optional (opt-in, `conclusion_summarizer: true`): distill a raw
+  # thinking-blob conclusion into ONE finding sentence via a tool-less
+  # micro-call through the GPU queue. Success upgrades the entry to
+  # :stated (it IS a real conclusion now — persists in recitation);
+  # any failure keeps the raw blob.
+  defp maybe_summarize_conclusion(
+         %State{meta: %{conclusion_summarizer: true}} = state,
+         blob,
+         :thinking
+       ) do
+    request = %ExAthena.Request{
+      messages: [
+        Messages.user(
+          # `/no_think` disables reasoning (Qwen soft switch) — without it a
+          # thinking model burns the whole budget inside <think> and returns
+          # a one-word fragment ("ize", "learned"). Budget still covers a
+          # stray think block on models that ignore the switch.
+          "/no_think\nSummarize this reasoning into ONE sentence stating what was learned or " <>
+            "decided (a finding, not an intention). Reply with ONLY the sentence:\n\n" <> blob
+        )
+      ],
+      model: state.request_template && state.request_template.model,
+      max_tokens: 256,
+      temperature: 0.2,
+      timeout_ms: 60_000
+    }
+
+    result =
+      ExAthena.RequestQueue.with_slot(
+        state.meta[:provider_atom],
+        fn -> state.provider_mod.query(request, state.provider_opts) end,
+        state.meta[:queue_opts] || []
+      )
+
+    case result do
+      {:ok, %{text: summary}} when is_binary(summary) ->
+        s = String.trim(summary)
+        # Quality gate: a thinking model that ignored /no_think returns a
+        # one-word fragment ("Services", "intention") — WORSE than the raw
+        # blob. Keep the summary only when it reads like a sentence;
+        # otherwise fall back to the (readable) thinking blob.
+        if sentence_like?(s), do: {s, :stated}, else: {blob, :thinking}
+
+      _ ->
+        {blob, :thinking}
+    end
+  rescue
+    _ -> {blob, :thinking}
+  end
+
+  defp maybe_summarize_conclusion(_state, text, source), do: {text, source}
+
+  defp sentence_like?(s) do
+    String.length(s) >= 15 and length(String.split(s, ~r/\s+/, trim: true)) >= 3
   end
 
   # Manus-style recitation: replay the rolling conclusions ledger as an
@@ -609,11 +666,34 @@ defmodule ExAthena.Modes.ReAct do
   defp build_request(state) do
     %{
       state.request_template
-      | messages: state.messages ++ phase_note(state) ++ recitation(state),
+      | messages: state.messages ++ phase_note(state) ++ budget_note(state) ++ recitation(state),
         tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
     }
   end
+
+  # Turn-budget wrap-up pressure (cache-safe tail): a finite-cap loop that
+  # keeps gathering will exhaust its budget mid-exploration and get cut off
+  # before writing its report (observed: explore workers read until the
+  # 25-turn cap, returning incomplete findings). Once it enters the final
+  # stretch, push it to stop and produce its answer.
+  defp budget_note(%State{max_iterations: max, iterations: i}) when is_integer(max) and max > 0 do
+    remaining = max - i
+
+    if remaining <= max(3, div(max, 4)) do
+      [
+        Messages.user(
+          "[runtime] You have #{max(remaining, 1)} of #{max} turns left — wrap up NOW: " <>
+            "STOP gathering and produce your final answer/report with what you already have. " <>
+            "Do not start new exploration."
+        )
+      ]
+    else
+      []
+    end
+  end
+
+  defp budget_note(_state), do: []
 
   # Mode-supplied EPHEMERAL phase steering at the request tail (cache-safe:
   # the system prompt and transcript prefix stay byte-stable; only the tail

@@ -214,11 +214,16 @@ defmodule ExAthena.Providers.ReqLLM do
   # deepseek-legacy / MiniMax inline convention; templates that don't want
   # it prune it. Withholding is the lossy direction.
   def apply_rolling_reasoning(messages) do
-    last_user_idx =
+    # Window = exactly ONE turn: only the LAST assistant message replays
+    # its reasoning (the interleaved-thinking minimum every vendor needs).
+    # An "after the last user message" window is unbounded in agent loops —
+    # there is one user message, so every turn's reasoning accumulated
+    # forever (observed live as useless context growth).
+    last_assistant_idx =
       messages
       |> Enum.with_index()
       |> Enum.reduce(-1, fn
-        {%Message{role: :user}, idx}, _acc -> idx
+        {%Message{role: :assistant}, idx}, _acc -> idx
         _, acc -> acc
       end)
 
@@ -226,7 +231,7 @@ defmodule ExAthena.Providers.ReqLLM do
     |> Enum.with_index()
     |> Enum.map(fn
       {%Message{role: :assistant, reasoning: r} = msg, idx}
-      when is_binary(r) and r != "" and idx > last_user_idx ->
+      when is_binary(r) and r != "" and idx == last_assistant_idx ->
         %{msg | content: "<think>\n#{r}\n</think>\n\n#{msg.content || ""}"}
 
       {msg, _idx} ->

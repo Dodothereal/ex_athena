@@ -18,29 +18,34 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
     assert msg.reasoning == "because reasons"
   end
 
-  test "reasoning replays ONLY within the current tool loop (after last user msg)" do
+  test "reasoning replays ONLY for the LAST assistant message" do
     old_call = %ToolCall{id: "a", name: "read", arguments: %{}}
-    cur_call = %ToolCall{id: "b", name: "read", arguments: %{}}
+    mid_call = %ToolCall{id: "b", name: "read", arguments: %{}}
+    cur_call = %ToolCall{id: "c", name: "read", arguments: %{}}
 
+    # Agent loops have ONE user message — an "after the last user message"
+    # window would replay EVERY turn's reasoning forever (unbounded
+    # context growth, observed live). The window is exactly one turn: the
+    # immediately preceding assistant message.
     messages = [
-      Messages.user("first task"),
+      Messages.user("the task"),
       Messages.assistant("looking", [old_call], "OLD reasoning"),
       Messages.tool_result("a", "x"),
-      Messages.user("runtime note / next turn"),
+      Messages.assistant("digging", [mid_call], "MID reasoning"),
+      Messages.tool_result("b", "y"),
       Messages.assistant("acting", [cur_call], "CURRENT reasoning"),
-      Messages.tool_result("b", "y")
+      Messages.tool_result("c", "z")
     ]
 
     replayed = Provider.apply_rolling_reasoning(messages)
 
-    [_, old_assistant, _, _, cur_assistant, _] = replayed
+    [_, old_a, _, mid_a, _, cur_a, _] = replayed
 
-    # Completed turn: reasoning dropped (Qwen rolling checkpoint).
-    refute old_assistant.content =~ "OLD reasoning"
-    # Current loop: reasoning re-injected inline, before the prose.
-    assert cur_assistant.content =~ "<think>"
-    assert cur_assistant.content =~ "CURRENT reasoning"
-    assert cur_assistant.content =~ "acting"
+    refute old_a.content =~ "OLD reasoning"
+    refute mid_a.content =~ "MID reasoning"
+    assert cur_a.content =~ "<think>"
+    assert cur_a.content =~ "CURRENT reasoning"
+    assert cur_a.content =~ "acting"
   end
 
   test "messages without reasoning pass through unchanged" do

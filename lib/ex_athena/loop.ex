@@ -719,6 +719,9 @@ defmodule ExAthena.Loop do
           # {:conclusion, …} events and keep a rolling ledger here that is
           # recited back to the model at the request tail each turn.
           |> Map.put(:conclusions, conclusions?)
+          # Opt-in micro-LLM distillation of thinking-blob conclusions
+          # (see ReAct.maybe_summarize_conclusion).
+          |> Map.put(:conclusion_summarizer, Keyword.get(opts, :conclusion_summarizer, false))
           |> Map.put(:ledger, [])
           # Whether the caller explicitly chose an iteration cap — modes that
           # default to :infinity (orchestrate) must honor an explicit choice.
@@ -859,6 +862,7 @@ defmodule ExAthena.Loop do
     |> put_inherited(:model, opts)
     |> put_inherited(:api_key, opts)
     |> put_inherited(:permission_mode, opts)
+    |> put_inherited(:conclusion_summarizer, opts)
   end
 
   # Forward :tool_ui events from subagents up to the parent's on_event so the
