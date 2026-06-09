@@ -47,6 +47,11 @@ defmodule ExAthena.PermissionsTest do
     assert :allow = Permissions.check(call("todo_write", %{"todos" => []}), ctx(:plan), %{})
   end
 
+  test "plan phase allows web_search (read-only online research)" do
+    assert :allow = Permissions.check(call("web_search", %{"query" => "q"}), ctx(:plan), %{})
+    assert "web_search" in Permissions.readonly_tools()
+  end
+
   describe "plan phase — bash gating" do
     test "allows read-only bash commands (cat, ls, grep, gh, git log/diff/status)" do
       for cmd <- [

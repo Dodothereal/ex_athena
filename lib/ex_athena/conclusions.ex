@@ -74,6 +74,21 @@ defmodule ExAthena.Conclusions do
     end
   end
 
+  # A negative finding = the agent established that something it looked for is
+  # absent. The research rail treats this as a "local context is insufficient"
+  # signal: if the task plausibly needs the missing fact, go online instead of
+  # re-searching locally.
+  @negative_re ~r/\b(do(es)?\s?n[o']?t\s+exist|not\s+found|no\s+such|could\s?n[o']?t\s+find|cannot\s+find|there\s+is\s+no|there\s+are\s+no|no\s+\w+\s+(directory|file|module|function|config|route|usage))\b/i
+
+  @doc """
+  Whether `text` reads as a negative finding ("X does not exist", "no blog
+  directory", "couldn't find …"). Used by the research rail to detect when
+  local investigation has come up empty. Returns false for nil/blank.
+  """
+  @spec negative_finding?(String.t() | nil) :: boolean()
+  def negative_finding?(text) when is_binary(text), do: Regex.match?(@negative_re, text)
+  def negative_finding?(_), do: false
+
   defp parse_marker(text) do
     case Regex.scan(@marker_re, text, capture: :all_but_first) do
       [] -> nil

@@ -3,6 +3,23 @@ defmodule ExAthena.ConclusionsTest do
 
   alias ExAthena.Conclusions
 
+  describe "negative_finding?/1" do
+    test "detects 'not found' / 'does not exist' style conclusions" do
+      assert Conclusions.negative_finding?("The blog directory does not exist.")
+      assert Conclusions.negative_finding?("Could not find any NimblePublisher usage.")
+      assert Conclusions.negative_finding?("no such module in the codebase")
+      assert Conclusions.negative_finding?("There is no config file for this.")
+      assert Conclusions.negative_finding?("couldn't find the function anywhere")
+    end
+
+    test "does not flag positive findings" do
+      refute Conclusions.negative_finding?("Found the router at lib/foo.ex:12.")
+      refute Conclusions.negative_finding?("The module exists and defines three functions.")
+      refute Conclusions.negative_finding?("")
+      refute Conclusions.negative_finding?(nil)
+    end
+  end
+
   describe "from_turn/2 — stated marker" do
     test "extracts a trailing CONCLUSION: line" do
       text = "I checked the router.\n\nCONCLUSION: the route is missing."

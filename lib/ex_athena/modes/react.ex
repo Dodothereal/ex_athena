@@ -639,18 +639,10 @@ defmodule ExAthena.Modes.ReAct do
   # differs — so those only escalate when the kernel's tool fingerprint
   # also says the turns were unproductive.
   defp ledger_directive(state, ledger) do
-    repeated? =
-      case Enum.take(ledger, -2) do
-        [%{text: same, source: s1}, %{text: same, source: s2}] ->
-          if s1 == :derived and s2 == :derived,
-            do: state.unproductive_iterations > 0,
-            else: true
-
-        _ ->
-          false
-      end
-
-    if repeated? do
+    # When the repetition is itself a research signal, the research note (which
+    # rides earlier in the same request tail) carries the steer — don't ALSO
+    # tell the model to "change strategy", or it gets contradictory nudges.
+    if ledger_repeated?(state, ledger) and not needs_research?(state) do
       """
       You are repeating yourself without making progress — change strategy NOW:
       stop exploratory commands, record/update your todo list (todo_write),
@@ -661,12 +653,131 @@ defmodule ExAthena.Modes.ReAct do
     end
   end
 
+  # Shared with the research rail (needs_research?/1). Identical DERIVED texts
+  # ("ran bash") are weak evidence — only a stall when the kernel's fingerprint
+  # also says the turns were unproductive.
+  defp ledger_repeated?(state, ledger) do
+    case Enum.take(ledger, -2) do
+      [%{text: same, source: s1}, %{text: same, source: s2}] ->
+        if s1 == :derived and s2 == :derived,
+          do: state.unproductive_iterations > 0,
+          else: true
+
+      _ ->
+        false
+    end
+  end
+
+  # ── Research rail ─────────────────────────────────────────────────
+  #
+  # Deterministic "go online when local context runs out". When a planning/
+  # investigation turn shows it lacks context — an empty/failed local search,
+  # a recorded negative finding, or repetition — steer the model to web_search
+  # (then web_fetch) instead of re-running the same local lookups. Pairs with
+  # the prompt steering in the agent defs / mode addenda.
+
+  @research_local_tools ~w(grep glob read web_fetch)
+  @max_research_searches 2
+  @empty_result_re ~r/no matches|no files found|0 results|no results|not found/i
+
+  # Ephemeral request-tail directive (cache-safe — never persisted). Only emitted
+  # when a signal fires AND the over-search cap allows AND web_search is actually
+  # in scope for this agent.
+  defp research_note(state) do
+    if needs_research?(state) do
+      [
+        Messages.user(
+          "[runtime] Local context looks insufficient (a search/fetch came up empty, you " <>
+            "recorded a negative finding, or you are repeating yourself). Before continuing, " <>
+            "call web_search with a focused query to find authoritative external information, " <>
+            "then web_fetch the most relevant result. Do NOT re-run the same local glob/grep."
+        )
+      ]
+    else
+      []
+    end
+  end
+
+  defp needs_research?(state) do
+    web_search_available?(state) and research_budget_left?(state) and
+      (empty_local_result?(state) or negative_finding_signal?(state) or
+         ledger_repeated_signal?(state))
+  end
+
+  defp web_search_available?(%State{tool_specs: specs}),
+    do: Enum.any?(specs, &(&1.name == "web_search"))
+
+  # Over-search guard, derived purely from the transcript: once the agent has
+  # already issued @max_research_searches web_search calls, stop nudging.
+  defp research_budget_left?(%State{messages: messages}),
+    do: count_tool_calls(messages, "web_search") < @max_research_searches
+
+  # Signal A — the most recent tool turn's results include an empty/failed
+  # local-context lookup (grep/glob/read/web_fetch).
+  defp empty_local_result?(state) do
+    state
+    |> last_tool_results_with_names()
+    |> Enum.any?(fn
+      {name, %{is_error: err, content: content}} ->
+        name in @research_local_tools and (err == true or empty_content?(content))
+
+      _ ->
+        false
+    end)
+  end
+
+  defp empty_content?(content) do
+    text = to_string(content)
+    String.trim(text) == "" or Regex.match?(@empty_result_re, text)
+  end
+
+  # Signal B — the latest recorded conclusion is a negative finding.
+  defp negative_finding_signal?(%State{meta: %{ledger: [_ | _] = ledger}}),
+    do: ExAthena.Conclusions.negative_finding?(List.last(ledger).text)
+
+  defp negative_finding_signal?(_state), do: false
+
+  # Signal C — the ledger is repeating (shared with ledger_directive).
+  defp ledger_repeated_signal?(%State{meta: %{ledger: [_ | _] = ledger}} = state),
+    do: ledger_repeated?(state, ledger)
+
+  defp ledger_repeated_signal?(_state), do: false
+
+  defp last_tool_results_with_names(%State{messages: messages}) do
+    name_by_id =
+      messages
+      |> Enum.flat_map(fn
+        %Messages.Message{role: :assistant, tool_calls: tcs} when is_list(tcs) -> tcs
+        _ -> []
+      end)
+      |> Map.new(fn tc -> {tc.id, tc.name} end)
+
+    case Enum.find(Enum.reverse(messages), &match?(%Messages.Message{role: :tool}, &1)) do
+      %Messages.Message{tool_results: results} when is_list(results) ->
+        Enum.map(results, fn r -> {name_by_id[r.tool_call_id], r} end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp count_tool_calls(messages, name) do
+    messages
+    |> Enum.flat_map(fn
+      %Messages.Message{role: :assistant, tool_calls: tcs} when is_list(tcs) -> tcs
+      _ -> []
+    end)
+    |> Enum.count(&(&1.name == name))
+  end
+
   # ── Request building ──────────────────────────────────────────────
 
   defp build_request(state) do
     %{
       state.request_template
-      | messages: state.messages ++ phase_note(state) ++ budget_note(state) ++ recitation(state),
+      | messages:
+          state.messages ++
+            phase_note(state) ++ budget_note(state) ++ research_note(state) ++ recitation(state),
         tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
     }

@@ -53,7 +53,13 @@ defmodule ExAthena.Modes.Orchestrate do
      Record decisions only — never restate worker output verbatim.
      Treat NEGATIVE findings ("X does not exist") as SETTLED facts: never
      re-delegate a search for something already reported absent. Record
-     the absence and move on to the next step of the plan.
+     the absence and move on to the next step of the plan. When a worker
+     reports it could NOT find something locally and the task plausibly
+     depends on external/up-to-date information (library APIs, framework
+     conventions, versions, web facts), delegate a research worker
+     (agent: "research") whose brief says to web_search + web_fetch —
+     do NOT keep re-delegating local-only exploration for information the
+     codebase does not contain.
   4. Never delegate work that is not on the todo list — FIRST add the
      todo with todo_write, THEN spawn the worker with `todo:` set to it.
      One todo per worker; do not bundle several steps into one spawn.
@@ -67,7 +73,25 @@ defmodule ExAthena.Modes.Orchestrate do
   [orchestration runtime] PLANNING: no plan is recorded yet — your next
   action should be todo_write with your draft plan (or spawn ONE explore
   worker first if you cannot draft anything). A tool-free numbered plan in
-  text also works.\
+  text also works. If you cannot draft the plan because you lack external
+  knowledge (a library API, framework convention, versions, or current
+  facts), spawn a research worker (agent: "research") that uses web_search
+  before drafting.\
+  """
+
+  # Deterministic research rail: if the orchestrator burns this many planning
+  # turns without recording any plan, it is context-starved — steer it (once)
+  # to delegate online research rather than keep spinning. Half the planning
+  # budget, so it fires before the hard transition at @max_planning_turns.
+  @research_planning_threshold 4
+  @max_research_nudges 1
+
+  @research_planning_note """
+  [orchestration runtime] PLANNING is stalling and no plan is recorded yet. If
+  you lack the external knowledge to draft the plan (a library/API, framework
+  convention, version, or current fact), delegate it NOW: spawn_agent(agent:
+  "research") with a focused brief to web_search the open question, then use its
+  findings to record your todos with todo_write.\
   """
 
   @worker_suffix """
@@ -78,6 +102,10 @@ defmodule ExAthena.Modes.Orchestrate do
     directory") — never re-search for something already established absent.
     If a search (glob/grep) returns no matches TWICE for the same target,
     record it as absent and STOP searching — do not rephrase the query.
+    If a fact is absent locally but the task needs it (an external API,
+    library docs, current information), use web_search then web_fetch ONCE
+    to get it from authoritative sources, then record what you found —
+    never web_search the same query twice.
   - Your FINAL message is the ONLY thing the orchestrator sees — make it a
     complete, self-contained report: every concrete fact discovered (exact
     paths, file names, patterns, config/frontmatter formats, snippets),
@@ -203,7 +231,8 @@ defmodule ExAthena.Modes.Orchestrate do
              |> to_executing()}
 
           true ->
-            {:continue, put_in(new_state.mode_state[:planning_turns], turns)}
+            next = put_in(new_state.mode_state[:planning_turns], turns)
+            {:continue, maybe_research_nudge(next, turns)}
         end
 
       other ->
@@ -510,6 +539,26 @@ defmodule ExAthena.Modes.Orchestrate do
   defp append_prompt(nil, addendum), do: addendum
   defp append_prompt("", addendum), do: addendum
   defp append_prompt(existing, addendum), do: existing <> "\n\n" <> addendum
+
+  # Deterministic research rail (planning phase): once planning has burned
+  # @research_planning_threshold turns with still no plan recorded, replace the
+  # ephemeral planning tail note (once) with a directive to delegate online
+  # research. Cleared at to_executing/1 like any phase note. The orchestrator
+  # can't search itself, so the directive steers it to spawn a research worker.
+  defp maybe_research_nudge(state, turns) do
+    nudges = state.mode_state[:research_nudges] || 0
+
+    if turns >= @research_planning_threshold and nudges < @max_research_nudges and
+         current_todos(state) == [] do
+      %{
+        state
+        | mode_state: Map.put(state.mode_state, :research_nudges, nudges + 1),
+          meta: Map.put(state.meta, :phase_note, String.trim(@research_planning_note))
+      }
+    else
+      state
+    end
+  end
 
   # Switch phases: clear the stale :stop set by a tool-free plan turn and
   # drop the ephemeral planning tail note.

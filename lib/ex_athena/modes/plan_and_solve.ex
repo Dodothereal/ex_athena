@@ -43,7 +43,10 @@ defmodule ExAthena.Modes.PlanAndSolve do
 
     1. **Goal** — what is the user asking for?
     2. **Approach** — how will you get there? Which tools will you need,
-       in what order?
+       in what order? If your plan depends on external facts you are
+       unsure of (a library/API, convention, version, or current
+       information), note that you will web_search to confirm them in the
+       first execution step.
     3. **Risks** — what could go wrong, and how will you detect + recover?
 
   Once you finish your plan, wait for the next turn to begin executing.

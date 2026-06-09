@@ -98,7 +98,7 @@ defmodule ExAthena.Permissions do
   alias ExAthena.Permissions.Denial
   alias ExAthena.ToolContext
 
-  @readonly_tools ~w(read glob grep web_fetch plan_mode spawn_agent lsp)
+  @readonly_tools ~w(read glob grep web_fetch web_search plan_mode spawn_agent lsp)
   # `todo_write` is deliberately NOT here: it mutates session bookkeeping
   # (the todo list), never the workspace/filesystem, so it stays allowed in
   # the read-only `:plan` phase (see check_phase/3). Orchestrate planning and
@@ -107,7 +107,7 @@ defmodule ExAthena.Permissions do
   # `:accept_edits` auto-allows file edits + every read-only tool,
   # but still falls through to the callback for everything else
   # (bash, custom tools).
-  @auto_allow_in_accept_edits ~w(read glob grep web_fetch plan_mode spawn_agent write edit todo_write)
+  @auto_allow_in_accept_edits ~w(read glob grep web_fetch web_search plan_mode spawn_agent write edit todo_write)
 
   @type result ::
           :allow

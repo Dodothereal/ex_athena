@@ -18,8 +18,8 @@ defmodule ExAthena.Agents do
       priv/agents/<name>.md                  # builtin fallbacks (ship with the package)
 
   Project agents override user-level agents with the same name; the
-  built-in fallbacks (`general`, `explore`, `plan`) are used only
-  when the host hasn't defined one with the same name.
+  built-in fallbacks (`general`, `explore`, `plan`, `research`) are used
+  only when the host hasn't defined one with the same name.
 
   ## Frontmatter schema
 

@@ -10,6 +10,14 @@ end
 # on every session start whenever the local CLI version differs.
 config :claude_code, cli_path: :global
 
+# Web search backend for the `web_search` tool. Default is DuckDuckGo (no API
+# key — parses the HTML SERP, best-effort/rate-limited). Swap the backend (and
+# supply api_key/endpoint) via env in config/runtime.exs. config/test.exs
+# overrides the adapter with a Mox mock.
+config :ex_athena, :search,
+  adapter: ExAthena.Search.Http,
+  backend: :duckduckgo
+
 import_config "#{config_env()}.exs"
 
 # To use a local llama.cpp server instead:

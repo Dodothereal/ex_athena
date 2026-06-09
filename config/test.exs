@@ -18,3 +18,7 @@ config :ex_athena, lsp_implicit_diagnostics_enabled: false
 
 # Disable request queue supervisor; individual tests opt in via start_supervised!.
 config :ex_athena, :request_queue, enabled: false
+
+# Route web_search through the Mox mock (defined in test_helper.exs) so tests
+# never hit the network. The contract lives in ExAthena.Search.
+config :ex_athena, :search, adapter: ExAthena.Search.Mock

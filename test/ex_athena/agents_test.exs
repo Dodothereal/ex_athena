@@ -29,15 +29,24 @@ defmodule ExAthena.AgentsTest do
   end
 
   describe "discover/2" do
-    test "returns the builtin general/explore/plan when shipped agents are loaded", %{
+    test "returns the builtin general/explore/plan/research when shipped agents are loaded", %{
       cwd: cwd,
       user: user
     } do
       # Use the real `priv/agents/` so we exercise the package's defaults.
       agents = Agents.discover(cwd, user_dir: user)
 
-      assert %{"general" => %Definition{}, "explore" => %Definition{}, "plan" => %Definition{}} =
-               agents
+      assert %{
+               "general" => %Definition{},
+               "explore" => %Definition{tools: explore_tools},
+               "plan" => %Definition{tools: plan_tools},
+               "research" => %Definition{tools: research_tools, permissions: :plan}
+             } = agents
+
+      # web_search reaches the read-only research workers.
+      assert "web_search" in explore_tools
+      assert "web_search" in plan_tools
+      assert "web_search" in research_tools
     end
 
     test "loads a custom project agent and prefers it over builtins", %{

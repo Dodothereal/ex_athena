@@ -31,6 +31,7 @@ defmodule ExAthena.Tools do
     ExAthena.Tools.ApplyPatch,
     ExAthena.Tools.Bash,
     ExAthena.Tools.WebFetch,
+    ExAthena.Tools.WebSearch,
     ExAthena.Tools.TodoWrite,
     ExAthena.Tools.PlanMode,
     ExAthena.Tools.SpawnAgent,

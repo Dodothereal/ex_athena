@@ -32,6 +32,8 @@ defmodule ExAthena.MixProject do
 
   defp deps do
     [
+      {:floki, "~> 0.38"},
+      {:mox, "~> 1.0", only: :test},
       {:erlexec, "~> 2.0"},
       {:req, "~> 0.5"},
       {:req_llm, "~> 1.10"},
