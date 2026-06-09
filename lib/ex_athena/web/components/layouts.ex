@@ -12,6 +12,9 @@ defmodule ExAthena.Web.Layouts do
         <meta name="csrf-token" content={get_csrf_token()} />
         <title>ExAthena</title>
         <link rel="stylesheet" href="/assets/app.css" />
+        <link rel="stylesheet" href="/assets/vendor/xterm/xterm.css" />
+        <script src="/assets/vendor/xterm/xterm.js"></script>
+        <script src="/assets/vendor/xterm/addon-fit.js"></script>
         <script type="importmap">
           {
             "imports": {
@@ -140,6 +143,58 @@ defmodule ExAthena.Web.Layouts do
               mounted()  { this.scrollToBottom() },
               updated()  { this.scrollToBottom() },
               scrollToBottom() { this.el.scrollTop = this.el.scrollHeight }
+            },
+
+            // A real terminal via xterm.js over the erlexec PTY. The hook
+            // owns its DOM (phx-update="ignore"); the server streams raw VT
+            // bytes (base64) which xterm renders — neovim, htop, colors,
+            // the real prompt, all work. Keystrokes stream back per-char.
+            Terminal: {
+              mounted() {
+                const id = this.el.dataset.termId
+                const term = new Terminal({
+                  cursorBlink: true,
+                  fontFamily: "JetBrains Mono, Fira Code, monospace",
+                  fontSize: 12,
+                  theme: { background: "#0e0e12", foreground: "#dde1f0" }
+                })
+                const fit = new FitAddon.FitAddon()
+                term.loadAddon(fit)
+                term.open(this.el)
+                fit.fit()
+
+                this.term = term
+                this.fit = fit
+
+                // keystrokes -> server -> pty
+                term.onData((data) => this.pushEvent("term_input", { id, data }))
+
+                // pty output (base64 raw bytes) -> xterm
+                this.handleEvent("term_out", ({ id: outId, b64 }) => {
+                  if (outId !== id) return
+                  const bin = atob(b64)
+                  const bytes = new Uint8Array(bin.length)
+                  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+                  term.write(bytes)
+                })
+
+                // fit on container resize (also fires when shown/hidden)
+                const sendResize = () => {
+                  try { this.fit.fit() } catch (_e) { return }
+                  this.pushEvent("term_resize", { id, cols: term.cols, rows: term.rows })
+                }
+                this.ro = new ResizeObserver(sendResize)
+                this.ro.observe(this.el)
+                sendResize()
+
+                // Ask the server to replay captured scrollback (covers the
+                // mount race for the first prompt + full reconnects).
+                this.pushEvent("term_ready", { id })
+              },
+              destroyed() {
+                this.ro && this.ro.disconnect()
+                this.term && this.term.dispose()
+              }
             },
 
             MarkdownRender: {

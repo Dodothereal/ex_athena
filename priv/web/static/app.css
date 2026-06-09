@@ -2317,3 +2317,118 @@ button.msg-thinking-summary {
   max-height: 360px;
   margin-top: 6px;
 }
+
+/* ── Terminal tab ────────────────────────────────────────────────────── */
+
+.term-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+}
+
+.term-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.term-subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.term-subtab:hover { color: var(--text); }
+
+.term-subtab--active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.term-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.term-dot--running { background: var(--accent); }
+.term-dot--exited { background: var(--muted); opacity: 0.5; }
+
+.term-subtab-close {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.term-subtab-close:hover { color: var(--error-text); }
+
+/* xterm.js host: one instance per terminal, inactive ones hidden (not
+   removed) so their state survives tab switches. The active wrap fills the
+   area so xterm's fit addon can compute rows/cols. */
+.term-screens {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.term-xterm-wrap {
+  position: absolute;
+  inset: 0;
+  display: none;
+  padding: 6px 8px;
+}
+
+.term-xterm-wrap.is-active { display: block; }
+
+.term-xterm {
+  width: 100%;
+  height: 100%;
+}
+
+/* SGR styles (ExAthena.Terminal.Sgr) — themed, no inline styles. */
+.term-bold { font-weight: 600; }
+.term-dim { opacity: 0.6; }
+.term-italic { font-style: italic; }
+.term-underline { text-decoration: underline; }
+
+.term-fg-black   { color: #5a6080; }
+.term-fg-red     { color: #f87171; }
+.term-fg-green   { color: #34d399; }
+.term-fg-yellow  { color: #fbbf24; }
+.term-fg-blue    { color: #60a5fa; }
+.term-fg-magenta { color: #c084fc; }
+.term-fg-cyan    { color: #22d3ee; }
+.term-fg-white   { color: #dde1f0; }
+.term-fg-bright-black   { color: #6b7280; }
+.term-fg-bright-red     { color: #fca5a5; }
+.term-fg-bright-green   { color: #6ee7b7; }
+.term-fg-bright-yellow  { color: #fcd34d; }
+.term-fg-bright-blue    { color: #93c5fd; }
+.term-fg-bright-magenta { color: #d8b4fe; }
+.term-fg-bright-cyan    { color: #67e8f9; }
+.term-fg-bright-white   { color: #ffffff; }
+
+.term-bg-black   { background: #1c1c28; }
+.term-bg-red     { background: #4a1a1a; }
+.term-bg-green   { background: #14342a; }
+.term-bg-yellow  { background: #423410; }
+.term-bg-blue    { background: #1a2a4a; }
+.term-bg-magenta { background: #3a1a4a; }
+.term-bg-cyan    { background: #133b42; }
+.term-bg-white   { background: #2a2a44; }

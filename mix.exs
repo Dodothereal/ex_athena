@@ -32,6 +32,7 @@ defmodule ExAthena.MixProject do
 
   defp deps do
     [
+      {:erlexec, "~> 2.0"},
       {:req, "~> 0.5"},
       {:req_llm, "~> 1.10"},
       {:jason, "~> 1.4"},

@@ -86,9 +86,15 @@ defmodule ExAthena.Web.Live.ChatLive do
         # The assistant message id that streaming events are currently
         # attributed to. Set in start_agent_run; cleared in :athena_done.
         pending_assistant_msg_id: nil,
-        # Details pane: tabbed (:overview | :log | :git) plus a visibility toggle.
+        # Details pane: tabbed (:overview | :log | :git | :terminal) plus a
+        # visibility toggle.
         details_tab: :overview,
         show_details: true,
+        # Embedded terminals (Terminal tab). `terminals` is an ordered list
+        # of %{id, title, status}; each renders its own xterm.js instance,
+        # output streams to the client via push_event (no server buffer).
+        terminals: [],
+        active_terminal: nil,
         # Live orchestration snapshot (ExAthena.Orchestrator.Coordinator) for
         # the Overview tab. One coordinator per run; orchestrator_sid scopes
         # incoming updates to the current run.
@@ -501,13 +507,56 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("switch_details_tab", %{"tab" => tab}, socket)
-      when tab in ~w(overview log git) do
+      when tab in ~w(overview log git terminal) do
     tab = String.to_existing_atom(tab)
 
     git_diff =
       if tab == :git, do: fetch_git_diff(socket.assigns.cwd), else: socket.assigns.git_diff
 
-    {:noreply, assign(socket, details_tab: tab, show_details: true, git_diff: git_diff)}
+    socket = assign(socket, details_tab: tab, show_details: true, git_diff: git_diff)
+
+    # Opening the Terminal tab with no terminals yet spawns the first one.
+    socket =
+      if tab == :terminal and socket.assigns.terminals == [],
+        do: open_terminal(socket),
+        else: socket
+
+    {:noreply, socket}
+  end
+
+  def handle_event("term_new", _params, socket) do
+    {:noreply, open_terminal(socket)}
+  end
+
+  def handle_event("term_select", %{"id" => id}, socket) do
+    {:noreply, assign(socket, active_terminal: id)}
+  end
+
+  def handle_event("term_input", %{"id" => id, "data" => data}, socket) do
+    ExAthena.Terminal.Server.input(id, data)
+    {:noreply, socket}
+  end
+
+  def handle_event("term_resize", %{"id" => id, "cols" => cols, "rows" => rows}, socket) do
+    ExAthena.Terminal.Server.resize(id, rows, cols)
+    {:noreply, socket}
+  end
+
+  # The xterm hook mounted (or reconnected) — replay the captured scrollback.
+  def handle_event("term_ready", %{"id" => id}, socket) do
+    ExAthena.Terminal.Server.replay(id)
+    {:noreply, socket}
+  end
+
+  def handle_event("term_stop", %{"id" => id}, socket) do
+    {:noreply, close_terminal(socket, id)}
+  end
+
+  def handle_event("term_stop_all", _params, socket) do
+    socket =
+      Enum.reduce(socket.assigns.terminals, socket, fn t, acc -> close_terminal(acc, t.id) end)
+
+    {:noreply, socket}
   end
 
   def handle_event("refresh_git_diff", _params, socket) do
@@ -521,6 +570,28 @@ defmodule ExAthena.Web.Live.ChatLive do
   @impl true
   def handle_info(:load_sessions, socket) do
     {:noreply, assign(socket, recent_cwds: Sessions.list_recent())}
+  end
+
+  # Raw PTY bytes from a Terminal.Server → the matching xterm hook (base64
+  # so arbitrary control bytes survive JSON transport).
+  def handle_info({:term_output, id, data}, socket) do
+    {:noreply, push_event(socket, "term_out", %{id: id, b64: Base.encode64(data)})}
+  end
+
+  def handle_info({:term_exit, id, code}, socket) do
+    socket =
+      push_event(socket, "term_out", %{
+        id: id,
+        b64: Base.encode64("\r\n[process exited #{code}]\r\n")
+      })
+
+    terminals =
+      Enum.map(socket.assigns.terminals, fn
+        %{id: ^id} = t -> %{t | status: :exited}
+        t -> t
+      end)
+
+    {:noreply, assign(socket, terminals: terminals)}
   end
 
   def handle_info({:load_models, provider}, socket) do
@@ -1098,9 +1169,23 @@ defmodule ExAthena.Web.Live.ChatLive do
                 phx-click="switch_details_tab"
                 phx-value-tab="git"
               >Git</button>
+              <button
+                class={tab_class(@details_tab, :terminal)}
+                phx-click="switch_details_tab"
+                phx-value-tab="terminal"
+              >Terminal</button>
               <span class="details-tabs-spacer"></span>
               <%= if @details_tab == :git do %>
                 <button class="details-tab-action" phx-click="refresh_git_diff" title="Refresh">↺</button>
+              <% end %>
+              <%= if @details_tab == :terminal do %>
+                <button class="details-tab-action" phx-click="term_new" title="New terminal">+</button>
+                <button
+                  :if={@terminals != []}
+                  class="details-tab-action"
+                  phx-click="term_stop_all"
+                  title="Stop all terminals"
+                >⏻ all</button>
               <% end %>
             </div>
 
@@ -1138,6 +1223,8 @@ defmodule ExAthena.Web.Live.ChatLive do
                       </div>
                   <% end %>
                 </div>
+              <% :terminal -> %>
+                <.terminal_panel terminals={@terminals} active={@active_terminal} />
               <% _ -> %>
                 <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
                   <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
@@ -1229,6 +1316,88 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp tab_class(active, tab),
     do: "details-tab" <> if(active == tab, do: " details-tab--active", else: "")
+
+  # ── Terminal tab ───────────────────────────────────────────────────
+
+  defp open_terminal(socket) do
+    id = "term-" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
+    cwd = socket.assigns.cwd || System.user_home!() || "/"
+    n = length(socket.assigns.terminals) + 1
+
+    case ExAthena.Terminal.Server.start_for(id: id, owner: self(), cwd: cwd) do
+      {:ok, _pid} ->
+        terminals = socket.assigns.terminals ++ [%{id: id, title: "shell #{n}", status: :running}]
+        assign(socket, terminals: terminals, active_terminal: id)
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  defp close_terminal(socket, id) do
+    ExAthena.Terminal.Server.stop(id)
+    terminals = Enum.reject(socket.assigns.terminals, &(&1.id == id))
+
+    active =
+      if socket.assigns.active_terminal == id do
+        case terminals do
+          [first | _] -> first.id
+          [] -> nil
+        end
+      else
+        socket.assigns.active_terminal
+      end
+
+    assign(socket, terminals: terminals, active_terminal: active)
+  end
+
+  attr :terminals, :list, required: true
+  attr :active, :string, default: nil
+
+  defp terminal_panel(assigns) do
+    ~H"""
+    <div class="details-tab-body term-panel">
+      <%= if @terminals == [] do %>
+        <div class="details-empty">
+          <div class="details-empty-title">Terminal</div>
+          <div class="details-empty-sub">No terminals. Click + to open a shell.</div>
+        </div>
+      <% else %>
+        <div class="term-subtabs">
+          <button
+            :for={t <- @terminals}
+            class={["term-subtab", t.id == @active && "term-subtab--active"]}
+            phx-click="term_select"
+            phx-value-id={t.id}
+          >
+            <span class={["term-dot", "term-dot--#{t.status}"]}></span>
+            {t.title}
+            <span class="term-subtab-close" phx-click="term_stop" phx-value-id={t.id} title="Stop">×</span>
+          </button>
+        </div>
+
+        <%!-- One xterm.js instance per terminal. The hook owns its DOM
+              (phx-update="ignore"); inactive ones are hidden (not removed)
+              so their xterm + scrollback survive tab switches. --%>
+        <div class="term-screens">
+          <div
+            :for={t <- @terminals}
+            class={["term-xterm-wrap", t.id == @active && "is-active"]}
+          >
+            <div
+              id={"xterm-#{t.id}"}
+              class="term-xterm"
+              phx-hook="Terminal"
+              phx-update="ignore"
+              data-term-id={t.id}
+            >
+            </div>
+          </div>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
 
   defp input_placeholder(nil, _), do: "Open a project folder first (+ button)"
   defp input_placeholder(_cwd, q) when not is_nil(q), do: "Type your answer… (Enter to send)"

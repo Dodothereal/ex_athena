@@ -16,7 +16,12 @@ defmodule ExAthena.Application do
         # the DynamicSupervisor (restart: :temporary — a dead coordinator
         # loses observability only; runs never depend on it).
         {Registry, keys: :unique, name: ExAthena.Orchestrator.Registry},
-        {DynamicSupervisor, name: ExAthena.Orchestrator.Supervisor, strategy: :one_for_one}
+        {DynamicSupervisor, name: ExAthena.Orchestrator.Supervisor, strategy: :one_for_one},
+        # Embedded web terminals: one Terminal.Server GenServer per terminal
+        # tab, named by terminal id via the Registry, started on demand under
+        # the DynamicSupervisor. Owns an interactive shell via erlexec.
+        {Registry, keys: :unique, name: ExAthena.Terminal.Registry},
+        {DynamicSupervisor, name: ExAthena.Terminal.Supervisor, strategy: :one_for_one}
       ]
       |> maybe_add_sweeper()
 
