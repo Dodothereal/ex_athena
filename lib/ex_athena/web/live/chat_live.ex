@@ -1224,12 +1224,23 @@ defmodule ExAthena.Web.Live.ChatLive do
                   <% end %>
                 </div>
               <% :terminal -> %>
-                <.terminal_panel terminals={@terminals} active={@active_terminal} />
+                <%!-- Body rendered by the persistent panel below (kept
+                      mounted across tab switches so xterm state survives). --%>
               <% _ -> %>
                 <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
                   <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
                 </div>
             <% end %>
+
+            <%!-- ALWAYS mounted (hidden unless the Terminal tab is active):
+                  switching right-pane tabs must not destroy the xterm hooks,
+                  or remounting replays the PTY's device-queries and xterm
+                  re-answers them as shell commands. --%>
+            <.terminal_panel
+              terminals={@terminals}
+              active={@active_terminal}
+              visible={@details_tab == :terminal}
+            />
           </div>
         <% end %>
 
@@ -1353,10 +1364,11 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   attr :terminals, :list, required: true
   attr :active, :string, default: nil
+  attr :visible, :boolean, default: true
 
   defp terminal_panel(assigns) do
     ~H"""
-    <div class="details-tab-body term-panel">
+    <div class={["details-tab-body term-panel", not @visible && "is-hidden"]}>
       <%= if @terminals == [] do %>
         <div class="details-empty">
           <div class="details-empty-title">Terminal</div>

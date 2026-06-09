@@ -59,6 +59,36 @@ defmodule ExAthena.Terminal.ServerTest do
     assert collect_until(id, "after-interrupt", IO.iodata_to_binary(html))
   end
 
+  describe "sanitize_replay/1 (strips device-query requests)" do
+    test "removes DSR / DA / DECRQM / OSC-color queries, keeps real content + SGR" do
+      input =
+        "before \e[6n\e[5n mid \e[c\e[>c\e[?2026$p \e]11;?\a \e]10;?\e\\ " <>
+          "\e[1;32mgreen\e[0m after"
+
+      out = Server.sanitize_replay(input)
+
+      # Query requests gone.
+      refute out =~ "\e[6n"
+      refute out =~ "\e[5n"
+      refute out =~ "\e[c"
+      refute out =~ "\e[>c"
+      refute out =~ "$p"
+      refute out =~ "\e]11;?"
+      refute out =~ "\e]10;?"
+
+      # Real text + SGR styling preserved.
+      assert out =~ "before"
+      assert out =~ "mid"
+      assert out =~ "after"
+      assert out =~ "\e[1;32mgreen\e[0m"
+    end
+
+    test "leaves query-free output untouched" do
+      plain = "\e[34mDownloads\e[0m  README.md\r\n$ "
+      assert Server.sanitize_replay(plain) == plain
+    end
+  end
+
   test "the server dies when its owner dies (shared-fate cleanup)", %{dir: dir} do
     id = "t-#{System.unique_integer([:positive])}"
 

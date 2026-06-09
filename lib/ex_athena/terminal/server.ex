@@ -133,7 +133,7 @@ defmodule ExAthena.Terminal.Server do
 
   def handle_cast(:replay, state) do
     if state.scrollback != <<>>,
-      do: send(state.owner, {:term_output, state.id, state.scrollback})
+      do: send(state.owner, {:term_output, state.id, sanitize_replay(state.scrollback)})
 
     {:noreply, state}
   end
@@ -195,6 +195,29 @@ defmodule ExAthena.Terminal.Server do
 
   defp cap_scrollback(sb),
     do: binary_part(sb, byte_size(sb) - @scrollback_cap, @scrollback_cap)
+
+  # Device-query REQUESTS that the shell/prompt (p10k) emitted live. On
+  # REPLAY, xterm.js would re-answer them via onData and those answers land
+  # at an idle prompt as bogus commands ("command not found: 2RR0",
+  # "rgb:0e0e/…"). Strip the queries from replayed bytes — they were already
+  # answered during the live session; replay is only for visual restore.
+  @query_patterns [
+    # DSR (cursor/status report): ESC [ … n
+    ~r/\e\[[0-9;?]*n/,
+    # Device Attributes request: ESC [ [<=>]? … c  (responses carry a `?`,
+    # never present in PTY output, so they're unaffected)
+    ~r/\e\[[<=>]?[0-9;]*c/,
+    # DECRQM (mode query): ESC [ ? … $ p
+    ~r/\e\[\?[0-9;]*\$p/,
+    # OSC color/title QUERY: ESC ] … ? … (BEL | ST)
+    ~r/\e\][^\a\e]*\?[^\a\e]*(?:\a|\e\\)/
+  ]
+
+  @doc false
+  # Public for deterministic unit testing (pure transformation).
+  def sanitize_replay(bytes) do
+    Enum.reduce(@query_patterns, bytes, fn re, acc -> Regex.replace(re, acc, "") end)
+  end
 
   defp exit_code({:exit_status, status}), do: :exec.status(status) |> elem(1)
   defp exit_code(_), do: 0

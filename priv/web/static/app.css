@@ -2327,6 +2327,10 @@ button.msg-thinking-summary {
   padding: 0;
 }
 
+/* Kept mounted (xterm state survives right-pane tab switches) but hidden
+   when the Terminal tab isn't active. */
+.term-panel.is-hidden { display: none; }
+
 .term-subtabs {
   display: flex;
   flex-wrap: wrap;
