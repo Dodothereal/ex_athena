@@ -515,11 +515,20 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     socket = assign(socket, details_tab: tab, show_details: true, git_diff: git_diff)
 
-    # Opening the Terminal tab with no terminals yet spawns the first one.
     socket =
-      if tab == :terminal and socket.assigns.terminals == [],
-        do: open_terminal(socket),
-        else: socket
+      cond do
+        # Opening the Terminal tab with no terminals yet spawns the first one.
+        tab == :terminal and socket.assigns.terminals == [] ->
+          open_terminal(socket)
+
+        # Re-activating the tab: the panel was display:none, so re-fit xterm
+        # to the (now visible) pane width.
+        tab == :terminal ->
+          push_event(socket, "term_fit", %{})
+
+        true ->
+          socket
+      end
 
     {:noreply, socket}
   end

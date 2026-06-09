@@ -45,7 +45,8 @@ defmodule ExAthena.Permissions do
     2. **`allowed_tools`** — an explicit allowlist. If non-nil, denies anything
        not in it.
     3. **`phase`** — the current permission mode:
-       * `:plan` — read-only. Writes and shell execution are denied.
+       * `:plan` — read-only. Writes and shell execution are denied
+         (`todo_write` is allowed — it mutates only session bookkeeping).
        * `:default` — read + write. `can_use_tool` callback (if supplied) can
          ask the user.
        * `:accept_edits` — auto-allow Read/Edit/Write/Glob/Grep/WebFetch
@@ -98,7 +99,11 @@ defmodule ExAthena.Permissions do
   alias ExAthena.ToolContext
 
   @readonly_tools ~w(read glob grep web_fetch plan_mode spawn_agent lsp)
-  @mutating_tools ~w(write edit bash todo_write)
+  # `todo_write` is deliberately NOT here: it mutates session bookkeeping
+  # (the todo list), never the workspace/filesystem, so it stays allowed in
+  # the read-only `:plan` phase (see check_phase/3). Orchestrate planning and
+  # read-only `explore` workers both need it to record their plan.
+  @mutating_tools ~w(write edit bash)
   # `:accept_edits` auto-allows file edits + every read-only tool,
   # but still falls through to the callback for everything else
   # (bash, custom tools).
@@ -187,6 +192,12 @@ defmodule ExAthena.Permissions do
 
   defp check_phase(name, args, :plan) do
     cond do
+      # Session bookkeeping, not a workspace mutation — safe in read-only
+      # investigation. Lets orchestrate planning + read-only workers record
+      # their plan with todo_write without tripping the phase gate.
+      name == "todo_write" ->
+        :allow
+
       name in @readonly_tools ->
         :allow
 

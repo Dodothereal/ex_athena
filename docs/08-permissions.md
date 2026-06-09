@@ -53,7 +53,7 @@ The denylist is the user's "absolutely never" list — it survives even `:bypass
 
 | Phase | Read-only tools | Write/edit/bash | `can_use_tool` consulted | Use case |
 |---|---|---|---|---|
-| `:plan` | ✅ | ❌ phase_gated | only if not auto-allowed | Read-only investigation before code changes. Mirrors the agent's "plan mode." |
+| `:plan` | ✅ | ❌ phase_gated (`todo_write` ✅) | only if not auto-allowed | Read-only investigation before code changes. Mirrors the agent's "plan mode." `todo_write` is allowed — it mutates only session bookkeeping, so orchestrate planning and read-only workers can record their plan. |
 | `:default` | ✅ | ✅ via callback | ✅ for everything | Interactive sessions where the user approves writes one-by-one. |
 | `:accept_edits` | ✅ | ✅ for write/edit/todo_write/read/glob/grep/web_fetch/plan_mode/spawn_agent | ✅ for everything else (bash, custom) | "Edits are pre-approved" — file mutations auto-allow; shell + custom still ask. |
 | `:trusted` | ✅ | ✅ | ❌ (always allow) | Trusted automation; denylist still wins unless `respect_denylist: false`. |
@@ -69,7 +69,10 @@ From [`@readonly_tools`](../lib/ex_athena/permissions.ex#L100):
 ### Mutating tools (denied in `:plan`)
 
 From [`@mutating_tools`](../lib/ex_athena/permissions.ex#L101):
-`write`, `edit`, `bash`, `todo_write`.
+`write`, `edit`, `bash`.
+
+`todo_write` is **not** here: it mutates only session bookkeeping (the todo
+list), never the workspace, so `check_phase/3` allows it in `:plan`.
 
 ### Auto-allowed in `:accept_edits`
 
@@ -180,7 +183,7 @@ sequenceDiagram
 
 ```elixir
 ExAthena.run("Find every place we open the DB", phase: :plan)
-# bash, write, edit, todo_write all denied with code: :phase_gated.
+# bash, write, edit all denied with code: :phase_gated (todo_write is allowed).
 ```
 
 ### Code-mod session with auto-write

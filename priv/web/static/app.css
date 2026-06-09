@@ -263,7 +263,12 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   flex: 1;
   display: grid;
   grid-template-rows: 1fr auto;
-  grid-template-columns: var(--left-w, 1fr) 6px var(--right-w, 1fr);
+  /* minmax(0, …) pins each track's MINIMUM to 0 — a bare `Nfr` is
+     `minmax(auto, Nfr)`, whose auto-min is the column content's min-width,
+     so the track would resize when the right-pane tab content changes
+     (xterm grid vs git diff vs overview). */
+  grid-template-columns:
+    minmax(0, var(--left-w, 1fr)) 6px minmax(0, var(--right-w, 1fr));
   overflow: hidden;
   min-width: 0;
   position: relative;
@@ -271,7 +276,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 /* When the details pane is closed, the chat takes the full width. */
 .chat-main--solo {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* ── Messages ─────────────────────────────────────────────────────────────── */
@@ -2388,6 +2393,8 @@ button.msg-thinking-summary {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 

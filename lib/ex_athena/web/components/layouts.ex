@@ -178,14 +178,21 @@ defmodule ExAthena.Web.Layouts do
                   term.write(bytes)
                 })
 
-                // fit on container resize (also fires when shown/hidden)
+                // fit on container resize. Skip while hidden (display:none →
+                // 0 size): fitting at 0 clamps xterm to a tiny grid, so the
+                // panel looks resized when shown again.
                 const sendResize = () => {
+                  if (!this.el.clientWidth || !this.el.clientHeight) return
                   try { this.fit.fit() } catch (_e) { return }
                   this.pushEvent("term_resize", { id, cols: term.cols, rows: term.rows })
                 }
                 this.ro = new ResizeObserver(sendResize)
                 this.ro.observe(this.el)
                 sendResize()
+
+                // Re-fit when the Terminal tab is re-activated (a display
+                // change doesn't reliably trigger ResizeObserver).
+                this.handleEvent("term_fit", () => sendResize())
 
                 // Ask the server to replay captured scrollback (covers the
                 // mount race for the first prompt + full reconnects).
