@@ -867,122 +867,16 @@ if Code.ensure_loaded?(ExRatatui.App) do
       state
     end
 
-    # Per-file caps when synthesizing diffs for untracked files. Untracked
-    # files don't show up in `git diff HEAD`, so we generate a synthetic
-    # "new file" diff for each — but cap so a generated/binary blob doesn't
-    # flood the pane.
-    @max_untracked_lines 500
-    @max_untracked_bytes 100_000
-
+    # All working-tree changes vs HEAD — including untracked (new) files —
+    # via the shared ExAthena.GitDiff (same source the web Git tab uses).
     defp fetch_git_diff(cwd) do
-      case System.cmd("git", ["rev-parse", "--show-toplevel"],
-             cd: cwd,
-             stderr_to_stdout: true
-           ) do
-        {_root, 0} ->
-          tracked = run_git_diff(cwd)
-          untracked = render_untracked_files(cwd)
-
-          case {tracked, untracked} do
-            {[], []} -> ["(no changes vs HEAD)", "cwd: #{cwd}"]
-            _ -> tracked ++ untracked
-          end
-
-        {output, _exit} ->
-          ["not a git repository (cwd: #{cwd})" | String.split(String.trim(output), "\n")]
+      case ExAthena.GitDiff.build(cwd) do
+        {:ok, ""} -> ["(no changes vs HEAD)", "cwd: #{cwd}"]
+        {:ok, text} -> String.split(text, "\n")
+        {:error, :not_a_repo} -> ["not a git repository (cwd: #{cwd})"]
+        {:error, :no_git} -> ["`git` executable not found on PATH"]
+        {:error, :timeout} -> ["git timed out (cwd: #{cwd})"]
       end
-    rescue
-      e in ErlangError ->
-        case e.original do
-          :enoent -> ["`git` executable not found on PATH"]
-          other -> ["git crashed: " <> inspect(other)]
-        end
-
-      e ->
-        ["git crashed: " <> Exception.message(e)]
-    end
-
-    defp run_git_diff(cwd) do
-      case System.cmd("git", ["diff", "HEAD", "--color=never"], cd: cwd, stderr_to_stdout: true) do
-        {output, 0} -> output |> String.trim_trailing("\n") |> String.split("\n", trim: true)
-        _ -> []
-      end
-    end
-
-    # `git ls-files --others --exclude-standard` lists files not tracked
-    # and not gitignored. For each, synthesize a `--- /dev/null` /
-    # `+++ b/<path>` diff so new files appear in the same Changes view.
-    defp render_untracked_files(cwd) do
-      case System.cmd("git", ["ls-files", "--others", "--exclude-standard"],
-             cd: cwd,
-             stderr_to_stdout: true
-           ) do
-        {output, 0} ->
-          output
-          |> String.trim()
-          |> String.split("\n", trim: true)
-          |> Enum.flat_map(&render_untracked_file(&1, cwd))
-
-        _ ->
-          []
-      end
-    end
-
-    defp render_untracked_file(rel, cwd) do
-      header_base = [
-        "diff --git a/#{rel} b/#{rel}",
-        "new file mode 100644",
-        "--- /dev/null",
-        "+++ b/#{rel}"
-      ]
-
-      path = Path.join(cwd, rel)
-
-      case File.stat(path) do
-        {:ok, %{type: :regular, size: size}} when size > @max_untracked_bytes ->
-          # Synthesize a 1-line hunk header so the structured diff parser
-          # counts the placeholder as part of the file rather than dropping
-          # bare `+` lines that have no enclosing hunk.
-          header_base ++
-            ["@@ -0,0 +1,1 @@", "+(file too large to show: #{size} bytes)"]
-
-        {:ok, %{type: :regular}} ->
-          case File.read(path) do
-            {:ok, content} ->
-              if binary_content?(content) do
-                header_base ++ ["@@ -0,0 +1,1 @@", "+(binary file)"]
-              else
-                lines = String.split(content, "\n")
-                total = length(lines)
-                visible = Enum.take(lines, @max_untracked_lines)
-                shown = length(visible)
-                diff_lines = Enum.map(visible, &("+" <> &1))
-
-                footer =
-                  if total > shown,
-                    do: ["+… (#{total - shown} more lines)"],
-                    else: []
-
-                # `@@ -0,0 +1,N @@` — git's convention for a new file.
-                hunk_header = "@@ -0,0 +1,#{shown + length(footer)} @@"
-                header_base ++ [hunk_header] ++ diff_lines ++ footer
-              end
-
-            _ ->
-              []
-          end
-
-        _ ->
-          []
-      end
-    end
-
-    # Cheap binary heuristic: NUL byte in the first 1KB.
-    defp binary_content?(""), do: false
-
-    defp binary_content?(content) do
-      head_size = min(byte_size(content), 1024)
-      :binary.match(binary_part(content, 0, head_size), <<0>>) != :nomatch
     end
 
     defp restore_logger(%State{prior_log_level: level} = state) do

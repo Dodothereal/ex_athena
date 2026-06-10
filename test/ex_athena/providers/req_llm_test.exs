@@ -411,6 +411,61 @@ defmodule ExAthena.Providers.ReqLLMTest do
     end
   end
 
+  describe "consume_stream/3 runaway guard" do
+    alias ExAthena.Request
+
+    defp stream_response(chunks) do
+      %ReqLLM.StreamResponse{
+        stream: chunks,
+        metadata_handle: self(),
+        cancel: fn -> :ok end,
+        model: nil,
+        context: nil
+      }
+    end
+
+    test "truncates a runaway thinking stream and reports finish_reason :length" do
+      # A degenerate model repeating the same thought forever in the reasoning
+      # channel. max_tokens 100 → an ~800-byte budget, so this is cut off long
+      # before the (would-be) 50_000 * 13 bytes.
+      chunks = for _ <- 1..50_000, do: %{type: :thinking, text: "I must wait. "}
+      request = %Request{messages: [], model: "test-model", max_tokens: 100}
+
+      assert {:ok, resp} =
+               Adapter.consume_stream(stream_response(chunks), fn _ -> :ok end, request)
+
+      assert resp.finish_reason == :length
+      assert byte_size(resp.thinking) <= 4_000
+    end
+
+    test "truncates a runaway content stream too" do
+      chunks = for _ <- 1..50_000, do: %{type: :content, text: "blah "}
+      request = %Request{messages: [], model: "test-model", max_tokens: 100}
+
+      assert {:ok, resp} =
+               Adapter.consume_stream(stream_response(chunks), fn _ -> :ok end, request)
+
+      assert resp.finish_reason == :length
+      assert byte_size(resp.text) <= 4_000
+    end
+
+    test "does not truncate a normal-sized stream" do
+      chunks = [
+        %{type: :content, text: "hello "},
+        %{type: :content, text: "world"},
+        %{type: :meta, metadata: %{finish_reason: :stop}}
+      ]
+
+      request = %Request{messages: [], model: "test-model", max_tokens: 100}
+
+      assert {:ok, resp} =
+               Adapter.consume_stream(stream_response(chunks), fn _ -> :ok end, request)
+
+      assert resp.finish_reason == :stop
+      assert resp.text == "hello world"
+    end
+  end
+
   describe "consume_stream/3 transport error handling" do
     alias ExAthena.Request
 

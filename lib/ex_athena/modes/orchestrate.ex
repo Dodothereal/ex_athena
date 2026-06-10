@@ -46,7 +46,14 @@ defmodule ExAthena.Modes.Orchestrate do
   2. Delegate each substantial step to spawn_agent. Workers cannot see
      this conversation — every spawn needs a self-contained brief
      (objective, expected_output, tool_guidance, boundaries) and `todo:`
-     set to the exact todo content the worker handles.
+     set to the exact todo content the worker handles. spawn_agent is
+     SYNCHRONOUS: it runs the worker to completion and the worker's report
+     is returned to you immediately as the tool result — it is already in
+     your context on your very next turn. NEVER say you are "waiting" for a
+     worker and never emit a turn with no tool call to wait — act on the
+     report you just received, or call finish. If a worker's report is
+     empty or unhelpful, record that and either re-delegate with a sharper
+     brief or proceed with what you know.
   3. After each worker returns, update todo_write (mark completed, add
      newly discovered steps). ALWAYS send the FULL list — completed items
      included, new todos appended at the end; never drop finished work.

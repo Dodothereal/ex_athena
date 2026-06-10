@@ -44,6 +44,57 @@ defmodule ExAthena.Loop.NamedSubagentTest do
     end
   end
 
+  defp tool_names(tools) do
+    Enum.map(tools || [], fn t ->
+      t[:name] || t["name"] || get_in(t, [:function, :name]) || get_in(t, ["function", "name"])
+    end)
+  end
+
+  test "a named agent's declared tools are respected, plus the always-on todo_write", %{dir: dir} do
+    parent = self()
+
+    capture_tools = fn req ->
+      send(parent, {:sub_tools, tool_names(req.tools)})
+      %Response{text: "done", finish_reason: :stop, provider: :mock}
+    end
+
+    {:ok, _result} =
+      Loop.run(
+        "do a thing",
+        provider: :mock,
+        mock: [
+          responder:
+            parent_responder_calls_subagent_then_stops(%{
+              "prompt" => "explore the repo",
+              "agent" => "explore"
+            })
+        ],
+        tools: [ExAthena.Tools.SpawnAgent],
+        cwd: dir,
+        memory: false,
+        assigns: %{
+          spawn_agent_opts: [provider: :mock, mock: [responder: capture_tools], memory: false]
+        },
+        max_iterations: 5
+      )
+
+    assert_receive {:sub_tools, names}
+
+    # explore.md declares: read, glob, grep, web_fetch, web_search — those win.
+    assert "read" in names
+    assert "grep" in names
+    assert "web_search" in names
+    # todo_write is always granted (worker contract) even though explore.md
+    # does not list it.
+    assert "todo_write" in names
+    # The full builtin set must NOT leak in — a read-only explorer never gets
+    # bash/write/edit, and never spawn_agent/plan_mode (depth-1).
+    refute "bash" in names
+    refute "write" in names
+    refute "edit" in names
+    refute "spawn_agent" in names
+  end
+
   test "agent: \"explore\" resolves to the builtin definition", %{dir: dir} do
     ref = make_ref()
     parent = self()

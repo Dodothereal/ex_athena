@@ -2647,13 +2647,12 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp fetch_git_diff(nil), do: nil
 
   defp fetch_git_diff(cwd) do
-    try do
-      # Single source of truth: all working-tree changes (staged + unstaged)
-      # against HEAD, so the system's changes can be reviewed and committed.
-      {diff, _} = System.cmd("git", ["diff", "HEAD", "--color=never"], cd: cwd)
-      if diff == "", do: [], else: parse_git_diff(diff)
-    rescue
-      _ -> nil
+    # All working-tree changes vs HEAD — including untracked (new) files —
+    # via the shared ExAthena.GitDiff (same source the TUI Changes tab uses).
+    case ExAthena.GitDiff.build(cwd) do
+      {:ok, ""} -> []
+      {:ok, diff} -> parse_git_diff(diff)
+      {:error, _} -> nil
     end
   end
 

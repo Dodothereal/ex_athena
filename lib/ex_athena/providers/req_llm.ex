@@ -632,10 +632,22 @@ defmodule ExAthena.Providers.ReqLLM do
   # ── Streaming ─────────────────────────────────────────────────────
 
   @doc false
+  # Hard ceiling on TOTAL streamed bytes (content + reasoning) per turn. The
+  # `max_tokens` completion cap bounds the answer channel, but some local
+  # servers (mlx/EXO) don't apply it to the *thinking* channel — a small model
+  # that degenerates into repeating a phrase ("I must wait…") would then stream
+  # forever and never finish a turn, so the inter-turn rails never fire. This
+  # guarantees the turn terminates; the truncated turn is then handled normally.
+  @stream_bytes_per_token 8
+
   def consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request) do
+    max_stream_bytes =
+      (request.max_tokens || @default_completion_tokens) * @stream_bytes_per_token
+
     state = %{
       text: [],
       thinking: [],
+      streamed_bytes: 0,
       tool_calls: [],
       # Collects OpenAI-style streaming tool-call argument fragments keyed by
       # the tool-call index. llama.cpp (and strict OpenAI clients) stream
@@ -654,9 +666,20 @@ defmodule ExAthena.Providers.ReqLLM do
     stream_result =
       try do
         final =
-          Enum.reduce(stream, state, fn chunk, acc ->
+          Enum.reduce_while(stream, state, fn chunk, acc ->
             acc = maybe_log_first_chunk(chunk, acc)
-            handle_chunk(chunk, callback, acc)
+            acc = handle_chunk(chunk, callback, acc)
+
+            if acc.streamed_bytes > max_stream_bytes do
+              Logger.warning(
+                "#{@log_prefix} runaway stream guard tripped at #{acc.streamed_bytes}B " <>
+                  "(cap #{max_stream_bytes}B) — truncating turn as :length"
+              )
+
+              {:halt, %{acc | finish_reason: acc.finish_reason || :length}}
+            else
+              {:cont, acc}
+            end
           end)
 
         {:ok, final}
@@ -839,7 +862,7 @@ defmodule ExAthena.Providers.ReqLLM do
     end)
 
     ExAthena.Streaming.text_delta(callback, text)
-    %{acc | text: [text | acc.text]}
+    %{acc | text: [text | acc.text], streamed_bytes: acc.streamed_bytes + byte_size(text)}
   end
 
   defp handle_chunk(%{type: :thinking, text: text}, callback, acc) when is_binary(text) do
@@ -848,7 +871,7 @@ defmodule ExAthena.Providers.ReqLLM do
     end)
 
     ExAthena.Streaming.thinking_delta(callback, text)
-    %{acc | thinking: [text | acc.thinking]}
+    %{acc | thinking: [text | acc.thinking], streamed_bytes: acc.streamed_bytes + byte_size(text)}
   end
 
   defp handle_chunk(%{type: :tool_call} = tc, _callback, acc) do

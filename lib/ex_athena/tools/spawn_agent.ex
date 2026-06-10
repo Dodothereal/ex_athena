@@ -172,7 +172,7 @@ defmodule ExAthena.Tools.SpawnAgent do
       # the first streamed byte ("Stream failed: :timeout").
       |> Keyword.put_new(:timeout_ms, timeout)
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
-      |> maybe_put(:tools, resolve_tools(Map.get(args, "tools"), ctx))
+      |> Keyword.put(:tools, resolve_tools(Map.get(args, "tools"), agent_def && agent_def.tools))
       |> apply_prompt_suffix(ctx)
       |> attribute_events(sub_id, ctx, args, agent_def)
       |> Keyword.put(:parent_session_id, ctx.session_id)
@@ -532,29 +532,33 @@ defmodule ExAthena.Tools.SpawnAgent do
   # the sub-loop's tool resolution and crash the worker. An empty result
   # falls back to nil (inherit the default toolset).
   # Default worker toolset = all builtins MINUS the loop-control tools:
-  # spawn_agent (depth-1 — the schema would only invite rejected calls and
-  # cost prompt tokens every turn) and plan_mode.
-  defp resolve_tools(nil, _ctx) do
-    ExAthena.Tools.builtins()
-    |> Enum.map(& &1.name())
-    |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
-  end
-
-  defp resolve_tools(names, _ctx) when is_list(names) do
+  # Effective worker toolset.
+  #
+  # The agent definition's declared `tools` are the CEILING — a restricted
+  # agent (e.g. `explore`, read-only) must stay restricted, so we never widen
+  # past what it declared. A model-supplied `tools` arg may NARROW within that
+  # ceiling but can never add a tool the agent isn't allowed. With no agent
+  # definition (plain spawn), the ceiling is the full builtin set.
+  #
+  # Always stripped: `plan_mode` / `spawn_agent` (depth-1 — the schemas would
+  # only invite rejected calls). Always granted: `todo_write` (worker contract
+  # — every worker maintains its own todo list, even read-only ones).
+  defp resolve_tools(requested, declared) do
     known = ExAthena.Tools.builtins() |> MapSet.new(& &1.name())
+    all = Enum.map(ExAthena.Tools.builtins(), & &1.name())
 
-    names
+    ceiling = if is_list(declared), do: declared, else: all
+
+    selected =
+      case requested do
+        list when is_list(list) -> Enum.filter(list, &(&1 in ceiling))
+        _ -> ceiling
+      end
+
+    selected
     |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
     |> Enum.filter(&MapSet.member?(known, &1))
-    |> case do
-      [] ->
-        nil
-
-      filtered ->
-        # The worker contract demands todo upkeep — todo_write can never be
-        # stripped by an explicit tools list.
-        if "todo_write" in filtered, do: filtered, else: filtered ++ ["todo_write"]
-    end
+    |> then(fn t -> if "todo_write" in t, do: t, else: t ++ ["todo_write"] end)
   end
 
   defp emit_event(%{assigns: %{on_event: callback}}, event) when is_function(callback, 1) do
