@@ -74,6 +74,14 @@ defmodule ExAthena.Modes.Orchestrate do
      Workers run one at a time — delegate sequentially.
   6. When every todo is completed, call finish with a deliverable
      summarizing the outcome.
+  7. When you need a DECISION or CLARIFICATION from the user (an ambiguous
+     requirement, a choice between approaches, a missing precondition), you
+     MUST call the ask_user tool with your question and options. Writing the
+     question as plain text does NOTHING — it does not pause the run or reach
+     the user, and you will just continue acting on a guess. Never proceed on
+     an ambiguous choice without either a clearly-correct default or an
+     ask_user call. Do NOT say "I will wait for your clarification" in text —
+     that is not waiting; only ask_user waits.
   """
 
   @planning_note """

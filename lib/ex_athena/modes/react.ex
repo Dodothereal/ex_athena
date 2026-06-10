@@ -223,7 +223,9 @@ defmodule ExAthena.Modes.ReAct do
         # One bounded retry for TRANSIENT provider failures — a single exo
         # hiccup / transport blip used to kill whole runs (Req doesn't
         # retry POSTs). Anything else, or a second failure, halts.
-        if transient_error?(reason) and not state.meta[:retried_transient?] do
+        # `!= true` (not `not …`) because :retried_transient? is unset (nil) on
+        # the first transient error — `not nil` raises ArgumentError.
+        if transient_error?(reason) and state.meta[:retried_transient?] != true do
           state = put_in(state.meta[:retried_transient?], true)
           Process.sleep(2_000)
           do_iterate(state, request)
