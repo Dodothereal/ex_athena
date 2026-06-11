@@ -1990,33 +1990,6 @@ defmodule ExAthena.Web.Live.ChatLive do
 
         </div>
       </div>
-
-      <%!-- ONE thinking & actions expander PER TASK — sits below the task,
-            always visible (independent of the task's own expansion),
-            aggregating its workers' chat-style transcripts in spawn order. --%>
-      <% transcript_count = @agents |> Enum.map(&length(&1.transcript_tail)) |> Enum.sum() %>
-      <%= if transcript_count > 0 do %>
-        <div class="ov-transcript ov-task-transcript">
-          <button
-            class="ov-transcript-toggle"
-            phx-click="ov_toggle"
-            phx-value-key={"task-transcript:#{@todo.id}"}
-          >
-            {if MapSet.member?(@expanded, "task-transcript:#{@todo.id}"), do: "▾", else: "▸"} thinking & actions ({transcript_count})
-          </button>
-          <div
-            :if={MapSet.member?(@expanded, "task-transcript:#{@todo.id}")}
-            class="ov-transcript-body"
-          >
-            <%= for agent <- @agents, agent.transcript_tail != [] do %>
-              <div :if={length(@agents) > 1} class="ov-focus-label">
-                {agent.name || agent.id}
-              </div>
-              <.ov_agent_chat tail={agent.transcript_tail} />
-            <% end %>
-          </div>
-        </div>
-      <% end %>
     </div>
     """
   end
@@ -2059,14 +2032,13 @@ defmodule ExAthena.Web.Live.ChatLive do
         <span class={["ov-badge", "ov-badge--#{@info.status}"]}>{badge_label(@info.status)}</span>
       </div>
 
-      <div :if={@info.prompt_summary} class="ov-focus-section">
-        <div class="ov-focus-label">task</div>
-        <div class="ov-focus-text">{@info.prompt_summary}</div>
-      </div>
+      <div :if={@info.prompt_summary} class="ov-focus-text">{@info.prompt_summary}</div>
+      <div :if={@info.linked_todo} class="ov-focus-text">↳ {@info.linked_todo}</div>
+      <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
 
-      <div :if={@info.linked_todo} class="ov-focus-section">
-        <div class="ov-focus-label">linked todo</div>
-        <div class="ov-focus-text">{@info.linked_todo}</div>
+      <%!-- Primary content: this agent's messages, rendered like the main chat. --%>
+      <div :if={@info.transcript_tail != []} class="ov-transcript-body ov-transcript-body--full">
+        <.ov_agent_chat tail={@info.transcript_tail} />
       </div>
 
       <div :if={@info.result} class="ov-focus-section">
@@ -2075,8 +2047,6 @@ defmodule ExAthena.Web.Live.ChatLive do
           {@info.result}
         </div>
       </div>
-
-      <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
 
       <div :if={@info.todos != []} class="ov-focus-section">
         <div class="ov-focus-label">sub-tasks</div>
@@ -2106,13 +2076,6 @@ defmodule ExAthena.Web.Live.ChatLive do
         <%= if @info.cost_usd do %>
           · ${format_cost(@info.cost_usd)}
         <% end %>
-      </div>
-
-      <div :if={@info.transcript_tail != []} class="ov-focus-section">
-        <div class="ov-focus-label">context (last {length(@info.transcript_tail)} events)</div>
-        <div class="ov-transcript-body ov-transcript-body--full">
-          <.ov_agent_chat tail={@info.transcript_tail} />
-        </div>
       </div>
     </div>
     """
@@ -2166,13 +2129,6 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp ov_agent_card(assigns) do
-    assigns =
-      assign(
-        assigns,
-        :transcript_open?,
-        MapSet.member?(assigns.expanded, "transcript:#{assigns.info.id}")
-      )
-
     ~H"""
     <div class={["ov-agent", !@main && "ov-agent--sub"]}>
       <div
@@ -2186,22 +2142,6 @@ defmodule ExAthena.Web.Live.ChatLive do
         </span>
         <span class={["ov-badge", "ov-badge--#{@info.status}"]}>{badge_label(@info.status)}</span>
       </div>
-
-      <%!-- The node's own thinking & actions — directly at the top of the body. --%>
-      <%= if @info.transcript_tail != [] do %>
-        <div class="ov-transcript">
-          <button
-            class="ov-transcript-toggle"
-            phx-click="ov_toggle"
-            phx-value-key={"transcript:#{@info.id}"}
-          >
-            {if @transcript_open?, do: "▾", else: "▸"} thinking & actions ({length(@info.transcript_tail)})
-          </button>
-          <div :if={@transcript_open?} class="ov-transcript-body">
-            <.ov_agent_chat tail={@info.transcript_tail} />
-          </div>
-        </div>
-      <% end %>
 
       <div :if={@info.prompt_summary} class="ov-agent-prompt">{@info.prompt_summary}</div>
       <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
