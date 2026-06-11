@@ -1,7 +1,7 @@
 ---
 name: plan
 description: Plan a change without modifying source; can write to .exathena/plans/*.md
-tools: [read, glob, grep, web_fetch, web_search, write]
+tools: [read, glob, grep, web_fetch, web_search, usage_rules, write]
 permissions: plan
 mode: plan_and_solve
 isolation: in_process

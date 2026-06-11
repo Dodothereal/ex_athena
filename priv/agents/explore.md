@@ -1,7 +1,7 @@
 ---
 name: explore
 description: Read-only fast investigation of a codebase or topic
-tools: [read, glob, grep, web_fetch, web_search]
+tools: [read, glob, grep, web_fetch, web_search, usage_rules]
 permissions: plan
 mode: react
 isolation: in_process
