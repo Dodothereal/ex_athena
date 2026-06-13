@@ -793,7 +793,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     assistant_msg = %{
       id: assistant_msg_id,
       role: :assistant,
-      text: socket.assigns.stream_text,
+      text: final_message_text(socket.assigns.stream_text, result),
       tool_events: socket.assigns.stream_events,
       status: status,
       ex_snapshot: ex_messages
@@ -2583,6 +2583,28 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp relpath(path, nil), do: path
   defp relpath(path, cwd), do: Path.relative_to(path, cwd)
+
+  @doc """
+  Final assistant-message text for a completed run, folding in the `finish`
+  deliverable so the submitted answer is always visible in the main chat.
+
+  When the run ended via `finish` (`finish_reason: :submitted`) with a
+  deliverable: it becomes the message text if nothing was streamed (the
+  orchestrator delegated and only submitted a deliverable), or is appended to
+  the streamed text otherwise — unless that text already contains it. Any other
+  termination keeps the streamed text unchanged.
+  """
+  @spec final_message_text(String.t(), ExAthena.Result.t()) :: String.t()
+  def final_message_text(stream_text, %{finish_reason: :submitted, deliverable: d})
+      when is_binary(d) and d != "" do
+    cond do
+      String.trim(stream_text) == "" -> d
+      String.contains?(stream_text, String.trim(d)) -> stream_text
+      true -> stream_text <> "\n\n" <> d
+    end
+  end
+
+  def final_message_text(stream_text, _result), do: stream_text
 
   defp fetch_git_diff(nil), do: nil
 
