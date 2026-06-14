@@ -94,12 +94,15 @@ defmodule ExAthena.Modes.Orchestrate do
   before drafting.\
   """
 
-  # Deterministic research rail: if the orchestrator burns this many planning
+  # Deterministic research rail. If the orchestrator burns this many planning
   # turns without recording any plan, it is context-starved — steer it (once)
-  # to delegate online research rather than keep spinning. Half the planning
-  # budget, so it fires before the hard transition at @max_planning_turns.
+  # to delegate online research rather than keep spinning (half the planning
+  # budget, so it fires before the hard transition at @max_planning_turns). If
+  # that directive is ignored and planning STILL stalls by the escalation
+  # threshold, the runtime delegates research itself (a `research` worker) —
+  # prompts alone don't bind small models.
   @research_planning_threshold 4
-  @max_research_nudges 1
+  @research_escalation_threshold 6
 
   @research_planning_note """
   [orchestration runtime] PLANNING is stalling and no plan is recorded yet. If
@@ -555,24 +558,83 @@ defmodule ExAthena.Modes.Orchestrate do
   defp append_prompt("", addendum), do: addendum
   defp append_prompt(existing, addendum), do: existing <> "\n\n" <> addendum
 
-  # Deterministic research rail (planning phase): once planning has burned
-  # @research_planning_threshold turns with still no plan recorded, replace the
-  # ephemeral planning tail note (once) with a directive to delegate online
-  # research. Cleared at to_executing/1 like any phase note. The orchestrator
-  # can't search itself, so the directive steers it to spawn a research worker.
+  # Deterministic research rail (planning phase), with escalation:
+  #
+  #   1. Directive — once planning has burned @research_planning_threshold turns
+  #      with still no plan, replace the ephemeral planning tail note (once)
+  #      with a directive to delegate online research. The orchestrator can't
+  #      search itself, so this steers it to spawn a research worker. Cleared at
+  #      to_executing/1 like any phase note.
+  #   2. Escalation — if that directive is ignored and planning STILL stalls by
+  #      @research_escalation_threshold, the runtime delegates research itself
+  #      (a `research` worker) and feeds the findings back as a note. Once only,
+  #      latched by mode_state[:research_spawned].
   defp maybe_research_nudge(state, turns) do
-    nudges = state.mode_state[:research_nudges] || 0
+    nudged? = state.mode_state[:research_nudged] == true
+    spawned? = state.mode_state[:research_spawned] == true
 
-    if turns >= @research_planning_threshold and nudges < @max_research_nudges and
-         current_todos(state) == [] do
-      %{
+    cond do
+      turns >= @research_planning_threshold and not nudged? and current_todos(state) == [] ->
+        %{
+          state
+          | mode_state: Map.put(state.mode_state, :research_nudged, true),
+            meta: Map.put(state.meta, :phase_note, String.trim(@research_planning_note))
+        }
+
+      turns >= @research_escalation_threshold and nudged? and not spawned? and
+          current_todos(state) == [] ->
         state
-        | mode_state: Map.put(state.mode_state, :research_nudges, nudges + 1),
-          meta: Map.put(state.meta, :phase_note, String.trim(@research_planning_note))
-      }
-    else
-      state
+        |> Map.update!(:mode_state, &Map.put(&1, :research_spawned, true))
+        |> auto_delegate_research()
+
+      true ->
+        state
     end
+  end
+
+  # Runtime-issued online research when planning stays context-starved. Mirrors
+  # auto_delegate/2 but spawns the `research` agent (web_search/web_fetch/
+  # usage_rules) and feeds its findings back so the orchestrator can finally
+  # record a plan.
+  defp auto_delegate_research(state) do
+    objective = research_objective(state)
+
+    args = %{
+      "agent" => "research",
+      "prompt" =>
+        "Research online to gather the external context needed for this task: #{objective}",
+      "objective" => objective,
+      "expected_output" =>
+        "a self-contained, source-cited summary (max 300 words) of the facts needed to plan the task",
+      "tool_guidance" =>
+        "web_search then web_fetch; for an Elixir dependency call usage_rules first",
+      "boundaries" => "research only — do not modify any files",
+      "max_result_chars" => 8_000
+    }
+
+    ctx = %{state.ctx | tool_call_id: "auto_research_#{System.unique_integer([:positive])}"}
+
+    note =
+      case ExAthena.Tools.SpawnAgent.execute(args, ctx) do
+        {:ok, text, _ui} ->
+          "[orchestration runtime] Planning stalled, so the runtime delegated online " <>
+            "research to a worker. Findings:\n#{text}\n" <>
+            "Now record your todos with todo_write using these findings and delegate the work."
+
+        {:error, reason} ->
+          "[orchestration runtime] Auto-research failed: #{inspect(reason)}. " <>
+            "Record your todos with todo_write from what you know and delegate."
+      end
+
+    %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
+  end
+
+  # The task to research = the original user request (first user message).
+  defp research_objective(state) do
+    Enum.find_value(state.messages, "the user's task", fn
+      %{role: :user, content: c} when is_binary(c) and c != "" -> String.slice(c, 0, 500)
+      _ -> false
+    end)
   end
 
   # Switch phases: clear the stale :stop set by a tool-free plan turn and

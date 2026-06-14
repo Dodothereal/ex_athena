@@ -108,6 +108,60 @@ defmodule ExAthena.Modes.OrchestrateResearchTest do
     refute request_text(req1) =~ @marker
   end
 
+  test "an ignored research directive escalates to a runtime-spawned research worker", %{dir: dir} do
+    test_pid = self()
+
+    # Keep spawning throwaway workers without ever recording a plan, past the
+    # escalation threshold — so the directive (turn 4) is ignored and the
+    # runtime delegates research itself (turn 6).
+    orch = fn n, _request ->
+      if n <= 8 do
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{id: "s#{n}", name: "spawn_agent", arguments: %{"prompt" => "poke #{n}"}}
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      else
+        %Response{
+          text: "1. do it\nCONCLUSION: done.",
+          tool_calls: [],
+          finish_reason: :stop,
+          provider: :mock
+        }
+      end
+    end
+
+    sub_responder = fn _req ->
+      %Response{text: "research findings", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{}} =
+             Loop.run("build a thing needing external facts",
+               provider: :mock,
+               mock: [responder: scripted([orch])],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               on_event: fn ev -> send(test_pid, {:event, ev}) end,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    prompts = drain_spawn_prompts()
+    # The runtime delegated online research itself, exactly once.
+    assert Enum.count(prompts, &(&1 =~ "Research online")) == 1
+  end
+
   test "a healthy plan recorded early never triggers the research nudge", %{dir: dir} do
     test_pid = self()
 
@@ -152,6 +206,15 @@ defmodule ExAthena.Modes.OrchestrateResearchTest do
   defp drain_requests(acc \\ []) do
     receive do
       {:orch_request, _n, req} -> drain_requests([request_text(req) | acc])
+    after
+      0 -> acc
+    end
+  end
+
+  defp drain_spawn_prompts(acc \\ []) do
+    receive do
+      {:event, {:subagent_spawn, %{prompt: prompt}}} -> drain_spawn_prompts([prompt | acc])
+      {:event, _other} -> drain_spawn_prompts(acc)
     after
       0 -> acc
     end
