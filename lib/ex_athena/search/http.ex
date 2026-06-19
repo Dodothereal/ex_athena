@@ -113,7 +113,9 @@ defmodule ExAthena.Search.Http do
 
     case Req.request(base) do
       {:ok, %Req.Response{status: s, body: body}} when s in 200..299 ->
-        {:ok, normalize(backend, body)}
+        if ddg_blocked?(backend, s, body),
+          do: {:error, :blocked},
+          else: {:ok, normalize(backend, body)}
 
       {:ok, %Req.Response{status: status}} ->
         {:error, {:http_error, status}}
@@ -125,6 +127,17 @@ defmodule ExAthena.Search.Http do
         {:error, {:request_failed, inspect(reason)}}
     end
   end
+
+  # DuckDuckGo serves its anti-bot CAPTCHA page as HTTP 202 (sometimes 200) with
+  # a "complete the following challenge" body and zero results. Without this we'd
+  # treat it as a successful EMPTY search — the agent would conclude "no results
+  # exist" and keep retrying. Surface it as a blocked error instead.
+  defp ddg_blocked?(:duckduckgo, status, body) do
+    status == 202 or
+      (is_binary(body) and String.contains?(body, "complete the following challenge"))
+  end
+
+  defp ddg_blocked?(_backend, _status, _body), do: false
 
   # ── per-backend response → [Result.t()] mapping ──
 

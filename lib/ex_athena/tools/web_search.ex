@@ -95,6 +95,13 @@ defmodule ExAthena.Tools.WebSearch do
       {:error, :no_api_key} ->
         {:error, "web_search backend is not configured (missing API key or endpoint)"}
 
+      {:error, :blocked} ->
+        {:error,
+         "web_search backend (DuckDuckGo) is blocking automated requests with a CAPTCHA — " <>
+           "it cannot return results. Ask the host to set a different backend via " <>
+           "EX_ATHENA_SEARCH_BACKEND (brave/tavily/searxng) with its API key/endpoint. " <>
+           "Meanwhile, use web_fetch on a known documentation URL, or usage_rules for Elixir deps."}
+
       {:error, :timeout} ->
         {:error, "web_search timed out after #{timeout}ms"}
 

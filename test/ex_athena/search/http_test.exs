@@ -149,6 +149,23 @@ defmodule ExAthena.Search.HttpTest do
 
       assert {:ok, [%Result{}]} = Http.search("q", max_results: 1)
     end
+
+    test "a 202 anomaly response is reported as blocked, not empty results" do
+      plug = fn conn -> Plug.Conn.send_resp(conn, 202, "<html>bot challenge</html>") end
+      put_search(backend: :duckduckgo, req_options: [plug: plug])
+
+      assert {:error, :blocked} = Http.search("q", [])
+    end
+
+    test "a 2xx CAPTCHA challenge body is reported as blocked" do
+      body =
+        "<html><body>Please complete the following challenge to confirm this search was made by a human.</body></html>"
+
+      plug = fn conn -> send_html(conn, body) end
+      put_search(backend: :duckduckgo, req_options: [plug: plug])
+
+      assert {:error, :blocked} = Http.search("q", [])
+    end
   end
 
   describe "errors" do

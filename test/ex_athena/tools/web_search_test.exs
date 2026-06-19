@@ -68,6 +68,14 @@ defmodule ExAthena.Tools.WebSearchTest do
     assert {:error, :missing_query} = WebSearch.execute(%{"query" => ""}, ctx())
   end
 
+  test "a blocked backend surfaces an actionable message (not silent empty results)" do
+    expect(ExAthena.Search.Mock, :search, fn _q, _opts -> {:error, :blocked} end)
+
+    assert {:error, msg} = WebSearch.execute(%{"query" => "q"}, ctx())
+    assert msg =~ "blocking automated requests"
+    assert msg =~ "EX_ATHENA_SEARCH_BACKEND"
+  end
+
   test "no-api-key backend error surfaces a configuration message" do
     expect(ExAthena.Search.Mock, :search, fn _q, _opts -> {:error, :no_api_key} end)
 
