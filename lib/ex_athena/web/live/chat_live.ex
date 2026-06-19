@@ -1873,7 +1873,11 @@ defmodule ExAthena.Web.Live.ChatLive do
   # ---------------------------------------------------------------------------
 
   defp overview_panel(assigns) do
-    assigns = assign(assigns, :focused, find_agent(assigns.orchestrator, assigns.focus))
+    assigns =
+      assigns
+      |> assign(:focused, find_agent(assigns.orchestrator, assigns.focus))
+      # parent_id → [child agents], for rendering the nested agent tree.
+      |> assign(:by_parent, Enum.group_by(assigns.orchestrator.agents, & &1.parent_id))
 
     ~H"""
     <div class="ov-panel">
@@ -1902,16 +1906,15 @@ defmodule ExAthena.Web.Live.ChatLive do
             :for={node <- task_nodes(@orchestrator)}
             todo={node.todo}
             agents={node.agents}
+            by_parent={@by_parent}
             expanded={@expanded}
           />
         <% end %>
 
-        <.ov_agent_card
-          :for={agent <- orphan_agents(@orchestrator)}
-          info={agent}
-          main={false}
-          expanded={@expanded}
-        />
+        <%= if (orphans = orphan_agents(@orchestrator)) != [] do %>
+          <div class="ov-focus-label ov-tree-label">other agents</div>
+          <.agent_tree_node :for={agent <- orphans} agent={agent} by_parent={@by_parent} />
+        <% end %>
       <% end %>
     </div>
     """
@@ -1919,18 +1922,25 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   # ── Task tree: one collapsible node per orchestrator todo ─────────
 
-  # Join main todos with the worker agents linked to them (by todo content —
-  # the linkage SpawnAgent records). Agents keep spawn order.
+  # Join main todos with the TOP-LEVEL worker agents linked to them (by todo
+  # content — the linkage SpawnAgent records). Nested sub-agents (parent_id is
+  # another worker, not :main) render under their parent in the tree, not here.
   defp task_nodes(%{main: main, agents: agents}) do
+    top = Enum.filter(agents, &(&1.parent_id == :main))
+
     Enum.map(main.todos, fn todo ->
-      %{todo: todo, agents: Enum.filter(agents, &(&1.linked_todo == todo.content))}
+      %{todo: todo, agents: Enum.filter(top, &(&1.linked_todo == todo.content))}
     end)
   end
 
-  # Workers not linked to any todo still get their own card below the tree.
+  # Top-level workers not linked to any todo get their own subtree below the
+  # task list. (Nested agents are NOT orphans — they hang off their parent.)
   defp orphan_agents(%{main: main, agents: agents}) do
     todo_contents = MapSet.new(main.todos, & &1.content)
-    Enum.reject(agents, &(&1.linked_todo && MapSet.member?(todo_contents, &1.linked_todo)))
+
+    Enum.filter(agents, fn a ->
+      a.parent_id == :main and not (a.linked_todo && MapSet.member?(todo_contents, a.linked_todo))
+    end)
   end
 
   defp task_node(assigns) do
@@ -1959,36 +1969,50 @@ defmodule ExAthena.Web.Live.ChatLive do
           not started — no worker assigned yet
         </div>
 
-        <div :for={agent <- @agents} class="ov-task-worker">
-          <div class="ov-task-worker-head">
-            <button
-              class="ov-task-worker-link"
-              phx-click="focus_agent"
-              phx-value-id={to_string(agent.id)}
-              title="Open this worker's full context"
-            >
-              {agent.name || agent.id} →
-            </button>
-            <span class={["ov-badge", "ov-badge--#{agent.status}"]}>{badge_label(agent.status)}</span>
-          </div>
+        <.agent_tree_node :for={agent <- @agents} agent={agent} by_parent={@by_parent} />
+      </div>
+    </div>
+    """
+  end
 
-          <div :if={agent.current_action} class="ov-agent-action">⚡ {agent.current_action}</div>
+  # Recursive tree node: one agent (name, status badge, current action,
+  # contribution, its own sub-todos) with any sub-agents IT spawned nested and
+  # indented below. Clicking the name opens the agent's full context.
+  defp agent_tree_node(assigns) do
+    assigns = assign(assigns, :children, Map.get(assigns.by_parent, assigns.agent.id, []))
 
-          <%!-- What this worker contributed to the parent task. --%>
-          <div :if={agent.result} class={["ov-worker-result", agent.status == :failed && "ov-worker-result--failed"]}>
-            {agent.result}
-          </div>
+    ~H"""
+    <div class="ov-task-worker">
+      <div class="ov-task-worker-head">
+        <button
+          class="ov-task-worker-link"
+          phx-click="focus_agent"
+          phx-value-id={to_string(@agent.id)}
+          title="Open this agent's full context"
+        >
+          {@agent.name || @agent.id} →
+        </button>
+        <span class={["ov-badge", "ov-badge--#{@agent.status}"]}>{badge_label(@agent.status)}</span>
+      </div>
 
-          <%= if agent.todos != [] do %>
-            <div class="ov-todos ov-task-subtasks">
-              <div :for={st <- agent.todos} class={["ov-todo", "ov-todo--#{st.status}"]}>
-                <span class="ov-todo-marker">{todo_marker(st.status)}</span>
-                <span class="ov-todo-text">{st.content}</span>
-              </div>
-            </div>
-          <% end %>
+      <div :if={@agent.current_action} class="ov-agent-action">⚡ {@agent.current_action}</div>
 
+      <div
+        :if={@agent.result}
+        class={["ov-worker-result", @agent.status == :failed && "ov-worker-result--failed"]}
+      >
+        {@agent.result}
+      </div>
+
+      <div :if={@agent.todos != []} class="ov-todos ov-task-subtasks">
+        <div :for={st <- @agent.todos} class={["ov-todo", "ov-todo--#{st.status}"]}>
+          <span class="ov-todo-marker">{todo_marker(st.status)}</span>
+          <span class="ov-todo-text">{st.content}</span>
         </div>
+      </div>
+
+      <div :if={@children != []} class="ov-agent-children">
+        <.agent_tree_node :for={child <- @children} agent={child} by_parent={@by_parent} />
       </div>
     </div>
     """

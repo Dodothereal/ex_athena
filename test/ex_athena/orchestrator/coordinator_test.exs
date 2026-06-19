@@ -81,6 +81,40 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       GenServer.stop(pid)
     end
 
+    test "nested agents record parent_id and depth for the tree view" do
+      sid = unique_sid()
+      {:ok, pid} = Coordinator.start_for(sid)
+
+      # A top-level worker (parent = :main, depth 1).
+      Coordinator.notify(pid, :main, {:subagent_spawn, %{id: "sub-a", prompt: "step A"}})
+
+      Coordinator.notify(
+        pid,
+        "sub-a",
+        {:agent_meta, %{name: "explore", parent_id: :main, depth: 1}}
+      )
+
+      # sub-a delegates a nested grandchild: its agent_meta (tagged with the
+      # grandchild's id) arrives via the preserved sink, parent = "sub-a".
+      Coordinator.notify(
+        pid,
+        "sub-a-1",
+        {:agent_meta, %{name: "research", parent_id: "sub-a", depth: 2}}
+      )
+
+      Coordinator.notify(pid, "sub-a-1", {:iteration, 1})
+
+      {:ok, snap} = Coordinator.snapshot(sid)
+      by_id = Map.new(snap.agents, &{&1.id, &1})
+
+      assert by_id["sub-a"].parent_id == :main
+      assert by_id["sub-a"].depth == 1
+      assert by_id["sub-a-1"].parent_id == "sub-a"
+      assert by_id["sub-a-1"].depth == 2
+
+      GenServer.stop(pid)
+    end
+
     test "a failure note is stored on the agent entry" do
       sid = unique_sid()
       {:ok, pid} = Coordinator.start_for(sid)

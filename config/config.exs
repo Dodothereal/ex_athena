@@ -18,6 +18,12 @@ config :ex_athena, :search,
   adapter: ExAthena.Search.Http,
   backend: :duckduckgo
 
+# Max agent nesting depth (0 = orchestrator, 1 = its workers, 2+ = nested).
+# Agents may delegate sub-agents up to this depth; the ceiling prevents an
+# unbounded worker tree from wedging the single GPU slot. Override per-run via
+# spawn_agent_opts / assigns[:max_agent_depth].
+config :ex_athena, max_agent_depth: 5
+
 import_config "#{config_env()}.exs"
 
 # To use a local llama.cpp server instead:

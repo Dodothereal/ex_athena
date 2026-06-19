@@ -85,13 +85,52 @@ defmodule ExAthena.Loop.NamedSubagentTest do
     assert "grep" in names
     assert "web_search" in names
     # todo_write is always granted (worker contract) even though explore.md
-    # does not list it.
+    # does not list it. spawn_agent is granted too (this worker is below the
+    # nesting cap, so it may delegate sub-agents).
     assert "todo_write" in names
-    # The full builtin set must NOT leak in — a read-only explorer never gets
-    # bash/write/edit, and never spawn_agent/plan_mode (depth-1).
+    assert "spawn_agent" in names
+    # The rest of the builtin set must NOT leak in — a read-only explorer never
+    # gets bash/write/edit, and plan_mode is never inherited.
     refute "bash" in names
     refute "write" in names
     refute "edit" in names
+    refute "plan_mode" in names
+  end
+
+  test "a worker at the nesting cap is NOT granted spawn_agent", %{dir: dir} do
+    parent = self()
+
+    capture_tools = fn req ->
+      send(parent, {:sub_tools, tool_names(req.tools)})
+      %Response{text: "done", finish_reason: :stop, provider: :mock}
+    end
+
+    {:ok, _result} =
+      Loop.run(
+        "do a thing",
+        provider: :mock,
+        mock: [
+          responder:
+            parent_responder_calls_subagent_then_stops(%{
+              "prompt" => "explore the repo",
+              "agent" => "explore"
+            })
+        ],
+        tools: [ExAthena.Tools.SpawnAgent],
+        cwd: dir,
+        memory: false,
+        # Cap at depth 1 → the spawned worker (depth 1) is AT the cap, so it
+        # can't nest and must not carry the spawn_agent schema.
+        assigns: %{
+          max_agent_depth: 1,
+          spawn_agent_opts: [provider: :mock, mock: [responder: capture_tools], memory: false]
+        },
+        max_iterations: 5
+      )
+
+    assert_receive {:sub_tools, names}
+    assert "read" in names
+    assert "todo_write" in names
     refute "spawn_agent" in names
   end
 

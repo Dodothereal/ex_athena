@@ -1787,18 +1787,44 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert tail =~ "write the post"
   end
 
-  test "depth-1: a subagent cannot spawn further subagents", %{dir: dir} do
+  test "an agent at the max nesting depth cannot spawn further subagents", %{dir: dir} do
     ctx =
       ExAthena.ToolContext.new(
         cwd: dir,
         session_id: "s",
-        assigns: %{subagent?: true, spawn_agent_opts: [provider: :mock, mock: [text: "x"]]}
+        assigns: %{
+          agent_depth: 2,
+          max_agent_depth: 2,
+          spawn_agent_opts: [provider: :mock, mock: [text: "x"]]
+        }
       )
 
     assert {:error, reason} =
              ExAthena.Tools.SpawnAgent.execute(%{"prompt" => "nested"}, ctx)
 
-    assert reason =~ "nested"
+    assert reason =~ "depth"
+  end
+
+  test "an agent below the max nesting depth may delegate a sub-agent", %{dir: dir} do
+    sub = fn _req ->
+      %Response{text: "child done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    ctx =
+      ExAthena.ToolContext.new(
+        cwd: dir,
+        session_id: "s",
+        assigns: %{
+          agent_depth: 1,
+          max_agent_depth: 5,
+          spawn_agent_opts: [provider: :mock, mock: [responder: sub], memory: false]
+        }
+      )
+
+    assert {:ok, text, _ui} =
+             ExAthena.Tools.SpawnAgent.execute(%{"prompt" => "nested step"}, ctx)
+
+    assert text =~ "child done"
   end
 
   test "a complete brief passes strict validation and reaches the worker", %{dir: dir} do

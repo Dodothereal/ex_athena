@@ -256,7 +256,9 @@ defmodule ExAthena.Orchestrator.Coordinator do
             prompt_summary: info.prompt_summary || meta[:prompt],
             linked_todo:
               meta[:linked_todo] || info.linked_todo ||
-                fuzzy_todo_match(meta[:prompt], state.main.todos)
+                fuzzy_todo_match(meta[:prompt], state.main.todos),
+            parent_id: info.parent_id || meta[:parent_id],
+            depth: meta[:depth] || info.depth
         }
       end)
     else
@@ -288,7 +290,9 @@ defmodule ExAthena.Orchestrator.Coordinator do
           # fuzzy-matching the worker's prompt against the task list so the
           # Overview tree groups it under its parent task and runtime todo
           # completion still works.
-          linked_todo: meta[:linked_todo] || fuzzy_todo_match(match_prompt, state.main.todos)
+          linked_todo: meta[:linked_todo] || fuzzy_todo_match(match_prompt, state.main.todos),
+          parent_id: meta[:parent_id] || :main,
+          depth: meta[:depth] || 1
         })
 
       %{

@@ -69,6 +69,11 @@ defmodule ExAthena.Orchestrator.AgentInfo do
             # Untruncated-ish prompt text kept for fuzzy todo matching
             # (prompt_summary is display-truncated and too lossy to match on).
             match_text: nil,
+            # Tree linkage: who spawned this agent (`:main` = the orchestrator,
+            # a sub_id = a nested parent) and how deep it sits (1 = direct
+            # worker, 2+ = nested). The UI builds the agent tree from these.
+            parent_id: nil,
+            depth: 1,
             started_at: nil,
             finished_at: nil
 
@@ -85,6 +90,8 @@ defmodule ExAthena.Orchestrator.AgentInfo do
       prompt_summary: attrs |> Map.get(:prompt_summary) |> truncate(@summary_max_chars),
       linked_todo: Map.get(attrs, :linked_todo),
       match_text: attrs |> Map.get(:match_text) |> truncate(600),
+      parent_id: Map.get(attrs, :parent_id, :main),
+      depth: Map.get(attrs, :depth, 1),
       started_at: System.system_time(:millisecond)
     }
   end

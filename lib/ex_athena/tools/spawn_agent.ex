@@ -119,17 +119,27 @@ defmodule ExAthena.Tools.SpawnAgent do
   }
   @brief_fields ~w(objective expected_output tool_guidance boundaries)
 
+  # Max agent nesting depth (0 = main/orchestrator, 1 = its workers, 2+ =
+  # nested). High by default so workers can delegate sub-tasks, but bounded —
+  # see the depth rail in execute/2.
+  @default_max_agent_depth 5
+
   @impl true
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
     assigns = ctx.assigns || %{}
     todo = Map.get(args, "todo")
 
     cond do
-      Map.get(assigns, :subagent?, false) ->
-        # Depth-1 rail (Claude Code's own rule): workers finish their step
-        # and report back — they never spawn further workers.
+      Map.get(assigns, :agent_depth, 0) >= max_agent_depth(assigns) ->
+        # Nesting-depth rail: agents may delegate sub-agents up to a
+        # configurable max depth (config :ex_athena, max_agent_depth, default
+        # #{@default_max_agent_depth}; per-run via assigns[:max_agent_depth]).
+        # A hard ceiling is kept on purpose — on a single GPU slot an unbounded
+        # worker tree serializes through one queue and a degenerate model could
+        # spawn forever.
         {:error,
-         "nested subagents are not allowed (depth 1): finish this step yourself and report back"}
+         "maximum nesting depth (#{max_agent_depth(assigns)}) reached: " <>
+           "finish this step yourself and report back"}
 
       is_binary(todo) and MapSet.member?(Map.get(assigns, :completed_todos, MapSet.new()), todo) ->
         # Don't-repeat-steps rail: a completed todo must never re-run a
@@ -163,6 +173,12 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
+    # The child sits one level below us; it may itself delegate only while it
+    # stays under the cap (else its spawn_agent tool would just be a blocked
+    # schema burning prompt tokens).
+    child_depth = Map.get(ctx.assigns || %{}, :agent_depth, 0) + 1
+    child_can_nest? = child_depth < max_agent_depth(ctx.assigns || %{})
+
     sub_opts =
       base_opts
       |> Keyword.put_new(:max_iterations, worker_iterations(Map.get(args, "max_iterations")))
@@ -172,9 +188,12 @@ defmodule ExAthena.Tools.SpawnAgent do
       # the first streamed byte ("Stream failed: :timeout").
       |> Keyword.put_new(:timeout_ms, timeout)
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
-      |> Keyword.put(:tools, resolve_tools(Map.get(args, "tools"), agent_def && agent_def.tools))
+      |> Keyword.put(
+        :tools,
+        resolve_tools(Map.get(args, "tools"), agent_def && agent_def.tools, child_can_nest?)
+      )
       |> apply_prompt_suffix(ctx)
-      |> attribute_events(sub_id, ctx, args, agent_def)
+      |> attribute_events(sub_id, ctx, args, agent_def, child_depth)
       |> Keyword.put(:parent_session_id, ctx.session_id)
 
     # Worktree isolation lives between resolving the agent and starting the
@@ -413,16 +432,18 @@ defmodule ExAthena.Tools.SpawnAgent do
   # Per-agent attribution (see ExAthena.Orchestrator.Coordinator): when the
   # parent run carries an :agent_event_sink, the sub-loop's events flow
   # through it tagged with this sub_id — its own on_event, its own
-  # todo_writer, and an :agent_meta enrichment (name + linked todo). The
-  # sink and parent callbacks are OVERWRITTEN (not put_new) in the sub
-  # assigns so nested spawns can never mis-attribute to this level, and the
-  # sink itself is removed (depth-1 observation).
+  # todo_writer, and an :agent_meta enrichment (name, linked todo, parent id,
+  # depth). The sink is KEPT (not deleted) so a nested grandchild's events
+  # still reach the top-level coordinator; on_event/todo_writer are re-tagged
+  # at each level so attribution stays correct. `current_agent_id` records who
+  # this child is, so ITS children can name it as their parent.
   defp attribute_events(
          sub_opts,
          sub_id,
          %{assigns: %{agent_event_sink: sink}} = ctx,
          args,
-         agent_def
+         agent_def,
+         child_depth
        )
        when is_function(sink, 2) do
     sink.(
@@ -431,7 +452,9 @@ defmodule ExAthena.Tools.SpawnAgent do
        %{
          prompt: Map.get(args, "prompt"),
          name: agent_def && agent_def.name,
-         linked_todo: Map.get(args, "todo")
+         linked_todo: Map.get(args, "todo"),
+         parent_id: Map.get(ctx.assigns, :current_agent_id, :main),
+         depth: child_depth
        }}
     )
 
@@ -446,16 +469,21 @@ defmodule ExAthena.Tools.SpawnAgent do
       ctx.assigns
       |> Map.put(:on_event, tagged_on_event)
       |> Map.put(:todo_writer, todo_writer)
-      |> Map.put(:subagent?, true)
-      |> Map.delete(:agent_event_sink)
+      |> Map.put(:agent_depth, child_depth)
+      |> Map.put(:current_agent_id, sub_id)
 
     sub_opts
     |> Keyword.put(:on_event, tagged_on_event)
     |> Keyword.put(:assigns, sub_assigns)
   end
 
-  defp attribute_events(sub_opts, _sub_id, ctx, _args, _agent_def) do
-    Keyword.put(sub_opts, :assigns, Map.put(ctx.assigns, :subagent?, true))
+  defp attribute_events(sub_opts, sub_id, ctx, _args, _agent_def, child_depth) do
+    sub_assigns =
+      (ctx.assigns || %{})
+      |> Map.put(:agent_depth, child_depth)
+      |> Map.put(:current_agent_id, sub_id)
+
+    Keyword.put(sub_opts, :assigns, sub_assigns)
   end
 
   defp deliverable_text(%ExAthena.Result{deliverable: d}) when is_binary(d) and d != "", do: d
@@ -540,10 +568,11 @@ defmodule ExAthena.Tools.SpawnAgent do
   # ceiling but can never add a tool the agent isn't allowed. With no agent
   # definition (plain spawn), the ceiling is the full builtin set.
   #
-  # Always stripped: `plan_mode` / `spawn_agent` (depth-1 — the schemas would
-  # only invite rejected calls). Always granted: `todo_write` (worker contract
-  # — every worker maintains its own todo list, even read-only ones).
-  defp resolve_tools(requested, declared) do
+  # Control tools (`plan_mode` / `spawn_agent`) are never inherited from the
+  # ceiling. `todo_write` is always granted (worker contract). `spawn_agent` is
+  # granted only when the child is allowed to nest further (depth < cap), so
+  # any worker can delegate sub-tasks until the ceiling — see the depth rail.
+  defp resolve_tools(requested, declared, child_can_nest?) do
     known = ExAthena.Tools.builtins() |> MapSet.new(& &1.name())
     all = Enum.map(ExAthena.Tools.builtins(), & &1.name())
 
@@ -558,7 +587,16 @@ defmodule ExAthena.Tools.SpawnAgent do
     selected
     |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
     |> Enum.filter(&MapSet.member?(known, &1))
-    |> then(fn t -> if "todo_write" in t, do: t, else: t ++ ["todo_write"] end)
+    |> maybe_grant("todo_write", true)
+    |> maybe_grant("spawn_agent", child_can_nest?)
+  end
+
+  defp maybe_grant(tools, _name, false), do: tools
+  defp maybe_grant(tools, name, true), do: if(name in tools, do: tools, else: tools ++ [name])
+
+  defp max_agent_depth(assigns) do
+    Map.get(assigns, :max_agent_depth) ||
+      Application.get_env(:ex_athena, :max_agent_depth, @default_max_agent_depth)
   end
 
   defp emit_event(%{assigns: %{on_event: callback}}, event) when is_function(callback, 1) do

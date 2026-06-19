@@ -2236,6 +2236,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .ov-task-subtasks { margin-left: 2px; }
 
+/* Nested sub-agents (deeper than depth 1) indent under their parent agent. */
+.ov-agent-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 12px;
+  margin-top: 2px;
+}
+
 .ov-worker-result {
   font-size: 12px;
   line-height: 1.45;
