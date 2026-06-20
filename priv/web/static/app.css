@@ -2163,18 +2163,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   display: flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
-  user-select: none;
   font-size: 12.5px;
 }
-
-.ov-task-arrow {
-  color: var(--muted);
-  font-size: 10px;
-  transition: transform 0.15s;
-}
-
-.ov-task--open .ov-task-arrow { transform: rotate(90deg); }
 
 .ov-transcript-toggle {
   background: none;

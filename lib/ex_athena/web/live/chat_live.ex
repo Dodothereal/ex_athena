@@ -1884,32 +1884,20 @@ defmodule ExAthena.Web.Live.ChatLive do
       <%= if @focus do %>
         <.agent_focus info={@focused} focus_id={@focus} />
       <% else %>
-        <%= if @gpu do %>
-          <div class="ov-gpu">
-            <span class="ov-gpu-provider">{@gpu.provider}</span>
-            <span class="ov-gpu-slots">{@gpu.depth}/{@gpu.max} slots</span>
-            <%= if @gpu.waiting > 0 do %>
-              <span class="ov-gpu-waiting">{@gpu.waiting} waiting</span>
-            <% end %>
+        <%= if @orchestrator.main.todos == [] and @orchestrator.agents == [] do %>
+          <div class="details-empty">
+            <div class="details-empty-sub">No tasks yet — the agent tree will appear here.</div>
           </div>
         <% end %>
 
-        <%= if action = working_on(@orchestrator) do %>
-          <div class="ov-working">⚡ {action}</div>
-        <% end %>
-
-        <.ov_agent_card info={@orchestrator.main} main={true} expanded={@expanded} />
-
-        <%= if @orchestrator.main.todos != [] do %>
-          <div class="ov-focus-label ov-tree-label">tasks</div>
-          <.task_node
-            :for={node <- task_nodes(@orchestrator)}
-            todo={node.todo}
-            agents={node.agents}
-            by_parent={@by_parent}
-            expanded={@expanded}
-          />
-        <% end %>
+        <%!-- The whole Overview is the task → agent tree: each todo, the agents
+              working on it, and the sub-agents they spawn (recursively). --%>
+        <.task_node
+          :for={node <- task_nodes(@orchestrator)}
+          todo={node.todo}
+          agents={node.agents}
+          by_parent={@by_parent}
+        />
 
         <%= if (orphans = orphan_agents(@orchestrator)) != [] do %>
           <div class="ov-focus-label ov-tree-label">other agents</div>
@@ -1943,19 +1931,12 @@ defmodule ExAthena.Web.Live.ChatLive do
     end)
   end
 
+  # One task = an orchestrator todo. Always-expanded: its content + status,
+  # then the agents working on it (recursively, via agent_tree_node).
   defp task_node(assigns) do
-    key = "task:#{assigns.todo.id}"
-
-    assigns =
-      assigns
-      |> assign(:summary, task_summary(assigns.agents))
-      |> assign(:key, key)
-      |> assign(:open?, MapSet.member?(assigns.expanded, key))
-
     ~H"""
-    <div class={["ov-task", "ov-task--#{@todo.status}", @open? && "ov-task--open"]}>
-      <div class="ov-task-head" phx-click="ov_toggle" phx-value-key={@key}>
-        <span class="ov-task-arrow">▸</span>
+    <div class={["ov-task", "ov-task--#{@todo.status}", "ov-task--open"]}>
+      <div class="ov-task-head">
         <span class="ov-todo-marker">{todo_marker(@todo.status)}</span>
         <span class="ov-task-title">{@todo.content}</span>
         <span :if={@agents != []} class={["ov-badge", "ov-badge--#{hd(Enum.reverse(@agents)).status}"]}>
@@ -1963,21 +1944,20 @@ defmodule ExAthena.Web.Live.ChatLive do
         </span>
       </div>
 
-      <div :if={@open?} class="ov-task-body">
-        <div :if={@summary} class="ov-task-summary">{@summary}</div>
+      <div class="ov-task-body">
         <div :if={@agents == []} class="ov-task-summary ov-conclusion--derived">
           not started — no worker assigned yet
         </div>
-
         <.agent_tree_node :for={agent <- @agents} agent={agent} by_parent={@by_parent} />
       </div>
     </div>
     """
   end
 
-  # Recursive tree node: one agent (name, status badge, current action,
-  # contribution, its own sub-todos) with any sub-agents IT spawned nested and
-  # indented below. Clicking the name opens the agent's full context.
+  # Recursive tree node: one agent — its name (click → full details), status,
+  # and what it's doing right now — with any sub-agents IT spawned nested and
+  # indented below. Deliberately minimal: no result/sub-todo detail here, that
+  # lives in the click-through agent_focus view.
   defp agent_tree_node(assigns) do
     assigns = assign(assigns, :children, Map.get(assigns.by_parent, assigns.agent.id, []))
 
@@ -1997,40 +1977,11 @@ defmodule ExAthena.Web.Live.ChatLive do
 
       <div :if={@agent.current_action} class="ov-agent-action">⚡ {@agent.current_action}</div>
 
-      <div
-        :if={@agent.result}
-        class={["ov-worker-result", @agent.status == :failed && "ov-worker-result--failed"]}
-      >
-        {@agent.result}
-      </div>
-
-      <div :if={@agent.todos != []} class="ov-todos ov-task-subtasks">
-        <div :for={st <- @agent.todos} class={["ov-todo", "ov-todo--#{st.status}"]}>
-          <span class="ov-todo-marker">{todo_marker(st.status)}</span>
-          <span class="ov-todo-text">{st.content}</span>
-        </div>
-      </div>
-
       <div :if={@children != []} class="ov-agent-children">
         <.agent_tree_node :for={child <- @children} agent={child} by_parent={@by_parent} />
       </div>
     </div>
     """
-  end
-
-  # Small per-task summary: the latest conclusion from the most recent
-  # worker on this task.
-  defp task_summary([]), do: nil
-
-  defp task_summary(agents) do
-    agents
-    |> Enum.reverse()
-    |> Enum.find_value(fn agent ->
-      case List.last(agent.conclusions) do
-        %{text: text} -> text
-        _ -> nil
-      end
-    end)
   end
 
   # Focus view: one agent's full observable state — its own context. Looked
@@ -2149,72 +2100,6 @@ defmodule ExAthena.Web.Live.ChatLive do
       focus_id == nil -> nil
       focus_id == "main" -> main
       true -> Enum.find(agents, &(to_string(&1.id) == focus_id))
-    end
-  end
-
-  defp ov_agent_card(assigns) do
-    ~H"""
-    <div class={["ov-agent", !@main && "ov-agent--sub"]}>
-      <div
-        class="ov-agent-head ov-agent-head--clickable"
-        phx-click="focus_agent"
-        phx-value-id={to_string(@info.id)}
-        title="Open this agent's context"
-      >
-        <span class="ov-agent-name">
-          {@info.name || @info.id} <span :if={@main} class="ov-agent-role">orchestrator</span>
-        </span>
-        <span class={["ov-badge", "ov-badge--#{@info.status}"]}>{badge_label(@info.status)}</span>
-      </div>
-
-      <div :if={@info.prompt_summary} class="ov-agent-prompt">{@info.prompt_summary}</div>
-      <div :if={@info.current_action} class="ov-agent-action">⚡ {@info.current_action}</div>
-
-      <%!-- The orchestrator's todos render as the task tree below the card;
-            worker cards (orphans without a linked task) keep their own list. --%>
-      <%= if not @main and @info.todos != [] do %>
-        <div class="ov-todos">
-          <div :for={todo <- @info.todos} class={["ov-todo", "ov-todo--#{todo.status}"]}>
-            <span class="ov-todo-marker">{todo_marker(todo.status)}</span>
-            <span class="ov-todo-text">{todo.content}</span>
-          </div>
-        </div>
-      <% end %>
-
-      <%= if @info.conclusions != [] do %>
-        <div class="ov-conclusions">
-          <div
-            :for={c <- Enum.take(@info.conclusions, -5)}
-            class={["ov-conclusion", c.source != :stated && "ov-conclusion--derived"]}
-          >
-            <span class="ov-conclusion-iter">#{c.iteration}</span>
-            {c.text}
-          </div>
-        </div>
-      <% end %>
-
-      <div class="ov-agent-footer">
-        iter {@info.iteration} · {@info.usage.input_tokens}/{@info.usage.output_tokens} tok
-        <%= if @info.cost_usd do %>
-          · ${format_cost(@info.cost_usd)}
-        <% end %>
-      </div>
-
-    </div>
-    """
-  end
-
-  # The deepest currently-active agent's action — "what is the system doing
-  # right now". Subagents win over the orchestrator (they do the actual work).
-  defp working_on(%{main: main, agents: agents}) do
-    active = fn info -> info.status in [:running, :waiting_gpu, :stalling] end
-
-    agents
-    |> Enum.reverse()
-    |> Enum.find_value(fn info -> if active.(info), do: info.current_action end)
-    |> case do
-      nil -> if active.(main), do: main.current_action
-      action -> action
     end
   end
 
