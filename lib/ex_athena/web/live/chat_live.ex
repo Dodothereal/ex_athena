@@ -425,10 +425,17 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  def handle_event("set_model", %{"value" => model}, socket) do
-    # Selecting closes the dropdown; the box then shows the chosen model as its
-    # value (not a faint placeholder), so the selection is clearly visible.
+  def handle_event("set_model", %{"value" => model}, socket)
+      when is_binary(model) and model != "" do
+    # Selecting closes the dropdown; the closed box then shows the chosen model
+    # as text (see template), so the selection is clearly visible.
     {:noreply, assign(socket, model: model, model_query: "", model_open: false)}
+  end
+
+  def handle_event("set_model", _params, socket) do
+    # Ignore a blank selection (e.g. a stray blur/empty event) so the current
+    # model is never wiped to "".
+    {:noreply, assign(socket, model_open: false)}
   end
 
   # Focusing the box turns it into a search field: open the list and clear the
