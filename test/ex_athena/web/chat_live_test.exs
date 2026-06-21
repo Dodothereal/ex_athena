@@ -1,7 +1,50 @@
 defmodule ExAthena.Web.Live.ChatLiveTest do
   use ExUnit.Case, async: true
 
+  alias ExAthena.Result
   alias ExAthena.Web.Live.ChatLive
+
+  describe "maybe_surface_deliverable/4 — showing the finish answer in chat" do
+    test "prepends the deliverable as an assistant-text item when not streamed" do
+      result = %Result{finish_reason: :submitted, deliverable: "the final answer"}
+
+      assert [entry | []] = ChatLive.maybe_surface_deliverable([], "m1", "", result)
+      assert entry.type == :assistant_text
+      assert entry.message_id == "m1"
+      assert entry.payload == %{text: "the final answer"}
+    end
+
+    test "appears as the newest entry (rendered last, after tool rows)" do
+      existing = [%{type: :tool_call, message_id: "m1", payload: %{}}]
+      result = %Result{finish_reason: :submitted, deliverable: "answer"}
+
+      assert [newest | rest] = ChatLive.maybe_surface_deliverable(existing, "m1", "", result)
+      assert newest.type == :assistant_text
+      assert rest == existing
+    end
+
+    test "is a no-op when the deliverable was already streamed as prose" do
+      result = %Result{finish_reason: :submitted, deliverable: "answer"}
+      assert ChatLive.maybe_surface_deliverable([], "m1", "here is the answer", result) == []
+    end
+
+    test "is a no-op when an assistant-text entry already contains it" do
+      stream = [%{type: :assistant_text, message_id: "m1", payload: %{text: "the answer here"}}]
+      result = %Result{finish_reason: :submitted, deliverable: "answer"}
+      assert ChatLive.maybe_surface_deliverable(stream, "m1", "", result) == stream
+    end
+
+    test "is a no-op for non-submitted runs or a blank deliverable" do
+      assert ChatLive.maybe_surface_deliverable([], "m1", "", %Result{finish_reason: :stop}) == []
+
+      assert ChatLive.maybe_surface_deliverable(
+               [],
+               "m1",
+               "",
+               %Result{finish_reason: :submitted, deliverable: nil}
+             ) == []
+    end
+  end
 
   describe "filter_models/2 — model search box" do
     @models [

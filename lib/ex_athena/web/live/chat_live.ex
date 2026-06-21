@@ -886,12 +886,26 @@ defmodule ExAthena.Web.Live.ChatLive do
       ex_snapshot: ex_messages
     }
 
+    # The chat renders the details-stream items (tool calls, text segments)
+    # whenever a turn has any — and ignores msg.text. An orchestrator that
+    # delegates streams no prose, so its `finish` deliverable would only appear
+    # as a collapsed tool row. Surface it as a final assistant-text item so the
+    # answer shows in the chat.
+    details_stream =
+      maybe_surface_deliverable(
+        socket.assigns.details_stream,
+        assistant_msg_id,
+        socket.assigns.stream_text,
+        result
+      )
+
     messages = socket.assigns.messages ++ [assistant_msg]
     title = socket.assigns.session_title || derive_title(messages)
 
     socket =
       assign(socket,
         messages: messages,
+        details_stream: details_stream,
         ex_messages: ex_messages,
         # Keep the latest provider session id for `resume:`; a result without
         # one (stateless provider) must not wipe resume state.
@@ -2502,6 +2516,39 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp message_items(_, _), do: []
+
+  @doc false
+  # Surface a `finish` deliverable as a final assistant-text item so it renders
+  # as the chat answer. Skipped when the same text was already streamed as prose
+  # (avoids duplicating it). details_stream is newest-first, so prepending makes
+  # the deliverable the last item chronologically (after the finish tool row).
+  def maybe_surface_deliverable(details_stream, msg_id, stream_text, %{
+         finish_reason: :submitted,
+         deliverable: d
+       })
+       when is_binary(d) and d != "" do
+    trimmed = String.trim(d)
+
+    cond do
+      trimmed == "" -> details_stream
+      is_binary(stream_text) and String.contains?(stream_text, trimmed) -> details_stream
+      already_streamed_text?(details_stream, msg_id, trimmed) -> details_stream
+      true -> [new_detail(:assistant_text, msg_id, %{text: d}) | details_stream]
+    end
+  end
+
+  def maybe_surface_deliverable(details_stream, _msg_id, _stream_text, _result),
+    do: details_stream
+
+  defp already_streamed_text?(details_stream, msg_id, trimmed) do
+    Enum.any?(details_stream, fn
+      %{type: :assistant_text, message_id: ^msg_id, payload: %{text: t}} when is_binary(t) ->
+        String.contains?(t, trimmed)
+
+      _ ->
+        false
+    end)
+  end
 
   defp new_detail(type, message_id, payload) do
     %{
