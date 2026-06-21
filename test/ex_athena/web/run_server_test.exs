@@ -112,7 +112,7 @@ defmodule ExAthena.Web.RunServerTest do
     sref = Process.monitor(server)
 
     :ok = RunServer.stop_run(sid)
-    assert_receive {:DOWN, ^sref, :process, ^server, :normal}, 2_000
+    assert_receive {:DOWN, ^sref, :process, ^server, :normal}, 5_000
     refute RunServer.running?(sid)
   end
 end

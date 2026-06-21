@@ -225,7 +225,9 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  def handle_event("answer_option", %{"value" => value}, socket) do
+  def handle_event("answer_option", %{"option" => value}, socket) do
+    # phx-value-option (not -value): a <button>'s native empty value property
+    # would otherwise override phx-value-value and send a blank answer.
     if socket.assigns.awaiting_question,
       do: answer_question(socket, value),
       else: {:noreply, socket}
@@ -425,17 +427,18 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  def handle_event("set_model", %{"value" => model}, socket)
-      when is_binary(model) and model != "" do
-    # Selecting closes the dropdown; the closed box then shows the chosen model
-    # as text (see template), so the selection is clearly visible.
-    {:noreply, assign(socket, model: model, model_query: "", model_open: false)}
-  end
-
-  def handle_event("set_model", _params, socket) do
-    # Ignore a blank selection (e.g. a stray blur/empty event) so the current
+  def handle_event("set_model", params, socket) do
+    # Combobox options send "model" (phx-value-model); the free-type fallback
+    # input's phx-blur sends "value". A blank value is ignored so the current
     # model is never wiped to "".
-    {:noreply, assign(socket, model_open: false)}
+    case params["model"] || params["value"] do
+      model when is_binary(model) and model != "" ->
+        # Closing the dropdown; the closed box shows the chosen model as text.
+        {:noreply, assign(socket, model: model, model_query: "", model_open: false)}
+
+      _ ->
+        {:noreply, assign(socket, model_open: false)}
+    end
   end
 
   # Focusing the box turns it into a search field: open the list and clear the
@@ -1100,18 +1103,19 @@ defmodule ExAthena.Web.Live.ChatLive do
                   </form>
                   <% filtered = filter_models(@available_models, @model_query) %>
                   <div class="model-options">
-                    <%!-- onmousedown preventDefault keeps focus on the search
-                          input when an option is pressed: otherwise the input
-                          blurs first, flushes phx-debounce -> filter_models
-                          re-renders this list, and the click lands on a stale
-                          node so set_model receives an empty value. --%>
+                    <%!-- Use phx-value-model, NOT phx-value-value: a <button>
+                          has a native `value` property (empty here) that takes
+                          precedence over phx-value-value, so the server would
+                          receive value="" and the selection would be lost.
+                          onmousedown preventDefault keeps the input focused so
+                          picking an option doesn't blur+re-render mid-click. --%>
                     <button
                       :for={m <- filtered}
                       type="button"
                       class={["model-option", m == @model && "model-option--selected"]}
                       onmousedown="event.preventDefault()"
                       phx-click="set_model"
-                      phx-value-value={m}
+                      phx-value-model={m}
                       title={m}
                     >
                       {m}
@@ -1407,7 +1411,7 @@ defmodule ExAthena.Web.Live.ChatLive do
                     type="button"
                     class="ask-user-option"
                     phx-click="answer_option"
-                    phx-value-value={opt}
+                    phx-value-option={opt}
                   >{opt}</button>
                 </div>
               <% end %>
