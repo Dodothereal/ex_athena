@@ -48,7 +48,7 @@ Or manually — add to `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_athena, "~> 0.12"},
+    {:ex_athena, "~> 0.16"},
     # optional — only needed for the Claude provider:
     {:claude_code, "~> 0.36"},
     # optional — only needed for the TUI (`mix athena.chat`):
@@ -192,6 +192,7 @@ The web UI is a Phoenix LiveView application that requires no separate server pr
 | `:llamacpp` | `ExAthena.Providers.ReqLLM` | Alias for local llama.cpp server. |
 | `:claude` | `ExAthena.Providers.ReqLLM` | Anthropic Claude via req_llm. |
 | `:gemini` | `ExAthena.Providers.ReqLLM` | Google Gemini via AI Studio (routed through `req_llm`'s Google adapter). Native tool calls + streaming. See [setup guide](guides/gemini.md). |
+| `:openrouter` | `ExAthena.Providers.ReqLLM` | First-class built-in: OpenAI-compatible gateway to ~hundreds of models. Needs `OPENROUTER_API_KEY`; models are auto-discovered from `/models` (searchable in the web/TUI dropdowns). |
 | `:mock` | `ExAthena.Providers.Mock` | In-memory test double. |
 
 Pass a custom module that implements `ExAthena.Provider` directly if you
@@ -216,6 +217,21 @@ config :ex_athena, :claude,
   api_key: System.get_env("ANTHROPIC_API_KEY"),
   model: "claude-opus-4-8"
 ```
+
+**OpenRouter** works out of the box — just set `OPENROUTER_API_KEY` (its
+base_url, OpenAI-compatible tag, and model discovery ship as a built-in spec).
+
+**Web search backend** for the `web_search` tool defaults to DuckDuckGo (no
+key). Swap it per environment:
+
+```bash
+EX_ATHENA_SEARCH_BACKEND=brave    # or tavily | searxng | duckduckgo (default)
+EX_ATHENA_SEARCH_API_KEY=...      # required for brave/tavily
+EX_ATHENA_SEARCH_ENDPOINT=...     # required for searxng
+```
+
+**Agent nesting** depth is capped by `config :ex_athena, max_agent_depth: 5`
+(orchestrate workers may delegate sub-agents up to this depth).
 
 Resolution is **tiered** — per-call opts always beat app env:
 

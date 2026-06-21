@@ -87,6 +87,8 @@ All live in [`lib/ex_athena/tools/`](../lib/ex_athena/tools).
 | [`Tools.Glob`](../lib/ex_athena/tools/glob.ex) | `glob` | Pattern-match paths. | ✅ |
 | [`Tools.Grep`](../lib/ex_athena/tools/grep.ex) | `grep` | Search file contents. | ✅ |
 | [`Tools.WebFetch`](../lib/ex_athena/tools/web_fetch.ex) | `web_fetch` | HTTP GET → text. | ✅ |
+| [`Tools.WebSearch`](../lib/ex_athena/tools/web_search.ex) | `web_search` | Web search (pluggable backend: DuckDuckGo / Tavily / Brave / SearXNG). | ✅ |
+| [`Tools.UsageRules`](../lib/ex_athena/tools/usage_rules.ex) | `usage_rules` | Read a dependency's local `usage-rules.md` docs. | ✅ |
 | [`Tools.PlanMode`](../lib/ex_athena/tools/plan_mode.ex) | `plan_mode` | Capture / present a plan. | ✅ |
 | [`Tools.SpawnAgent`](../lib/ex_athena/tools/spawn_agent.ex) | `spawn_agent` | Run a subagent. | ✅ |
 | [`Tools.Lsp`](../lib/ex_athena/tools/lsp.ex) | `lsp` | LSP queries (definition, references, diagnostics). | ✅ |

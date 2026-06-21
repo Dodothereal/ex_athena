@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.15.0"
+  @version "0.16.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -40,11 +40,10 @@ defmodule ExAthena.MixProject do
       {:jason, "~> 1.4"},
       {:nimble_options, "~> 1.1"},
       {:telemetry, "~> 1.3"},
-      # Local fork: parses unknown CLI system-message subtypes (e.g.
-      # "thinking_tokens") into a Generic struct instead of erroring. Tracks the
-      # open PR on the fork until it lands upstream. Non-optional so consumers
-      # (atum) get the :claude_code provider without depending on it directly.
-      {:claude_code, path: "/Users/pshoukry/work/open/claude_code"},
+      # Hex release of the upstream SDK. Non-optional so consumers (atum) get the
+      # :claude_code provider without depending on it directly. Kept on hex (not a
+      # git dep) so `mix hex.build` works and ex_athena can publish to hex.pm.
+      {:claude_code, "~> 0.36.5"},
       {:igniter, "~> 0.6", optional: true},
       # Optional — only needed for the interactive TUI (`mix athena.chat`) and the
       # web UI (`mix athena.web`). The core agent loop never starts them, so library
