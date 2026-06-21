@@ -5,6 +5,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   alias ExAthena.Messages
   alias ExAthena.Messages.ContentPart
   alias ExAthena.Web.Sessions
+  alias Phoenix.LiveView.JS
 
   @providers [
     {"llama.cpp", "llamacpp"},
@@ -1069,24 +1070,27 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="field-loading">fetching models…</div>
           <% else %>
             <%= if @available_models != [] do %>
-              <%!-- Server-filtered model search: a real dropdown we render
-                    ourselves, so full model ids show (native <datalist> clips
-                    them to the input width on Firefox/Safari) and substring
-                    search works on every browser. --%>
+              <%!-- Server-filtered model search we render ourselves, so full
+                    model ids show (native <datalist> clips them to the input
+                    width on Firefox/Safari) and substring search works on every
+                    browser. When closed, the selection is shown as button TEXT
+                    (not an <input value>): LiveView preserves user-edited input
+                    values and won't reliably patch `value` after a change, so a
+                    server-set value would leave the box looking empty. --%>
               <div class="model-search" phx-click-away="close_models">
-                <form phx-change="filter_models" autocomplete="off">
-                  <input
-                    class="field-input"
-                    type="text"
-                    name="value"
-                    value={if @model_open, do: @model_query, else: @model}
-                    placeholder={@model || "search models…"}
-                    autocomplete="off"
-                    phx-focus="open_models"
-                    phx-debounce="120"
-                  />
-                </form>
                 <%= if @model_open do %>
+                  <form phx-change="filter_models" autocomplete="off">
+                    <input
+                      class="field-input"
+                      type="text"
+                      name="value"
+                      value={@model_query}
+                      placeholder="search models…"
+                      autocomplete="off"
+                      phx-debounce="120"
+                      phx-mounted={JS.focus()}
+                    />
+                  </form>
                   <% filtered = filter_models(@available_models, @model_query) %>
                   <div class="model-options">
                     <button
@@ -1103,6 +1107,21 @@ defmodule ExAthena.Web.Live.ChatLive do
                       no match
                     </div>
                   </div>
+                <% else %>
+                  <button
+                    type="button"
+                    class="field-input model-display"
+                    phx-click="open_models"
+                    title={@model}
+                  >
+                    <span class={[
+                      "model-display-text",
+                      @model in [nil, ""] && "model-display-text--empty"
+                    ]}>
+                      {(@model not in [nil, ""] && @model) || "search models…"}
+                    </span>
+                    <span class="model-display-caret">▾</span>
+                  </button>
                 <% end %>
               </div>
             <% else %>

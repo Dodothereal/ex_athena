@@ -189,6 +189,28 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
    <datalist> clips them to the input width on Firefox/Safari). */
 .model-search { position: relative; }
 
+/* Closed state: the selected model shown as button text (not an <input value>,
+   which LiveView won't reliably patch after a change). Truncates with a tooltip;
+   the open dropdown wraps full ids. */
+.model-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-display-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-display-text--empty { color: var(--muted); }
+.model-display-caret { color: var(--muted); flex-shrink: 0; }
+
 .model-options {
   margin-top: 4px;
   max-height: 260px;

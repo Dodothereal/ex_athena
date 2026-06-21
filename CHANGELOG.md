@@ -71,9 +71,11 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   question — instead of freezing until the session is reopened. The final
   answer is still persisted durably as a backstop (no more "got a result but no
   response").
-- **Model search box** now shows the selected model as the field value (a
-  proper combobox: idle shows the choice, focus opens the searchable list),
-  fixing the box appearing empty after a selection.
+- **Model search box** now reliably shows the selected model (a proper combobox:
+  the closed box displays the choice as text, clicking it opens the searchable
+  list). Fixes the box appearing empty after a selection — LiveView preserves
+  user-edited input values and won't patch a server-set `value`, so the
+  selection is rendered as button text instead.
 
 ### Added — orchestration (main loop + subagents, observable end-to-end)
 
