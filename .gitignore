@@ -27,3 +27,4 @@ ex_athena-*.tar
 .claude/
 .exathena/
 /log/
+.env

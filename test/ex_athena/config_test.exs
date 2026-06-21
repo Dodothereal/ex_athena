@@ -58,6 +58,32 @@ defmodule ExAthena.ConfigTest do
         Config.pop_provider!(provider: :nonexistent)
       end
     end
+
+    test "threads the built-in OpenRouter base_url, tag, and api_key" do
+      System.put_env("OPENROUTER_API_KEY", "sk-or-test")
+      on_exit(fn -> System.delete_env("OPENROUTER_API_KEY") end)
+
+      assert {ExAthena.Providers.ReqLLM, opts} = Config.pop_provider!(provider: :openrouter)
+      assert Keyword.get(opts, :base_url) == "https://openrouter.ai/api/v1"
+      assert Keyword.get(opts, :req_llm_provider_tag) == "openai"
+      assert Keyword.get(opts, :api_key) == "sk-or-test"
+    end
+  end
+
+  describe "provider_spec/1" do
+    test "returns the built-in OpenRouter spec with model discovery" do
+      assert {:ok, spec} = Config.provider_spec(:openrouter)
+      assert spec.base_url == "https://openrouter.ai/api/v1"
+      assert spec.api_key_env == "OPENROUTER_API_KEY"
+      assert spec.display_name == "OpenRouter"
+      assert spec.model_discovery["url"] == "https://openrouter.ai/api/v1/models"
+      assert spec.model_discovery["path"] == "data.id"
+    end
+
+    test "returns :error for a provider with no spec" do
+      assert :error = Config.provider_spec(:ollama)
+      assert :error = Config.provider_spec(:nope)
+    end
   end
 
   describe "get/4 tiered resolution" do

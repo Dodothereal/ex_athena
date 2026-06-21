@@ -130,6 +130,29 @@ defmodule ExAthena.Config do
     exo: :exo
   }
 
+  # Built-in provider specs for first-class cloud providers that need a fixed
+  # base_url + API-key env + model discovery but ship without a user JSON file.
+  # A user spec of the same name in the ProviderRegistry always overrides these
+  # (see provider_spec/1). OpenRouter is OpenAI wire-compatible, so it routes
+  # through the `:openai` req_llm tag against its own base_url + bearer key.
+  @builtin_specs %{
+    "openrouter" => %ExAthena.ProviderSpec{
+      name: "openrouter",
+      adapter: :req_llm,
+      module: ExAthena.Providers.ReqLLM,
+      req_llm_provider_tag: "openai",
+      base_url: "https://openrouter.ai/api/v1",
+      api_key_env: "OPENROUTER_API_KEY",
+      display_name: "OpenRouter",
+      default_model: "openrouter/auto",
+      model_discovery: %{
+        "url" => "https://openrouter.ai/api/v1/models",
+        "path" => "data.id",
+        "ttl_seconds" => 300
+      }
+    }
+  }
+
   @doc """
   Pop `:provider` from opts and return `{provider_module, remaining_opts}`.
 
@@ -167,12 +190,25 @@ defmodule ExAthena.Config do
       end
 
     rest =
-      case registry_lookup(provider) do
+      case provider_spec(provider) do
         {:ok, spec} -> thread_registry_spec_opts(rest, spec)
         :error -> rest
       end
 
     {provider_module(provider), rest}
+  end
+
+  @doc """
+  Resolve a provider's `ProviderSpec`. A user-registered JSON spec (loaded by
+  `ExAthena.ProviderRegistry`) wins; otherwise a built-in spec (e.g. OpenRouter)
+  is returned. Returns `:error` when neither exists.
+  """
+  @spec provider_spec(atom() | String.t()) :: {:ok, ExAthena.ProviderSpec.t()} | :error
+  def provider_spec(provider) do
+    case registry_lookup(provider) do
+      {:ok, spec} -> {:ok, spec}
+      :error -> Map.fetch(@builtin_specs, to_string(provider))
+    end
   end
 
   defp thread_registry_spec_opts(opts, spec) do

@@ -961,12 +961,14 @@ if Code.ensure_loaded?(ExRatatui.App) do
     defp list_models_for(%{provider: :exo}), do: Exo.list_models([])
 
     defp list_models_for(%{provider: provider}) do
-      with pid when not is_nil(pid) <- Process.whereis(ExAthena.ProviderRegistry),
-           {:ok, %ExAthena.ProviderSpec{model_discovery: disc} = spec}
-           when not is_nil(disc) <- ExAthena.ProviderRegistry.lookup(provider) do
-        ExAthena.ModelDiscovery.list_models(spec)
-      else
-        _ -> Ollama.list_models([])
+      # Registry spec (user JSON) or a built-in spec (e.g. OpenRouter) with
+      # model discovery → fetch its catalog; otherwise fall back to Ollama.
+      case ExAthena.Config.provider_spec(provider) do
+        {:ok, %ExAthena.ProviderSpec{model_discovery: disc} = spec} when not is_nil(disc) ->
+          ExAthena.ModelDiscovery.list_models(spec)
+
+        _ ->
+          Ollama.list_models([])
       end
     end
 

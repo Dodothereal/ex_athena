@@ -13,7 +13,8 @@ defmodule ExAthena.Web.Live.ChatLive do
     {"Claude / Anthropic", "claude"},
     {"Claude Code", "claude_code"},
     {"OpenAI-compatible", "openai_compatible"},
-    {"Gemini", "gemini"}
+    {"Gemini", "gemini"},
+    {"OpenRouter", "openrouter"}
   ]
   @modes [
     {"ReAct", "react"},
@@ -2645,6 +2646,17 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
+  defp fetch_models("openrouter") do
+    # OpenRouter ships a built-in spec with model discovery; needs
+    # OPENROUTER_API_KEY in the environment to list its catalog.
+    with {:ok, spec} <- ExAthena.Config.provider_spec(:openrouter),
+         {:ok, models} <- ExAthena.ModelDiscovery.list_models(spec) do
+      models
+    else
+      _ -> []
+    end
+  end
+
   defp fetch_models(_), do: []
 
   defp default_provider do
@@ -2653,7 +2665,17 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp default_model(provider) do
     atom = safe_atom(provider, :llamacpp)
-    Application.get_env(:ex_athena, atom, [])[:model] || "llama3.1"
+
+    Application.get_env(:ex_athena, atom, [])[:model] ||
+      spec_default_model(atom) ||
+      "llama3.1"
+  end
+
+  defp spec_default_model(atom) do
+    case ExAthena.Config.provider_spec(atom) do
+      {:ok, %{default_model: m}} when is_binary(m) and m != "" -> m
+      _ -> nil
+    end
   end
 
   defp apply_base_url(opts, "llamacpp") do
