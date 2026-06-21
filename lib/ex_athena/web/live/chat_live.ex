@@ -1100,10 +1100,16 @@ defmodule ExAthena.Web.Live.ChatLive do
                   </form>
                   <% filtered = filter_models(@available_models, @model_query) %>
                   <div class="model-options">
+                    <%!-- onmousedown preventDefault keeps focus on the search
+                          input when an option is pressed: otherwise the input
+                          blurs first, flushes phx-debounce -> filter_models
+                          re-renders this list, and the click lands on a stale
+                          node so set_model receives an empty value. --%>
                     <button
                       :for={m <- filtered}
                       type="button"
                       class={["model-option", m == @model && "model-option--selected"]}
+                      onmousedown="event.preventDefault()"
                       phx-click="set_model"
                       phx-value-value={m}
                       title={m}
