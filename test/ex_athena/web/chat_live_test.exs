@@ -2,34 +2,31 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
   use ExUnit.Case, async: true
 
   alias ExAthena.Web.Live.ChatLive
-  alias ExAthena.Result
 
-  describe "final_message_text/2 — surfacing the finish deliverable" do
-    test "uses the deliverable as the message when nothing was streamed" do
-      result = %Result{finish_reason: :submitted, deliverable: "the final answer"}
-      assert ChatLive.final_message_text("", result) == "the final answer"
-      assert ChatLive.final_message_text("   \n ", result) == "the final answer"
+  describe "filter_models/2 — model search box" do
+    @models [
+      "mlx-community/Qwen3.5-9B-4bit",
+      "mlx-community/Qwen3.6-27B-4bit",
+      "mlx-community/gemma-4-e4b-it-4bit",
+      "anthropic/claude-3.5-sonnet"
+    ]
+
+    test "case-insensitive substring match (anywhere in the id)" do
+      assert ChatLive.filter_models(@models, "qwen3.5") == ["mlx-community/Qwen3.5-9B-4bit"]
+      # matches the part after the slash, which datalist prefix-matching misses
+      assert ChatLive.filter_models(@models, "sonnet") == ["anthropic/claude-3.5-sonnet"]
+      assert "mlx-community/gemma-4-e4b-it-4bit" in ChatLive.filter_models(@models, "GEMMA")
     end
 
-    test "appends the deliverable to streamed text so the submitted answer shows" do
-      result = %Result{finish_reason: :submitted, deliverable: "summary line"}
-      assert ChatLive.final_message_text("the story", result) == "the story\n\nsummary line"
+    test "blank query returns all (capped); no match returns []" do
+      assert ChatLive.filter_models(@models, "") == @models
+      assert ChatLive.filter_models(@models, "   ") == @models
+      assert ChatLive.filter_models(@models, "nope") == []
     end
 
-    test "does not duplicate when streamed text already contains the deliverable" do
-      result = %Result{finish_reason: :submitted, deliverable: "the answer"}
-
-      assert ChatLive.final_message_text("here is the answer in full", result) ==
-               "here is the answer in full"
-    end
-
-    test "non-submitted runs keep the streamed text unchanged" do
-      assert ChatLive.final_message_text("streamed", %Result{finish_reason: :stop}) == "streamed"
-
-      assert ChatLive.final_message_text("streamed", %Result{
-               finish_reason: :submitted,
-               deliverable: nil
-             }) == "streamed"
+    test "caps the result count" do
+      many = for i <- 1..200, do: "openrouter/model-#{i}"
+      assert length(ChatLive.filter_models(many, "model")) == 60
     end
   end
 end

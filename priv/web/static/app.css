@@ -185,6 +185,41 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .field-select option { background: var(--sidebar-bg); }
 
+/* Server-filtered model search dropdown — full ids always visible (the native
+   <datalist> clips them to the input width on Firefox/Safari). */
+.model-search { position: relative; }
+
+.model-options {
+  margin-top: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.model-option {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  transition: background-color 0.12s;
+}
+
+.model-option:hover { background: var(--border-light); }
+.model-option--selected { color: var(--accent); font-weight: 600; }
+.model-option--empty { color: var(--muted); cursor: default; }
+.model-option--empty:hover { background: none; }
+
 .field-loading {
   font-family: var(--font-mono);
   font-size: 11px;

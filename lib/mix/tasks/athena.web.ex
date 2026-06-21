@@ -50,6 +50,10 @@ defmodule Mix.Tasks.Athena.Web do
 
     children = [
       {Phoenix.PubSub, name: ExAthena.PubSub},
+      # Per-session run owners (ExAthena.Web.RunServer) live here so an in-flight
+      # run survives LiveView reconnects and a remounting LiveView can re-attach.
+      {Registry, keys: :unique, name: ExAthena.Web.RunRegistry},
+      {DynamicSupervisor, name: ExAthena.Web.RunSupervisor, strategy: :one_for_one},
       ExAthena.Web.Endpoint
     ]
 

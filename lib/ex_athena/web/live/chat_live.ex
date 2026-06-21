@@ -31,10 +31,13 @@ defmodule ExAthena.Web.Live.ChatLive do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(params, _session, socket) do
     provider = default_provider()
     model = default_model(provider)
-    session_id = unique_id()
+    # `/c/:session_id` carries a stable id across reconnects; `/` is a fresh id
+    # (stamped into the URL by handle_params once connected).
+    url_session_id = params["session_id"]
+    session_id = url_session_id || unique_id()
 
     socket =
       assign(socket,
@@ -56,6 +59,11 @@ defmodule ExAthena.Web.Live.ChatLive do
         queue_slots: current_queue_slots(provider),
         mode: "react",
         available_models: [],
+        # Current text in the model search box (server-filtered dropdown) and
+        # whether the dropdown is open (focused). When closed the box shows the
+        # selected `model`; when open it shows `model_query` as a search field.
+        model_query: "",
+        model_open: false,
         models_loading: false,
         providers: @providers,
         modes: @modes,
@@ -116,19 +124,85 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Loading / status / errors
         page_loading: !connected?(socket),
         status: nil,
+        # Pid bookkeeping retained for legacy assigns; run control now flows
+        # through RunServer keyed by session_id, not a captured task pid.
+        streaming_task_pid: nil,
         error: nil
       )
 
     socket =
       if connected?(socket) do
-        send(self(), {:load_models, provider})
         send(self(), :load_sessions)
+        # Re-attach to an in-flight run (reconnect) or reopen a persisted
+        # session for this URL, before loading models for the resolved provider.
+        socket = maybe_restore(socket, url_session_id)
+        send(self(), {:load_models, socket.assigns.provider})
         assign(socket, models_loading: true)
       else
         socket
       end
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    # Stamp the stable session id into the URL once connected so a websocket
+    # reconnect re-mounts with it (and can re-attach to a running RunServer).
+    if is_nil(params["session_id"]) and connected?(socket) do
+      {:noreply, push_session_url(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Connected-mount restore: re-attach to a live run if one is in flight for
+  # this session id, otherwise reopen the persisted session. A `/` mount (no
+  # url id) stays fresh — the URL is patched by handle_params.
+  defp maybe_restore(socket, nil), do: socket
+
+  defp maybe_restore(socket, id) do
+    if ExAthena.Web.RunServer.running?(id) do
+      reattach_run(socket, id)
+    else
+      case Sessions.load(id) do
+        {:ok, data} -> assign_session_data(socket, data)
+        {:error, _} -> socket
+      end
+    end
+  end
+
+  defp reattach_run(socket, id) do
+    socket =
+      case Sessions.load(id) do
+        {:ok, data} -> assign_session_data(socket, data)
+        {:error, _} -> socket
+      end
+
+    case ExAthena.Web.RunServer.attach(id, self()) do
+      {:ok, snap} ->
+        socket
+        |> assign(
+          streaming: snap.streaming,
+          stream_text: snap.stream_text,
+          current_action: snap.current_action,
+          awaiting_question: snap.awaiting_question,
+          pending_assistant_msg_id: snap.pending_assistant_msg_id
+        )
+        |> resubscribe_coordinator(snap.run_sid)
+
+      {:error, :not_running} ->
+        socket
+    end
+  end
+
+  defp resubscribe_coordinator(socket, nil), do: socket
+
+  defp resubscribe_coordinator(socket, run_sid) do
+    case ExAthena.Orchestrator.Coordinator.subscribe(run_sid, self()) do
+      {:ok, snapshot} -> assign(socket, orchestrator: snapshot, orchestrator_sid: run_sid)
+      {:error, _} -> assign(socket, orchestrator_sid: run_sid)
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -167,9 +241,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("stop", _params, socket) do
-    if pid = socket.assigns.streaming_task_pid do
-      Process.exit(pid, :kill)
-    end
+    ExAthena.Web.RunServer.stop_run(socket.assigns.session_id)
 
     {:noreply,
      assign(socket,
@@ -218,7 +290,8 @@ defmodule ExAthena.Web.Live.ChatLive do
       Sessions.touch_recent(path)
 
       {:noreply,
-       assign(socket,
+       socket
+       |> assign(
          cwd: path,
          session_id: unique_id(),
          session_title: nil,
@@ -237,7 +310,8 @@ defmodule ExAthena.Web.Live.ChatLive do
          modal_path: "",
          modal_path_valid: false,
          recent_cwds: Sessions.list_recent()
-       )}
+       )
+       |> push_session_url()}
     else
       {:noreply, assign(socket, modal_path_valid: false)}
     end
@@ -249,7 +323,8 @@ defmodule ExAthena.Web.Live.ChatLive do
       sessions = Sessions.list_for_cwd(cwd)
 
       {:noreply,
-       assign(socket,
+       socket
+       |> assign(
          cwd: cwd,
          session_id: unique_id(),
          session_title: nil,
@@ -267,7 +342,8 @@ defmodule ExAthena.Web.Live.ChatLive do
          sessions: sessions,
          show_sessions: sessions != [],
          recent_cwds: Sessions.list_recent()
-       )}
+       )
+       |> push_session_url()}
     else
       {:noreply, assign(socket, error: "Directory no longer exists: #{cwd}")}
     end
@@ -280,7 +356,8 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def handle_event("clear", _params, socket) do
     {:noreply,
-     assign(socket,
+     socket
+     |> assign(
        session_id: unique_id(),
        session_title: nil,
        session_created_at: DateTime.utc_now(),
@@ -297,7 +374,8 @@ defmodule ExAthena.Web.Live.ChatLive do
        stream_events: [],
        stream_tool_ui: %{},
        current_action: nil
-     )}
+     )
+     |> push_session_url()}
   end
 
   def handle_event("set_provider", %{"value" => provider}, socket) do
@@ -308,6 +386,8 @@ defmodule ExAthena.Web.Live.ChatLive do
      assign(socket,
        provider: provider,
        model: model,
+       model_query: "",
+       model_open: false,
        available_models: [],
        models_loading: true,
        queue_slots: current_queue_slots(provider),
@@ -345,7 +425,23 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("set_model", %{"value" => model}, socket) do
-    {:noreply, assign(socket, model: model)}
+    # Selecting closes the dropdown; the box then shows the chosen model as its
+    # value (not a faint placeholder), so the selection is clearly visible.
+    {:noreply, assign(socket, model: model, model_query: "", model_open: false)}
+  end
+
+  # Focusing the box turns it into a search field: open the list and clear the
+  # query so the full (capped) model list is browsable; typing narrows it.
+  def handle_event("open_models", _params, socket) do
+    {:noreply, assign(socket, model_open: true, model_query: "")}
+  end
+
+  def handle_event("close_models", _params, socket) do
+    {:noreply, assign(socket, model_open: false)}
+  end
+
+  def handle_event("filter_models", %{"value" => query}, socket) do
+    {:noreply, assign(socket, model_query: query, model_open: true)}
   end
 
   def handle_event("set_mode", %{"value" => mode}, socket) do
@@ -374,7 +470,8 @@ defmodule ExAthena.Web.Live.ChatLive do
   def handle_event("new_session", _params, socket) do
     # Start a new conversation in the same working directory
     {:noreply,
-     assign(socket,
+     socket
+     |> assign(
        session_id: unique_id(),
        session_title: nil,
        session_created_at: DateTime.utc_now(),
@@ -388,44 +485,20 @@ defmodule ExAthena.Web.Live.ChatLive do
        pending_assistant_msg_id: nil,
        status: nil,
        error: nil
-     )}
+     )
+     |> push_session_url()}
   end
 
   def handle_event("load_session", %{"id" => id}, socket) do
     case Sessions.load(id) do
       {:ok, data} ->
-        cwd = Map.get(data, :cwd, socket.assigns.cwd)
-        if cwd, do: Sessions.touch_recent(cwd)
-
-        tool_uis = Map.get(data, :tool_uis, %{})
-
-        details_stream =
-          case Map.get(data, :details_stream) do
-            nil -> hydrate_details_stream(data.display_messages, tool_uis)
-            existing -> existing
-          end
+        if cwd = Map.get(data, :cwd, socket.assigns.cwd), do: Sessions.touch_recent(cwd)
 
         {:noreply,
-         assign(socket,
-           session_id: data.id,
-           session_title: data.title,
-           session_created_at: Map.get(data, :created_at, DateTime.utc_now()),
-           cwd: cwd,
-           provider: data.provider,
-           model: data.model,
-           mode: data.mode,
-           messages: data.display_messages,
-           pending_images: [],
-           ex_messages: data.ex_messages,
-           provider_session_id: Map.get(data, :provider_session_id),
-           tool_uis: tool_uis,
-           expanded_uis: MapSet.new(),
-           details_stream: details_stream,
-           pending_assistant_msg_id: nil,
-           status: nil,
-           error: nil,
-           show_sessions: false
-         )}
+         socket
+         |> assign_session_data(data)
+         |> assign(show_sessions: false)
+         |> push_session_url()}
 
       {:error, reason} ->
         {:noreply, assign(socket, error: "Failed to load session: #{inspect(reason)}")}
@@ -461,7 +534,8 @@ defmodule ExAthena.Web.Live.ChatLive do
         details_stream = hydrate_details_stream(forked_messages, socket.assigns.tool_uis)
 
         {:noreply,
-         assign(socket,
+         socket
+         |> assign(
            session_id: new_id,
            session_title: title,
            session_created_at: DateTime.utc_now(),
@@ -480,7 +554,8 @@ defmodule ExAthena.Web.Live.ChatLive do
            stream_tool_ui: %{},
            current_action: nil,
            show_sessions: false
-         )}
+         )
+         |> push_session_url()}
     end
   end
 
@@ -794,7 +869,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     assistant_msg = %{
       id: assistant_msg_id,
       role: :assistant,
-      text: final_message_text(socket.assigns.stream_text, result),
+      text: Sessions.final_message_text(socket.assigns.stream_text, result),
       tool_events: socket.assigns.stream_events,
       status: status,
       ex_snapshot: ex_messages
@@ -994,23 +1069,42 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="field-loading">fetching models…</div>
           <% else %>
             <%= if @available_models != [] do %>
-              <%!-- Type-to-search over all models (datalist autocomplete);
-                    free-typing any id is allowed too (e.g. OpenRouter). --%>
-              <form phx-change="set_model">
-                <input
-                  class="field-input"
-                  type="text"
-                  name="value"
-                  value={@model}
-                  list="model-options"
-                  autocomplete="off"
-                  placeholder="search models…"
-                  phx-debounce="150"
-                />
-                <datalist id="model-options">
-                  <option :for={m <- @available_models} value={m}></option>
-                </datalist>
-              </form>
+              <%!-- Server-filtered model search: a real dropdown we render
+                    ourselves, so full model ids show (native <datalist> clips
+                    them to the input width on Firefox/Safari) and substring
+                    search works on every browser. --%>
+              <div class="model-search" phx-click-away="close_models">
+                <form phx-change="filter_models" autocomplete="off">
+                  <input
+                    class="field-input"
+                    type="text"
+                    name="value"
+                    value={if @model_open, do: @model_query, else: @model}
+                    placeholder={@model || "search models…"}
+                    autocomplete="off"
+                    phx-focus="open_models"
+                    phx-debounce="120"
+                  />
+                </form>
+                <%= if @model_open do %>
+                  <% filtered = filter_models(@available_models, @model_query) %>
+                  <div class="model-options">
+                    <button
+                      :for={m <- filtered}
+                      type="button"
+                      class={["model-option", m == @model && "model-option--selected"]}
+                      phx-click="set_model"
+                      phx-value-value={m}
+                      title={m}
+                    >
+                      {m}
+                    </button>
+                    <div :if={filtered == []} class="model-option model-option--empty">
+                      no match
+                    </div>
+                  </div>
+                <% end %>
+              </div>
             <% else %>
               <input
                 class="field-input"
@@ -2137,7 +2231,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   # ---------------------------------------------------------------------------
 
   defp start_agent_run(socket, text) do
-    pid = self()
+    session_id = socket.assigns.session_id
     provider = socket.assigns.provider
     model = socket.assigns.model
     mode = socket.assigns.mode
@@ -2176,76 +2270,75 @@ defmodule ExAthena.Web.Live.ChatLive do
     # One orchestration blackboard per run (Overview tab). Host-started and
     # subscribed BEFORE the run begins, so no event can be missed. The
     # coordinator is observational only — a crash never affects the run.
-    run_sid = "#{socket.assigns.session_id}-run-#{assistant_msg_id}"
+    run_sid = "#{session_id}-run-#{assistant_msg_id}"
     {:ok, coordinator} = ExAthena.Orchestrator.Coordinator.start_for(run_sid)
-    {:ok, initial_snapshot} = ExAthena.Orchestrator.Coordinator.subscribe(run_sid, pid)
+    {:ok, initial_snapshot} = ExAthena.Orchestrator.Coordinator.subscribe(run_sid, self())
 
-    {:ok, task_pid} =
-      Task.start(fn ->
-        on_event = fn event -> send(pid, {:athena, event}) end
-
-        opts =
-          [
-            provider: safe_atom(provider, :llamacpp),
-            mode: safe_mode(mode),
-            messages: ex_messages,
-            # Builtins plus the interactive ask_user tool. `ask_user` reads the
-            # LiveView pid from assigns to surface a question and block for the
-            # reply; see ExAthena.Tools.AskUser.
-            tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser],
-            assigns: %{ask_user: pid},
-            permission_mode: :accept_edits,
-            coordinator: coordinator,
-            on_event: on_event,
-            # Conclusion summarizer is OFF for local thinking models: exo/
-            # Qwen3.5 ignore `/no_think` and req_llm's OpenAI path can't
-            # forward `enable_thinking: false`, so the micro-call always
-            # spends its whole budget inside <think> and returns a fragment
-            # the quality gate discards — pure waste. The quality-gated raw
-            # thinking blob is already a good conclusion. Enable only for
-            # providers that separate reasoning (Alibaba, cloud).
-            conclusion_summarizer: false,
-            timeout_ms: 24 * 60 * 60 * 1000
-          ]
-          |> maybe_put_model(model)
-          |> maybe_put_resume(provider_session_id)
-          |> apply_base_url(provider)
-          |> maybe_put_cwd(socket.assigns.cwd)
-
-        case ExAthena.run(nil, opts) do
-          {:ok, result} -> send(pid, {:athena_done, result})
-          {:error, reason} -> send(pid, {:athena_error, reason})
-        end
-      end)
-
-    # Monitor the run so an *unexpected crash* (an exception that bypasses the
-    # {:error, reason} path above) still resets the UI. Without this, a raising
-    # run leaves `streaming: true` forever and the input stays disabled — the
-    # user can no longer type/send. See the {:DOWN, ...} handler below.
-    Process.monitor(task_pid)
+    # Run options as plain data — RunServer injects the pid-bound keys
+    # (:on_event, :assigns ask_user, :coordinator) so they target the stable
+    # per-session server, not this LiveView pid (which dies on a reconnect).
+    run_opts =
+      [
+        provider: safe_atom(provider, :llamacpp),
+        mode: safe_mode(mode),
+        messages: ex_messages,
+        tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser],
+        permission_mode: :accept_edits,
+        # Conclusion summarizer is OFF for local thinking models: exo/Qwen3.5
+        # ignore `/no_think` and req_llm's OpenAI path can't forward
+        # `enable_thinking: false`, so the micro-call spends its whole budget
+        # inside <think> and returns a fragment the quality gate discards. The
+        # quality-gated raw thinking blob is already a good conclusion.
+        conclusion_summarizer: false,
+        timeout_ms: 24 * 60 * 60 * 1000
+      ]
+      |> maybe_put_model(model)
+      |> maybe_put_resume(provider_session_id)
+      |> apply_base_url(provider)
+      |> maybe_put_cwd(socket.assigns.cwd)
 
     user_detail = new_detail(:user_text, user_msg.id, %{text: text})
+    messages = socket.assigns.messages ++ [user_msg]
 
-    {:noreply,
-     assign(socket,
-       messages: socket.assigns.messages ++ [user_msg],
-       ex_messages: ex_messages,
-       pending_images: [],
-       streaming: true,
-       streaming_task_pid: task_pid,
-       stream_text: "",
-       stream_events: [],
-       stream_tool_ui: %{},
-       current_action: nil,
-       pending_assistant_msg_id: assistant_msg_id,
-       details_stream: [user_detail | socket.assigns.details_stream],
-       orchestrator: initial_snapshot,
-       orchestrator_sid: run_sid,
-       overview_focus: nil,
-       ov_expanded: MapSet.new(),
-       gpu_stats: gpu_stats(provider),
-       error: nil
-     )}
+    socket =
+      assign(socket,
+        messages: messages,
+        ex_messages: ex_messages,
+        session_title: socket.assigns.session_title || derive_title(messages),
+        pending_images: [],
+        streaming: true,
+        streaming_task_pid: nil,
+        stream_text: "",
+        stream_events: [],
+        stream_tool_ui: %{},
+        current_action: nil,
+        pending_assistant_msg_id: assistant_msg_id,
+        details_stream: [user_detail | socket.assigns.details_stream],
+        orchestrator: initial_snapshot,
+        orchestrator_sid: run_sid,
+        overview_focus: nil,
+        ov_expanded: MapSet.new(),
+        gpu_stats: gpu_stats(provider),
+        error: nil
+      )
+
+    # Persist the session NOW (with the user turn) so RunServer has a file to
+    # durably append the answer to, and a reconnect mid-run reopens the turn.
+    save_session(socket)
+
+    # Hand the run to the stable per-session owner, subscribing this LiveView up
+    # front (no early event can race the subscription). The run now outlives a
+    # reconnect; a remounting LiveView re-attaches via mount.
+    {:ok, _} =
+      ExAthena.Web.RunServer.start_run(session_id, %{
+        run_opts: run_opts,
+        assistant_msg_id: assistant_msg_id,
+        run_sid: run_sid,
+        coordinator: coordinator,
+        subscriber: self()
+      })
+
+    {:noreply, push_session_url(socket)}
   end
 
   # Route the user's reply back into the run task blocked inside the `ask_user`
@@ -2254,9 +2347,9 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp answer_question(socket, answer) do
     q = socket.assigns.awaiting_question
 
-    if pid = socket.assigns.streaming_task_pid do
-      send(pid, {:athena_user_answer, q.tool_call_id, answer})
-    end
+    # Route through RunServer (keyed by the stable session id) so the answer
+    # reaches the blocked run even after a reconnect replaced the LiveView pid.
+    ExAthena.Web.RunServer.answer(socket.assigns.session_id, q.tool_call_id, answer)
 
     detail =
       new_detail(:ask_user_answer, socket.assigns.pending_assistant_msg_id, %{
@@ -2268,6 +2361,48 @@ defmodule ExAthena.Web.Live.ChatLive do
      socket
      |> assign(awaiting_question: nil, current_action: "thinking…")
      |> update(:details_stream, &[detail | &1])}
+  end
+
+  # Assign a loaded session's data onto the socket. Shared by the load_session
+  # event and the connected-mount restore path so both stay in lockstep.
+  defp assign_session_data(socket, data) do
+    tool_uis = Map.get(data, :tool_uis, %{})
+
+    details_stream =
+      case Map.get(data, :details_stream) do
+        nil -> hydrate_details_stream(data.display_messages, tool_uis)
+        existing -> existing
+      end
+
+    assign(socket,
+      session_id: data.id,
+      session_title: data.title,
+      session_created_at: Map.get(data, :created_at, DateTime.utc_now()),
+      cwd: Map.get(data, :cwd, socket.assigns.cwd),
+      provider: data.provider,
+      model: data.model,
+      model_query: "",
+      model_open: false,
+      mode: data.mode,
+      messages: data.display_messages,
+      pending_images: [],
+      ex_messages: data.ex_messages,
+      provider_session_id: Map.get(data, :provider_session_id),
+      tool_uis: tool_uis,
+      expanded_uis: MapSet.new(),
+      details_stream: details_stream,
+      pending_assistant_msg_id: nil,
+      status: nil,
+      error: nil
+    )
+  end
+
+  # Keep the browser URL on `/c/:session_id` so a reconnect re-mounts with the
+  # active session id. No-op until the socket is connected (push_patch needs it).
+  defp push_session_url(socket) do
+    if connected?(socket),
+      do: push_patch(socket, to: "/c/#{socket.assigns.session_id}", replace: true),
+      else: socket
   end
 
   defp save_session(socket) do
@@ -2506,28 +2641,6 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp relpath(path, nil), do: path
   defp relpath(path, cwd), do: Path.relative_to(path, cwd)
 
-  @doc """
-  Final assistant-message text for a completed run, folding in the `finish`
-  deliverable so the submitted answer is always visible in the main chat.
-
-  When the run ended via `finish` (`finish_reason: :submitted`) with a
-  deliverable: it becomes the message text if nothing was streamed (the
-  orchestrator delegated and only submitted a deliverable), or is appended to
-  the streamed text otherwise — unless that text already contains it. Any other
-  termination keeps the streamed text unchanged.
-  """
-  @spec final_message_text(String.t(), ExAthena.Result.t()) :: String.t()
-  def final_message_text(stream_text, %{finish_reason: :submitted, deliverable: d})
-      when is_binary(d) and d != "" do
-    cond do
-      String.trim(stream_text) == "" -> d
-      String.contains?(stream_text, String.trim(d)) -> stream_text
-      true -> stream_text <> "\n\n" <> d
-    end
-  end
-
-  def final_message_text(stream_text, _result), do: stream_text
-
   defp fetch_git_diff(nil), do: nil
 
   defp fetch_git_diff(cwd) do
@@ -2688,6 +2801,18 @@ defmodule ExAthena.Web.Live.ChatLive do
       {:ok, %{default_model: m}} when is_binary(m) and m != "" -> m
       _ -> nil
     end
+  end
+
+  # Case-insensitive substring filter for the model search box, capped so a
+  # provider with hundreds of models (OpenRouter) never renders them all.
+  @model_results_cap 60
+  @doc false
+  def filter_models(models, query) do
+    q = query |> to_string() |> String.trim() |> String.downcase()
+
+    models
+    |> Enum.filter(fn m -> q == "" or String.contains?(String.downcase(m), q) end)
+    |> Enum.take(@model_results_cap)
   end
 
   defp apply_base_url(opts, "llamacpp") do

@@ -5,7 +5,75 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.16.0 — Web search & dependency docs, deeper agent nesting + tree, OpenRouter
+
+### Added — online research & dependency docs
+
+- **`web_search` tool** — backend-agnostic (the `ExAthena.Search` behaviour;
+  agents never pick a provider). Default backend is **DuckDuckGo** (no key —
+  parses the HTML SERP, best-effort), with **Tavily / Brave / SearXNG** drop-in
+  via env: `EX_ATHENA_SEARCH_BACKEND`, `EX_ATHENA_SEARCH_API_KEY`,
+  `EX_ATHENA_SEARCH_ENDPOINT`. Detects DuckDuckGo's bot/CAPTCHA block (HTTP 202)
+  and returns a clear `:blocked` error instead of silently empty results.
+- **`usage_rules` tool** — reads a dependency's local `usage-rules.md`
+  (`deps/<pkg>/usage-rules.md`, plus nested `<pkg>:<topic>`); a reliable,
+  version-accurate alternative to fetching hexdocs. Read-only, `:plan`-safe.
+- **Research rail** — when planning is context-starved (empty local search,
+  negative finding, repetition) the runtime steers the agent to `web_search`
+  then `web_fetch`; in orchestrate mode a stalled plan escalates to a
+  **runtime-spawned `research` worker** (web-first, with `usage_rules`). New
+  built-in `research` agent.
+
+### Added — providers
+
+- **OpenRouter** is now a first-class built-in provider (base_url +
+  `OPENROUTER_API_KEY` + model discovery over `/models`), selectable in the web
+  + TUI provider dropdowns. The web model selector is now a **type-to-search**
+  box (substring autocomplete over hundreds of models; free-typing allowed).
+
+### Changed — packaging
+
+- The `claude_code` dependency now tracks the **hex release (`~> 0.36.5`)**
+  instead of a git/path dep, so `mix hex.build` works and ExAthena can publish
+  to hex.pm again.
+
+### Changed — agent nesting (behavior change)
+
+- The hard **depth-1** rail is replaced by a **configurable
+  `config :ex_athena, max_agent_depth` (default `5`)**, overridable per run via
+  `assigns[:max_agent_depth]`. Any worker may now delegate sub-agents up to the
+  cap (a ceiling is kept on purpose so a degenerate model can't spawn an
+  unbounded tree). Nested agents report to the `Coordinator` with
+  `parent_id`/`depth`, and the web **Overview is now a clean task → agent tree**
+  that grows as agents spawn sub-agents — each node shows its name (click → full
+  details), status, and live action.
+
+### Fixed
+
+- The `finish` **deliverable is surfaced as the final chat answer** even when
+  the orchestrator streamed no text (delivered via the tool, not the text
+  channel).
+- **Runaway-stream guard**: a per-turn ceiling on total streamed bytes (content
+  **and** reasoning) so a degenerate local model that loops a phrase can no
+  longer stream forever — the turn truncates and the inter-turn rails fire.
+- A **transient provider error on the first iteration** no longer crashes the
+  run (`not nil` on the unset retry flag); it retries once, then halts cleanly.
+- The git-diff view (web Git tab + TUI Changes) is **unified and now includes
+  untracked (new) files**, not just modified/deleted.
+- `todo_write` is **allowed in the `:plan` phase** (it mutates session
+  bookkeeping, not the workspace), so orchestrate planning and read-only
+  workers can record their plan.
+- **Web runs survive LiveView reconnects.** A run is now owned by a per-session
+  `ExAthena.Web.RunServer` (keyed by a stable session id carried in a new
+  `/c/:session_id` URL), not by the LiveView pid that started it. A reconnect
+  re-mounts with the same id and **re-attaches to the in-flight run** —
+  restoring partial streamed text, the live action, and any paused `ask_user`
+  question — instead of freezing until the session is reopened. The final
+  answer is still persisted durably as a backstop (no more "got a result but no
+  response").
+- **Model search box** now shows the selected model as the field value (a
+  proper combobox: idle shows the choice, focus opens the searchable list),
+  fixing the box appearing empty after a selection.
 
 ### Added — orchestration (main loop + subagents, observable end-to-end)
 
@@ -13,8 +81,9 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   then todo-driven delegation — each substantial step goes to a `spawn_agent`
   worker with a **required four-field brief** (objective, expected_output,
   tool_guidance, boundaries; rejected with a model-visible error when
-  incomplete). Deterministic rails enforced in code, not prompts: **depth 1**
-  (workers cannot spawn workers), **fan-out capped at the provider's queue
+  incomplete). Deterministic rails enforced in code, not prompts: **bounded
+  nesting depth** (configurable `max_agent_depth`, default 5 — see "Changed"),
+  **fan-out capped at the provider's queue
   slots**, summary-only returns (`max_result_chars` arg), and a worker
   contract appended to every sub-agent's system prompt.
 - **Per-iteration conclusions in every mode**: the system prompt asks for a

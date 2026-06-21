@@ -46,6 +46,101 @@ defmodule ExAthena.Web.Sessions do
     File.write!(Path.join(dir, "#{id}.session"), :erlang.term_to_binary(data))
   end
 
+  @doc """
+  Durably append a completed run's final assistant message to its session.
+
+  Used by the run task so the answer survives even when the LiveView process
+  that started the run has died (e.g. a websocket reconnect mid-run sends the
+  final `{:athena_done, result}` to a now-dead pid). Load-modify-save, and
+  **idempotent by `msg_id`** — a no-op if the LiveView already persisted that
+  message, so the LiveView's richer (tool-event-bearing) version is preserved.
+  """
+  @spec append_run_result(String.t(), String.t(), map(), map()) :: :ok
+  def append_run_result(session_id, msg_id, assistant_msg, result) do
+    case load(session_id) do
+      {:ok, data} ->
+        case merge_run_result(data, msg_id, assistant_msg, result) do
+          {:save, merged} -> save(merged)
+          :skip -> :ok
+        end
+
+      # No session file yet (never saved) — nothing to attach to.
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  @doc false
+  @spec merge_run_result(map(), String.t(), map(), map()) :: {:save, map()} | :skip
+  def merge_run_result(data, msg_id, assistant_msg, result) do
+    msgs = Map.get(data, :display_messages, [])
+
+    if Enum.any?(msgs, &(&1.id == msg_id)) do
+      :skip
+    else
+      {:save,
+       data
+       |> Map.put(:display_messages, msgs ++ [assistant_msg])
+       |> Map.put(:ex_messages, result.messages || Map.get(data, :ex_messages, []))
+       |> Map.put(:provider_session_id, result.session_id || Map.get(data, :provider_session_id))
+       |> Map.put(:updated_at, DateTime.utc_now())}
+    end
+  end
+
+  @doc """
+  The chat message text for a finished run, surfacing the `finish` deliverable
+  so the submitted answer is always visible in the main chat.
+
+  When the run ended via `finish` (`finish_reason: :submitted`) with a
+  deliverable: it becomes the message text if nothing was streamed (the
+  orchestrator delegated and only submitted a deliverable), or is appended to
+  the streamed text otherwise — unless that text already contains it. Any other
+  termination keeps the streamed text unchanged.
+  """
+  @spec final_message_text(String.t(), ExAthena.Result.t()) :: String.t()
+  def final_message_text(stream_text, %{finish_reason: :submitted, deliverable: d})
+      when is_binary(d) and d != "" do
+    cond do
+      String.trim(stream_text) == "" -> d
+      String.contains?(stream_text, String.trim(d)) -> stream_text
+      true -> stream_text <> "\n\n" <> d
+    end
+  end
+
+  def final_message_text(stream_text, _result), do: stream_text
+
+  @doc """
+  Build a run's final assistant message from the `Result` alone (no live UI
+  state) and durably append it to the session. The durable path for when the
+  process that owns the run wants the answer saved regardless of whether a
+  LiveView is currently attached. Idempotent by `msg_id` (see
+  `append_run_result/4`).
+  """
+  @spec persist_run_result(String.t(), String.t(), ExAthena.Result.t()) :: :ok
+  def persist_run_result(session_id, msg_id, result) do
+    usage = result.usage || %{}
+
+    status = %{
+      iterations: result.iterations || 0,
+      input_tokens: Map.get(usage, :input_tokens, 0),
+      output_tokens: Map.get(usage, :output_tokens, 0),
+      cost_usd: result.cost_usd || 0.0
+    }
+
+    msg = %{
+      id: msg_id,
+      role: :assistant,
+      text: final_message_text(to_string(result.text || ""), result),
+      tool_events: [],
+      status: status,
+      ex_snapshot: result.messages
+    }
+
+    append_run_result(session_id, msg_id, msg, result)
+  rescue
+    _ -> :ok
+  end
+
   @doc "Load a full session by id."
   @spec load(String.t()) :: {:ok, map()} | {:error, term()}
   def load(id) do
