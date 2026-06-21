@@ -111,6 +111,74 @@ defmodule ExAthena.Search.HttpTest do
       assert {:ok, [%Result{title: "S1", url: "https://s.com", snippet: "c"}]} =
                Http.search("q", [])
     end
+
+    test "requests JSON, maps score/published, and derives params from opts" do
+      test_pid = self()
+
+      plug = fn conn ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        send(test_pid, {:get, conn.request_path, conn.params})
+
+        send_json(conn, %{
+          "results" => [
+            %{
+              "title" => "S1",
+              "url" => "https://s.com",
+              "content" => "c",
+              "score" => 1.5,
+              "publishedDate" => "2026-06-01"
+            }
+          ]
+        })
+      end
+
+      # Trailing slash on the endpoint must not double up before "/search".
+      put_search(backend: :searxng, endpoint: "http://localhost:8888/", req_options: [plug: plug])
+
+      assert {:ok,
+              [
+                %Result{
+                  title: "S1",
+                  url: "https://s.com",
+                  snippet: "c",
+                  score: 1.5,
+                  published: "2026-06-01"
+                }
+              ]} = Http.search("q", topic: "news", recency: "week")
+
+      assert_received {:get, "/search", params}
+      assert params["q"] == "q"
+      assert params["format"] == "json"
+      assert params["time_range"] == "week"
+      assert params["categories"] == "news"
+    end
+
+    test "passes configured searxng options (language/safesearch/engines)" do
+      test_pid = self()
+
+      plug = fn conn ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        send(test_pid, {:params, conn.params})
+        send_json(conn, %{"results" => []})
+      end
+
+      put_search(
+        backend: :searxng,
+        endpoint: "http://localhost:8888",
+        searxng: [language: "en", safesearch: 1, engines: "google,duckduckgo"],
+        req_options: [plug: plug]
+      )
+
+      assert {:ok, []} = Http.search("q", [])
+
+      assert_received {:params, params}
+      assert params["language"] == "en"
+      assert params["safesearch"] == "1"
+      assert params["engines"] == "google,duckduckgo"
+      # General topic / no recency → those params are omitted entirely.
+      refute Map.has_key?(params, "time_range")
+      refute Map.has_key?(params, "categories")
+    end
   end
 
   describe ":duckduckgo backend (default, HTML parse)" do

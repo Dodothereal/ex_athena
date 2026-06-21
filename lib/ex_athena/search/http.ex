@@ -14,7 +14,16 @@ defmodule ExAthena.Search.Http do
   | `:duckduckgo`  | none                | —                   | default; parses the HTML SERP — best-effort, rate-limited, no official API |
   | `:tavily`      | `api_key` (paid)    | —                   | clean LLM-oriented snippets |
   | `:brave`       | `api_key` (free tier)| —                  | privacy-focused |
-  | `:searxng`     | none                | `endpoint` required | self-hosted |
+  | `:searxng`     | none                | `endpoint` required | self-hosted; queries the JSON API |
+
+  The `:searxng` backend maps the tool's `topic`/`recency` onto SearXNG's
+  `categories`/`time_range`, returns `score` and `published` when present, and
+  takes optional instance tuning under a nested `:searxng` key:
+
+      config :ex_athena, :search,
+        backend: :searxng,
+        endpoint: "http://localhost:8888",
+        searxng: [language: "en", safesearch: 1, engines: "google,duckduckgo"]
 
   Tests inject a `plug` (or any Req option) via `config :ex_athena, :search,
   req_options: [...]` so no network is hit.
@@ -95,10 +104,20 @@ defmodule ExAthena.Search.Http do
     end
   end
 
-  defp build_request(:searxng, query, _max, _opts, cfg) do
+  defp build_request(:searxng, query, _max, opts, cfg) do
     case cfg[:endpoint] do
       url when is_binary(url) and url != "" ->
-        {:ok, [method: :get, url: url <> "/search", params: [q: query, format: "json"]]}
+        sx = cfg[:searxng] || []
+
+        params =
+          [q: query, format: "json"]
+          |> put_param(:time_range, recency_to_time_range(opts[:topic], opts[:recency]))
+          |> put_param(:categories, topic_to_category(opts[:topic]) || sx[:categories])
+          |> put_param(:language, sx[:language])
+          |> put_param(:safesearch, sx[:safesearch])
+          |> put_param(:engines, sx[:engines])
+
+        {:ok, [method: :get, url: String.trim_trailing(url, "/") <> "/search", params: params]}
 
       _ ->
         {:error, {:request_failed, "searxng backend requires :endpoint config"}}
@@ -107,6 +126,28 @@ defmodule ExAthena.Search.Http do
 
   defp build_request(other, _query, _max, _opts, _cfg),
     do: {:error, {:unsupported_backend, other}}
+
+  # ── SearXNG query helpers ──
+
+  # Append a query param only when it has a meaningful value (nil/"" omitted, so
+  # SearXNG falls back to its instance defaults). Integers like safesearch: 0 are
+  # intentionally kept.
+  defp put_param(params, _key, nil), do: params
+  defp put_param(params, _key, ""), do: params
+  defp put_param(params, key, value), do: params ++ [{key, value}]
+
+  # The web_search tool's `topic` ("general" | "news") maps to a SearXNG
+  # category; "general" is the instance default, so only "news" is sent.
+  defp topic_to_category("news"), do: "news"
+  defp topic_to_category(_), do: nil
+
+  # `recency` ("day"/"week"/"month"/"year") maps to SearXNG's `time_range`. Only
+  # the values SearXNG accepts are forwarded; anything else is dropped. News
+  # without an explicit recency defaults to the last week (fresh by nature).
+  @searxng_time_ranges ~w(day week month year)
+  defp recency_to_time_range(_topic, recency) when recency in @searxng_time_ranges, do: recency
+  defp recency_to_time_range("news", _recency), do: "week"
+  defp recency_to_time_range(_topic, _recency), do: nil
 
   defp run(backend, req_opts, timeout, cfg) do
     base = [receive_timeout: timeout, retry: false] ++ req_opts ++ (cfg[:req_options] || [])
@@ -155,7 +196,13 @@ defmodule ExAthena.Search.Http do
 
   defp normalize(:searxng, %{"results" => rs}) when is_list(rs) do
     Enum.map(rs, fn r ->
-      %Result{title: r["title"], url: r["url"], snippet: r["content"] || ""}
+      %Result{
+        title: r["title"],
+        url: r["url"],
+        snippet: r["content"] || "",
+        score: r["score"],
+        published: r["publishedDate"]
+      }
     end)
   end
 
