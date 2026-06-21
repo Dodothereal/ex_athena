@@ -994,10 +994,22 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="field-loading">fetching models…</div>
           <% else %>
             <%= if @available_models != [] do %>
+              <%!-- Type-to-search over all models (datalist autocomplete);
+                    free-typing any id is allowed too (e.g. OpenRouter). --%>
               <form phx-change="set_model">
-                <select class="field-select" name="value">
-                  <option :for={m <- @available_models} value={m} selected={@model == m}>{m}</option>
-                </select>
+                <input
+                  class="field-input"
+                  type="text"
+                  name="value"
+                  value={@model}
+                  list="model-options"
+                  autocomplete="off"
+                  placeholder="search models…"
+                  phx-debounce="150"
+                />
+                <datalist id="model-options">
+                  <option :for={m <- @available_models} value={m}></option>
+                </datalist>
               </form>
             <% else %>
               <input
