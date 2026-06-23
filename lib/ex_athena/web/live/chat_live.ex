@@ -2346,6 +2346,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       |> maybe_put_resume(provider_session_id)
       |> apply_base_url(provider)
       |> maybe_put_cwd(socket.assigns.cwd)
+      # Confine filesystem/bash/web access to the opened project by default
+      # (override with EX_ATHENA_CONFINE=0).
+      |> Keyword.put(:confine, ExAthena.confine_default?())
 
     user_detail = new_detail(:user_text, user_msg.id, %{text: text})
     messages = socket.assigns.messages ++ [user_msg]
@@ -2523,10 +2526,10 @@ defmodule ExAthena.Web.Live.ChatLive do
   # (avoids duplicating it). details_stream is newest-first, so prepending makes
   # the deliverable the last item chronologically (after the finish tool row).
   def maybe_surface_deliverable(details_stream, msg_id, stream_text, %{
-         finish_reason: :submitted,
-         deliverable: d
-       })
-       when is_binary(d) and d != "" do
+        finish_reason: :submitted,
+        deliverable: d
+      })
+      when is_binary(d) and d != "" do
     trimmed = String.trim(d)
 
     cond do

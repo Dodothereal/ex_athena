@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added — cwd confinement & sandboxing
+
+- **Opt-in workspace confinement.** `ExAthena.run/2` accepts `confine: true`
+  (confine to `cwd`) or `allowed_roots: [dir, ...]`. When set:
+  - **Filesystem tools** (Read/Write/Edit/ApplyPatch via
+    `ToolContext.resolve_path/2`, plus Glob/Grep result filtering) may only
+    touch paths inside a root — absolute escapes (`/etc/passwd`) and `..`
+    traversal are rejected with `{:error, {:path_outside_roots, _}}`.
+  - **Bash** runs under an OS sandbox (`ExAthena.Sandbox`: `sandbox-exec` on
+    macOS, `bubblewrap` on Linux) that blocks writes outside the roots (reads,
+    exec and the OS temp dir stay available). Where no sandbox helper exists it
+    runs unconfined with a logged warning — never a bypassable command-string
+    scan.
+  - **WebFetch** gains an SSRF guard (`ExAthena.Net`): private, loopback and
+    link-local hosts — `localhost`, `10/8`, `192.168/16`, `169.254.169.254`,
+    IPv6 ULA/link-local — are refused (literal IPs and resolved hostnames).
+- Default stays **unconfined** for library consumers (no breaking change). The
+  **web UI and TUI confine to the open project by default** (disable with
+  `EX_ATHENA_CONFINE=0`).
+
 ## v0.16.0 — Web search & dependency docs, deeper agent nesting + tree, OpenRouter
 
 ### Added — online research & dependency docs

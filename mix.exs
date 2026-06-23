@@ -184,6 +184,7 @@ defmodule ExAthena.MixProject do
           ExAthena.Compactors.ContextCollapse
         ],
         "Permissions + hooks": [ExAthena.Permissions, ExAthena.Permissions.Denial, ExAthena.Hooks],
+        Confinement: [ExAthena.Sandbox, ExAthena.Net],
         Agents: [
           ExAthena.Agents,
           ExAthena.Agents.Definition,

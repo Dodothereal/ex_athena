@@ -71,10 +71,18 @@ defmodule ExAthena.Chat.Tui.Runner do
 
     base
     |> maybe_put_cwd(session.cwd)
+    |> maybe_put_confine(session.cwd)
     |> maybe_put_resume(session.provider_session_id)
     |> apply_default_base_url(session.provider)
     |> apply_provider_spec_extra_headers(session.provider)
   end
+
+  # Confine to the session's working directory by default (override with
+  # EX_ATHENA_CONFINE=0). Only when a cwd is set — there's no root otherwise.
+  defp maybe_put_confine(opts, cwd) when is_binary(cwd) and cwd != "",
+    do: Keyword.put(opts, :confine, ExAthena.confine_default?())
+
+  defp maybe_put_confine(opts, _), do: opts
 
   defp maybe_put_cwd(opts, cwd) when is_binary(cwd) and cwd != "",
     do: Keyword.put(opts, :cwd, cwd)

@@ -233,6 +233,19 @@ EX_ATHENA_SEARCH_ENDPOINT=...     # required for searxng
 **Agent nesting** depth is capped by `config :ex_athena, max_agent_depth: 5`
 (orchestrate workers may delegate sub-agents up to this depth).
 
+**Workspace confinement** keeps tools inside a project. Opt in per run:
+
+```elixir
+ExAthena.run(prompt, cwd: project, confine: true)          # confine to cwd
+ExAthena.run(prompt, cwd: project, allowed_roots: [project, "/tmp"])
+```
+
+When on, filesystem tools reject paths outside the roots (`/etc/passwd`,
+`../secret`), Bash runs under an OS sandbox (`sandbox-exec`/`bubblewrap`) that
+blocks out-of-root writes, and WebFetch refuses private/loopback hosts (SSRF).
+Library calls default to **unconfined**; `mix athena.web` and `mix athena.chat`
+confine to the open project by default (`EX_ATHENA_CONFINE=0` to disable).
+
 Resolution is **tiered** — per-call opts always beat app env:
 
 ```elixir
