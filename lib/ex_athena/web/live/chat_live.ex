@@ -2080,11 +2080,12 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   # Top-level workers not linked to any todo get their own subtree below the
   # task list. (Nested agents are NOT orphans — they hang off their parent.)
-  defp orphan_agents(%{main: main, agents: agents}) do
+  @doc false
+  def orphan_agents(%{main: main, agents: agents}) do
     todo_contents = MapSet.new(main.todos, & &1.content)
 
     Enum.filter(agents, fn a ->
-      a.parent_id == :main and not (a.linked_todo && MapSet.member?(todo_contents, a.linked_todo))
+      a.parent_id == :main and !(a.linked_todo && MapSet.member?(todo_contents, a.linked_todo))
     end)
   end
 

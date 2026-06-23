@@ -1,6 +1,7 @@
 defmodule ExAthena.Web.Live.ChatLiveTest do
   use ExUnit.Case, async: true
 
+  alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Result
   alias ExAthena.Web.Live.ChatLive
 
@@ -43,6 +44,38 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
                "",
                %Result{finish_reason: :submitted, deliverable: nil}
              ) == []
+    end
+  end
+
+  describe "orphan_agents/1 — top-level workers not linked to a todo" do
+    test "treats an agent with a nil linked_todo as an orphan (no crash)" do
+      orchestrator = %{
+        main: %{todos: [%{content: "task A"}]},
+        agents: [%AgentInfo{id: "a1", parent_id: :main, linked_todo: nil}]
+      }
+
+      assert [%AgentInfo{id: "a1"}] = ChatLive.orphan_agents(orchestrator)
+    end
+
+    test "excludes agents whose linked_todo matches an existing todo" do
+      orchestrator = %{
+        main: %{todos: [%{content: "task A"}]},
+        agents: [
+          %AgentInfo{id: "linked", parent_id: :main, linked_todo: "task A"},
+          %AgentInfo{id: "stale", parent_id: :main, linked_todo: "gone"}
+        ]
+      }
+
+      assert [%AgentInfo{id: "stale"}] = ChatLive.orphan_agents(orchestrator)
+    end
+
+    test "excludes nested agents (parent_id is not :main)" do
+      orchestrator = %{
+        main: %{todos: []},
+        agents: [%AgentInfo{id: "child", parent_id: "a1", linked_todo: nil}]
+      }
+
+      assert ChatLive.orphan_agents(orchestrator) == []
     end
   end
 
