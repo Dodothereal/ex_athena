@@ -48,7 +48,7 @@ Or manually — add to `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_athena, "~> 0.16"},
+    {:ex_athena, "~> 0.17"},
     # optional — only needed for the Claude provider:
     {:claude_code, "~> 0.36"},
     # optional — only needed for the TUI (`mix athena.chat`):
