@@ -573,6 +573,7 @@ defmodule ExAthena.Loop do
 
     cwd = Keyword.get(opts, :cwd, File.cwd!())
     phase = Keyword.get(opts, :phase, :default)
+    allowed_roots = resolve_allowed_roots(opts, cwd)
     assigns = Keyword.get(opts, :assigns, %{})
     mode = opts |> Keyword.get(:mode, :react) |> Mode.resolve()
     session_id = Keyword.get(opts, :session_id) || generate_session_id()
@@ -652,6 +653,7 @@ defmodule ExAthena.Loop do
           cwd: cwd,
           phase: phase,
           session_id: session_id,
+          allowed_roots: allowed_roots,
           assigns: assigns
         )
 
@@ -852,6 +854,25 @@ defmodule ExAthena.Loop do
     16
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  # Confinement roots for this run (nil = unconfined, the default). `:allowed_roots`
+  # takes an explicit list (cwd is always added); `confine: true` is shorthand for
+  # `[cwd]`. Roots are expanded to absolute, deduped, and cwd-anchored so every
+  # confined run can at least reach its own working directory.
+  defp resolve_allowed_roots(opts, cwd) do
+    cond do
+      roots = Keyword.get(opts, :allowed_roots) ->
+        [cwd | List.wrap(roots)]
+        |> Enum.map(&Path.expand/1)
+        |> Enum.uniq()
+
+      Keyword.get(opts, :confine, false) ->
+        [Path.expand(cwd)]
+
+      true ->
+        nil
+    end
   end
 
   # Build the keyword list stored in assigns[:spawn_agent_opts] so subagents

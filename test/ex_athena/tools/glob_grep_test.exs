@@ -24,6 +24,26 @@ defmodule ExAthena.Tools.GlobGrepTest do
     assert ui.payload.count >= 3
   end
 
+  test "Glob confined to roots drops matches a `..` pattern reaches outside", %{ctx: ctx} do
+    dir = ctx.cwd
+    outside = dir <> "_outside"
+    File.mkdir_p!(outside)
+    File.write!(Path.join(outside, "secret.ex"), "x")
+    on_exit(fn -> File.rm_rf!(outside) end)
+
+    pattern = "../#{Path.basename(outside)}/*.ex"
+
+    # Unconfined: the `..` escapes and finds the sibling file.
+    assert {:ok, unconfined, _} = Glob.execute(%{"pattern" => pattern}, ctx)
+    assert unconfined =~ "secret.ex"
+
+    # Confined to [dir]: the out-of-root match is filtered away.
+    confined = ToolContext.new(cwd: dir, allowed_roots: [dir])
+
+    assert {:ok, "(no matches)", %{payload: %{count: 0}}} =
+             Glob.execute(%{"pattern" => pattern}, confined)
+  end
+
   test "Glob returns '(no matches)' on empty", %{ctx: ctx} do
     assert {:ok, "(no matches)", %{kind: :matches, payload: %{count: 0}}} =
              Glob.execute(%{"pattern" => "*.nope"}, ctx)

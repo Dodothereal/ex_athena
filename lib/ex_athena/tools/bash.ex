@@ -11,9 +11,16 @@ defmodule ExAthena.Tools.Bash do
   process and surface `{:error, :timeout}` to the loop.
 
   Runs with `cd: ctx.cwd`, `stderr_to_stdout: true`. No input redirection.
+
+  When the run is confined (`ctx.allowed_roots` is set), the command is wrapped
+  in an OS sandbox (`ExAthena.Sandbox`) that blocks writes outside the roots. If
+  no sandbox helper is available the command runs unconfined with a logged
+  warning — never a fake command-string scan.
   """
 
   @behaviour ExAthena.Tool
+
+  require Logger
 
   @default_timeout 120_000
   @max_timeout 600_000
@@ -83,33 +90,55 @@ defmodule ExAthena.Tools.Bash do
   end
 
   @impl true
-  def execute(%{"command" => command} = args, %{cwd: cwd}) when is_binary(command) do
+  def execute(%{"command" => command} = args, ctx) when is_binary(command) do
     timeout =
       case Map.get(args, "timeout_ms") do
         t when is_integer(t) and t > 0 -> min(t, @max_timeout)
         _ -> @default_timeout
       end
 
-    run(command, cwd, timeout)
+    run(command, ctx.cwd, timeout, Map.get(ctx, :allowed_roots))
   end
 
   def execute(_, _), do: {:error, :missing_command}
 
-  defp run(command, cwd, timeout) do
-    sh = System.find_executable("sh") || "/bin/sh"
+  # Unconfined: bare `sh -c`. Confined: wrap in an OS sandbox restricted to the
+  # roots; if no sandbox helper exists, warn and run unconfined rather than fake
+  # confinement with a bypassable command-string scan.
+  defp run(command, cwd, timeout, roots) do
+    {exe, args} = sandboxed_argv(command, cwd, roots)
 
     port =
-      Port.open({:spawn_executable, sh}, [
+      Port.open({:spawn_executable, exe}, [
         :binary,
         :exit_status,
         :stderr_to_stdout,
-        args: ["-c", command],
+        args: args,
         cd: cwd
       ])
 
     started_at = System.monotonic_time(:millisecond)
     deadline = started_at + timeout
     collect(port, [], deadline, command, started_at)
+  end
+
+  defp sandboxed_argv(command, _cwd, nil) do
+    {System.find_executable("sh") || "/bin/sh", ["-c", command]}
+  end
+
+  defp sandboxed_argv(command, cwd, roots) do
+    case ExAthena.Sandbox.wrap(command, roots, cwd) do
+      {:ok, argv} ->
+        argv
+
+      {:unavailable, argv} ->
+        Logger.warning(
+          "[ExAthena.Bash] confinement requested but no OS sandbox " <>
+            "(sandbox-exec/bwrap) is available — running the command UNCONFINED"
+        )
+
+        argv
+    end
   end
 
   defp collect(port, acc, deadline, command, started_at) do

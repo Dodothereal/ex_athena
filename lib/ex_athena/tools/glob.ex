@@ -47,7 +47,8 @@ defmodule ExAthena.Tools.Glob do
   def parallel_safe?, do: true
 
   @impl true
-  def execute(%{"pattern" => pattern} = args, %{cwd: cwd}) when is_binary(pattern) do
+  def execute(%{"pattern" => pattern} = args, ctx) when is_binary(pattern) do
+    cwd = ctx.cwd
     max = clamp(Map.get(args, "max_results", @default_max))
     include_artifacts = Map.get(args, "include_artifacts", false) == true
 
@@ -55,6 +56,7 @@ defmodule ExAthena.Tools.Glob do
       cwd
       |> Path.join(pattern)
       |> Path.wildcard()
+      |> confine(ctx.allowed_roots)
       |> Enum.map(&Path.relative_to(&1, cwd))
       |> filter_artifacts(include_artifacts)
       |> Enum.take(max)
@@ -75,6 +77,12 @@ defmodule ExAthena.Tools.Glob do
 
   defp clamp(n) when is_integer(n) and n > 0, do: min(n, @hard_cap)
   defp clamp(_), do: @default_max
+
+  # When confined, drop matches that a `..` pattern resolved outside the roots.
+  defp confine(paths, nil), do: paths
+
+  defp confine(paths, roots) when is_list(roots),
+    do: Enum.filter(paths, &ExAthena.ToolContext.within_roots?(&1, roots))
 
   defp filter_artifacts(paths, true), do: paths
 

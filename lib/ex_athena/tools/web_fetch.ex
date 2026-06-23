@@ -64,7 +64,7 @@ defmodule ExAthena.Tools.WebFetch do
   def execute(%{"url" => url} = args, ctx) when is_binary(url) do
     timeout = Map.get(args, "timeout_ms", @default_timeout)
 
-    with {:ok, uri} <- validate(url),
+    with {:ok, uri} <- validate(url, ctx),
          {:ok, body, status} <- fetch(uri, timeout) do
       {body, truncated?} = handle_body(body, args, ctx)
 
@@ -146,13 +146,23 @@ defmodule ExAthena.Tools.WebFetch do
     _ -> nil
   end
 
-  defp validate(url) do
+  defp validate(url, ctx) do
     uri = URI.parse(url)
 
     cond do
-      uri.scheme not in ["http", "https"] -> {:error, {:invalid_scheme, uri.scheme}}
-      is_nil(uri.host) or uri.host == "" -> {:error, :missing_host}
-      true -> {:ok, uri}
+      uri.scheme not in ["http", "https"] ->
+        {:error, {:invalid_scheme, uri.scheme}}
+
+      is_nil(uri.host) or uri.host == "" ->
+        {:error, :missing_host}
+
+      # SSRF guard, only when the run is confined: block private/loopback/
+      # link-local hosts (localhost, internal services, cloud metadata).
+      ExAthena.ToolContext.confined?(ctx) and ExAthena.Net.blocked_host?(uri.host) ->
+        {:error, {:blocked_host, uri.host}}
+
+      true ->
+        {:ok, uri}
     end
   end
 

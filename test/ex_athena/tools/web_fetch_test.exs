@@ -60,4 +60,23 @@ defmodule ExAthena.Tools.WebFetchTest do
       assert body =~ "summarized"
     end
   end
+
+  describe "SSRF guard (confined runs only, no network)" do
+    test "a confined run blocks a loopback/private host before fetching" do
+      ctx = ToolContext.new(cwd: ".", allowed_roots: ["."])
+
+      assert {:error, {:blocked_host, "localhost"}} =
+               WebFetch.execute(%{"url" => "http://localhost:5432/"}, ctx)
+
+      assert {:error, {:blocked_host, "169.254.169.254"}} =
+               WebFetch.execute(%{"url" => "http://169.254.169.254/latest/meta-data/"}, ctx)
+    end
+
+    test "non-http schemes are rejected regardless of confinement" do
+      ctx = ToolContext.new(cwd: ".")
+
+      assert {:error, {:invalid_scheme, "file"}} =
+               WebFetch.execute(%{"url" => "file:///etc/passwd"}, ctx)
+    end
+  end
 end

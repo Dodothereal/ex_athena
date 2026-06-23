@@ -51,13 +51,15 @@ defmodule ExAthena.Tools.Grep do
   def parallel_safe?, do: true
 
   @impl true
-  def execute(%{"pattern" => pattern} = args, %{cwd: cwd}) when is_binary(pattern) do
+  def execute(%{"pattern" => pattern} = args, ctx) when is_binary(pattern) do
+    cwd = ctx.cwd
     max = clamp(Map.get(args, "max_results", @default_max))
     glob = Map.get(args, "path_glob")
     include_artifacts = Map.get(args, "include_artifacts", false) == true
 
     case System.find_executable("rg") do
-      nil -> elixir_grep(pattern, glob, cwd, max, include_artifacts)
+      # ripgrep runs `cd: cwd` over `.`, so it cannot escape the working tree.
+      nil -> elixir_grep(pattern, glob, cwd, max, include_artifacts, ctx.allowed_roots)
       rg -> rg_grep(rg, pattern, glob, cwd, max, include_artifacts)
     end
   end
@@ -114,13 +116,14 @@ defmodule ExAthena.Tools.Grep do
     |> Enum.concat(args)
   end
 
-  defp elixir_grep(pattern, glob, cwd, max, include_artifacts) do
+  defp elixir_grep(pattern, glob, cwd, max, include_artifacts, roots) do
     with {:ok, regex} <- Regex.compile(pattern) do
       files =
         cwd
         |> Path.join(glob || "**/*")
         |> Path.wildcard()
         |> Enum.filter(&File.regular?/1)
+        |> confine(roots)
         |> Enum.reject(&artifact_path?(&1, cwd, include_artifacts))
 
       matches =
@@ -138,6 +141,12 @@ defmodule ExAthena.Tools.Grep do
       {:error, {msg, _offset}} -> {:error, {:invalid_regex, to_string(msg)}}
     end
   end
+
+  # When confined, drop files a `..` glob resolved outside the roots.
+  defp confine(paths, nil), do: paths
+
+  defp confine(paths, roots) when is_list(roots),
+    do: Enum.filter(paths, &ExAthena.ToolContext.within_roots?(&1, roots))
 
   defp artifact_path?(_path, _cwd, true), do: false
 

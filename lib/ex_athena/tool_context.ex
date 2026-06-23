@@ -17,6 +17,7 @@ defmodule ExAthena.ToolContext do
             phase: :default,
             session_id: nil,
             tool_call_id: nil,
+            allowed_roots: nil,
             assigns: %{}
 
   @type phase :: :plan | :default | :accept_edits | :trusted | :bypass_permissions
@@ -26,6 +27,11 @@ defmodule ExAthena.ToolContext do
           phase: phase(),
           session_id: String.t() | nil,
           tool_call_id: String.t() | nil,
+          # nil = unconfined (paths/bash/web are not boundary-checked). A list of
+          # absolute directories = confined: filesystem tools may only touch
+          # paths inside one of them, web tools refuse private/loopback hosts,
+          # and bash runs under an OS sandbox restricted to these roots.
+          allowed_roots: [Path.t()] | nil,
           assigns: map()
         }
 
@@ -35,23 +41,57 @@ defmodule ExAthena.ToolContext do
     struct!(__MODULE__, opts)
   end
 
-  @doc "Resolve a user-supplied relative path against `ctx.cwd`, rejecting traversal."
+  @doc "Whether this context confines tools to `allowed_roots`."
+  @spec confined?(t()) :: boolean()
+  def confined?(%__MODULE__{allowed_roots: roots}), do: is_list(roots)
+
+  @doc """
+  Whether an absolute `path` lies within one of `roots`. Compares on path
+  segments (not string prefixes) so `/foo` never matches `/foobar`. A path equal
+  to a root counts as inside it.
+  """
+  @spec within_roots?(Path.t(), [Path.t()]) :: boolean()
+  def within_roots?(path, roots) when is_list(roots) do
+    path_parts = path |> Path.expand() |> Path.split()
+    Enum.any?(roots, fn root -> List.starts_with?(path_parts, Path.split(root)) end)
+  end
+
+  @doc """
+  Resolve a user-supplied `path` against `ctx.cwd`.
+
+  Unconfined (`allowed_roots: nil`, the default) keeps the historical behaviour:
+  relative paths are expanded against `cwd`, `..` traversal is rejected, and
+  absolute paths pass through untouched.
+
+  Confined (`allowed_roots` is a list) expands the path to an absolute one
+  (handling `..`/`~` lexically) and requires the result to fall inside one of
+  the roots, returning `{:error, {:path_outside_roots, abs}}` otherwise — so
+  neither `/etc/passwd` nor `../../secret` can escape.
+  """
   @spec resolve_path(t(), String.t()) :: {:ok, Path.t()} | {:error, term()}
-  def resolve_path(%__MODULE__{cwd: cwd}, path) when is_binary(path) do
+  def resolve_path(%__MODULE__{} = ctx, path) when is_binary(path) do
     cond do
-      String.contains?(path, "\0") ->
-        {:error, :null_byte_in_path}
-
-      Path.type(path) == :absolute ->
-        {:ok, path}
-
-      String.contains?(path, "..") ->
-        {:error, :path_traversal_rejected}
-
-      true ->
-        {:ok, Path.expand(path, cwd)}
+      String.contains?(path, "\0") -> {:error, :null_byte_in_path}
+      is_list(ctx.allowed_roots) -> resolve_confined(ctx.cwd, ctx.allowed_roots, path)
+      true -> resolve_unconfined(ctx.cwd, path)
     end
   end
 
   def resolve_path(_, _), do: {:error, :invalid_path}
+
+  defp resolve_unconfined(cwd, path) do
+    cond do
+      Path.type(path) == :absolute -> {:ok, path}
+      String.contains?(path, "..") -> {:error, :path_traversal_rejected}
+      true -> {:ok, Path.expand(path, cwd)}
+    end
+  end
+
+  defp resolve_confined(cwd, roots, path) do
+    abs = if Path.type(path) == :absolute, do: Path.expand(path), else: Path.expand(path, cwd)
+
+    if within_roots?(abs, roots),
+      do: {:ok, abs},
+      else: {:error, {:path_outside_roots, abs}}
+  end
 end

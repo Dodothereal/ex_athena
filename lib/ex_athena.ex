@@ -178,6 +178,19 @@ defmodule ExAthena do
   end
 
   @doc """
+  Whether first-party hosts (the web UI and TUI) should confine a run to its
+  working directory by default. On unless `EX_ATHENA_CONFINE` is `0`/`false`/`no`.
+
+  Library consumers calling `run/2` directly are unaffected — they opt in with
+  `confine: true` or `allowed_roots: [...]`.
+  """
+  @spec confine_default?() :: boolean()
+  def confine_default? do
+    value = "EX_ATHENA_CONFINE" |> System.get_env("1") |> String.downcase()
+    value not in ["0", "false", "no"]
+  end
+
+  @doc """
   One-shot structured extraction. Returns a validated JSON map.
 
   Accepts `:queue` and `:queue_timeout` options (see `query/2`).
