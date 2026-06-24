@@ -533,6 +533,8 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert_receive {:exec_request, request}
     assert request.system_prompt =~ "spawn_agent"
     assert request.system_prompt =~ "todo_write"
+    # implementation steps must be routed to the write-capable worker
+    assert request.system_prompt =~ "implementer"
   end
 
   test "the orchestrator keeps only coordination + read-only tools (no bash/write/edit)", %{
