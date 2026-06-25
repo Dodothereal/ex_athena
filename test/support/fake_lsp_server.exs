@@ -307,6 +307,89 @@ defmodule FakeLspServer do
     end
   end
 
+  # workspace/symbol — returns two deterministic SymbolInformation entries,
+  # echoing the query into the first symbol's name.
+  defp handle(%{"method" => "workspace/symbol", "id" => id, "params" => params}, port, state) do
+    if state.fail_next_request do
+      error_reply(port, id, -32601, "MethodNotFound")
+      %{state | fail_next_request: false}
+    else
+      query = Map.get(params, "query", "")
+
+      reply(port, id, [
+        %{
+          "name" => query <> "_fun",
+          "kind" => 12,
+          "location" => %{
+            "uri" => "file:///proj/lib/mod.ex",
+            "range" => %{
+              "start" => %{"line" => 5, "character" => 2},
+              "end" => %{"line" => 5, "character" => 10}
+            }
+          }
+        },
+        %{
+          "name" => "MyMod",
+          "kind" => 2,
+          "location" => %{
+            "uri" => "file:///proj/lib/my_mod.ex",
+            "range" => %{
+              "start" => %{"line" => 0, "character" => 0},
+              "end" => %{"line" => 0, "character" => 5}
+            }
+          }
+        }
+      ])
+
+      state
+    end
+  end
+
+  # textDocument/documentSymbol — returns a hierarchical DocumentSymbol tree:
+  # a module with one nested function.
+  defp handle(
+         %{"method" => "textDocument/documentSymbol", "id" => id, "params" => _params},
+         port,
+         state
+       ) do
+    if state.fail_next_request do
+      error_reply(port, id, -32601, "MethodNotFound")
+      %{state | fail_next_request: false}
+    else
+      reply(port, id, [
+        %{
+          "name" => "Test",
+          "kind" => 2,
+          "range" => %{
+            "start" => %{"line" => 0, "character" => 0},
+            "end" => %{"line" => 10, "character" => 3}
+          },
+          "selectionRange" => %{
+            "start" => %{"line" => 0, "character" => 10},
+            "end" => %{"line" => 0, "character" => 14}
+          },
+          "children" => [
+            %{
+              "name" => "hello/1",
+              "kind" => 12,
+              "range" => %{
+                "start" => %{"line" => 2, "character" => 2},
+                "end" => %{"line" => 4, "character" => 5}
+              },
+              "selectionRange" => %{
+                "start" => %{"line" => 2, "character" => 6},
+                "end" => %{"line" => 2, "character" => 11}
+              },
+              "children" => []
+            }
+          ]
+        }
+      ])
+
+      state
+    end
+  end
+
   # Catch-all for unknown requests with id — optionally fail, otherwise MethodNotFound.
   defp handle(%{"method" => _method, "id" => id}, port, state) do
     error_reply(port, id, -32601, "MethodNotFound")

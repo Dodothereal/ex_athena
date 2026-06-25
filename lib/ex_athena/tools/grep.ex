@@ -27,7 +27,7 @@ defmodule ExAthena.Tools.Grep do
   @impl true
   def description,
     do:
-      "Search file contents with a regex under the working directory. Optionally narrow by glob."
+      "Search file contents with a regex under the working directory. Optionally narrow by glob. For Elixir symbol/definition/reference lookups prefer the `lsp` tool (workspace_symbol/definition/references) — it is AST-aware; use grep for plain-text or cross-language search."
 
   @impl true
   def schema do

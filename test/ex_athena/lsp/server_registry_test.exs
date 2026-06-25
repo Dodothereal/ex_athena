@@ -71,10 +71,10 @@ defmodule ExAthena.Lsp.ServerRegistryTest do
       assert {:error, :unsupported} = ServerRegistry.spawn_spec(:elixir, finder)
     end
 
-    test "returns spec when binary is present" do
-      finder = fn "elixir-ls" -> "/usr/local/bin/elixir-ls" end
+    test "returns spec for expert (default elixir server) with --stdio arg" do
+      finder = fn "expert" -> "/usr/local/bin/expert" end
 
-      assert {:ok, %{binary: "/usr/local/bin/elixir-ls", args: []}} =
+      assert {:ok, %{binary: "/usr/local/bin/expert", args: ["--stdio"]}} =
                ServerRegistry.spawn_spec(:elixir, finder)
     end
 

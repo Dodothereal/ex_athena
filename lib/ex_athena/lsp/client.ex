@@ -157,9 +157,13 @@ defmodule ExAthena.Lsp.Client do
       "rootPath" => state.root,
       "capabilities" => %{
         "textDocument" => %{
-          "publishDiagnostics" => %{"relatedInformation" => true}
+          "publishDiagnostics" => %{"relatedInformation" => true},
+          "documentSymbol" => %{"hierarchicalDocumentSymbolSupport" => true}
         },
-        "workspace" => %{"workspaceFolders" => true}
+        "workspace" => %{
+          "workspaceFolders" => true,
+          "symbol" => %{}
+        }
       },
       "clientInfo" => %{"name" => "ex_athena", "version" => "0.5.0"},
       "initializationOptions" => %{}

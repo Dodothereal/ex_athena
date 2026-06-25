@@ -123,6 +123,10 @@ defmodule ExAthena.Modes.Orchestrate do
   ## Worker contract
   You are a sub-agent responsible for ONE step of a larger task.
   - Maintain your own todo list with todo_write as you work.
+  - For Elixir code, prefer the `lsp` tool over `grep`: `workspace_symbol`
+    finds a module/function/type by name project-wide, `definition`/
+    `references` trace it, and `document_symbol` outlines a file — all
+    AST-accurate. Use `grep` for plain-text or cross-language search.
   - Record NEGATIVE findings explicitly ("X does not exist", "no blog
     directory") — never re-search for something already established absent.
     If a search (glob/grep) returns no matches TWICE for the same target,

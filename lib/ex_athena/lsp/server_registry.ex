@@ -38,8 +38,19 @@ defmodule ExAthena.Lsp.ServerRegistry do
   }
 
   # Default server definitions: {executable_name, default_args}
+  #
+  # Elixir defaults to Expert (elixir-lang/expert), the official next-gen
+  # Elixir language server, which requires the `--stdio` flag for stdio mode.
+  # Install it so an `expert` binary is on PATH (e.g. `just install` →
+  # ~/.local/bin/expert), or point at a Burrito artifact via app config:
+  #
+  #     config :ex_athena, :lsp_servers, %{
+  #       elixir: %{binary: "/path/to/expert_<os>_<arch>", args: ["--stdio"]}
+  #     }
+  #
+  # To stay on ElixirLS instead: `elixir: %{binary: "elixir-ls", args: []}`.
   @default_servers %{
-    elixir: {"elixir-ls", []},
+    elixir: {"expert", ["--stdio"]},
     python: {"pyright-langserver", ["--stdio"]},
     rust: {"rust-analyzer", []},
     go: {"gopls", ["serve"]},

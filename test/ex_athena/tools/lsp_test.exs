@@ -159,6 +159,54 @@ defmodule ExAthena.Tools.LspTest do
     end
   end
 
+  describe "action: workspace_symbol" do
+    test "finds symbols by name across the project (no file needed)", %{dir: dir} do
+      assert {:ok, result, ui} =
+               Lsp.execute(%{"action" => "workspace_symbol", "query" => "hello"}, ctx(dir))
+
+      # Fake server echoes the query into a function symbol + a module symbol
+      assert result =~ "symbol(s)"
+      assert result =~ "hello_fun"
+      assert result =~ "(function)"
+      assert ui.payload.action == :workspace_symbol
+      assert length(ui.payload.results) == 2
+    end
+
+    test "missing query returns {:error, :missing_query}", %{dir: dir} do
+      assert {:error, :missing_query} =
+               Lsp.execute(%{"action" => "workspace_symbol"}, ctx(dir))
+    end
+
+    test "unknown language returns {:error, :unsupported_language}", %{dir: dir} do
+      assert {:error, :unsupported_language} =
+               Lsp.execute(
+                 %{"action" => "workspace_symbol", "query" => "x", "language" => "cobol"},
+                 ctx(dir)
+               )
+    end
+  end
+
+  describe "action: document_symbol" do
+    test "outlines a file's symbols (hierarchical)", %{dir: dir} do
+      path = write_elixir_file(dir)
+
+      assert {:ok, result, ui} =
+               Lsp.execute(%{"action" => "document_symbol", "file" => path}, ctx(dir))
+
+      assert result =~ "symbol(s)"
+      assert result =~ "Test (module)"
+      assert result =~ "hello/1 (function)"
+      assert ui.payload.action == :document_symbol
+      # one top-level DocumentSymbol (the module), with a nested function
+      assert length(ui.payload.results) == 1
+    end
+
+    test "missing file returns {:error, :missing_file}", %{dir: dir} do
+      assert {:error, :missing_file} =
+               Lsp.execute(%{"action" => "document_symbol"}, ctx(dir))
+    end
+  end
+
   describe "error: invalid / missing arguments" do
     test "invalid action string returns {:error, :invalid_action}", %{dir: dir} do
       path = write_elixir_file(dir)
