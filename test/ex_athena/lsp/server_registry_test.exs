@@ -72,7 +72,30 @@ defmodule ExAthena.Lsp.ServerRegistryTest do
     end
 
     test "returns spec for expert (default elixir server) with --stdio arg" do
-      finder = fn "expert" -> "/usr/local/bin/expert" end
+      finder = fn
+        "expert" -> "/usr/local/bin/expert"
+        _ -> nil
+      end
+
+      assert {:ok, %{binary: "/usr/local/bin/expert", args: ["--stdio"]}} =
+               ServerRegistry.spawn_spec(:elixir, finder)
+    end
+
+    test "elixir falls back to elixir-ls when expert is not on PATH" do
+      finder = fn
+        "expert" -> nil
+        "elixir-ls" -> "/usr/local/bin/elixir-ls"
+      end
+
+      assert {:ok, %{binary: "/usr/local/bin/elixir-ls", args: []}} =
+               ServerRegistry.spawn_spec(:elixir, finder)
+    end
+
+    test "elixir prefers expert over elixir-ls when both are present" do
+      finder = fn
+        "expert" -> "/usr/local/bin/expert"
+        "elixir-ls" -> "/usr/local/bin/elixir-ls"
+      end
 
       assert {:ok, %{binary: "/usr/local/bin/expert", args: ["--stdio"]}} =
                ServerRegistry.spawn_spec(:elixir, finder)

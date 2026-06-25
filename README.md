@@ -230,6 +230,39 @@ EX_ATHENA_SEARCH_API_KEY=...      # required for brave/tavily
 EX_ATHENA_SEARCH_ENDPOINT=...     # required for searxng
 ```
 
+**Code intelligence** for the `lsp` tool gives AST-accurate navigation —
+preferred over `grep` for Elixir. Its actions: `workspace_symbol` (find a
+module/function/type by name project-wide), `document_symbol` (outline a file),
+`definition`, `references`, `hover`, and `diagnostics`.
+
+For Elixir it launches **Expert** (the official next-gen Elixir language
+server) if an `expert` binary is on `PATH`, and **falls back to ElixirLS**
+(`elixir-ls`) otherwise. Install Expert (Apple Silicon shown; use
+`expert_darwin_amd64` on Intel, `expert_linux_amd64` on Linux):
+
+```bash
+curl -L -o expert \
+  https://github.com/elixir-lang/expert/releases/download/v0.1.5/expert_darwin_arm64
+chmod +x expert
+mkdir -p ~/.local/bin && mv expert ~/.local/bin/expert   # ensure ~/.local/bin is on PATH
+xattr -d com.apple.quarantine ~/.local/bin/expert        # macOS: clear Gatekeeper quarantine
+expert --help                                            # verify
+```
+
+The release binary is self-contained (bundles its own Erlang/Elixir runtime).
+Override the server per language — this replaces the default, e.g. to pin
+ElixirLS or point at a Burrito artifact:
+
+```elixir
+config :ex_athena, :lsp_servers, %{
+  elixir: %{binary: "elixir-ls", args: []}
+  # elixir: %{binary: "/path/to/expert_darwin_arm64", args: ["--stdio"]}
+}
+```
+
+Servers for other languages (`pyright-langserver`, `rust-analyzer`, `gopls`,
+`typescript-language-server`) are auto-detected on `PATH` when present.
+
 **Agent nesting** depth is capped by `config :ex_athena, max_agent_depth: 5`
 (orchestrate workers may delegate sub-agents up to this depth).
 

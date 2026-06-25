@@ -72,6 +72,13 @@ position; the model then calls `references`/`definition` precisely.
    `workspace.symbol` and `textDocument.documentSymbol` in the `initialize`
    handshake (correctness; servers largely respond regardless).
 
+   **`lib/ex_athena/lsp/server_registry.ex`** — the Elixir default becomes a
+   candidate list `[{"expert", ["--stdio"]}, {"elixir-ls", []}]`: prefer
+   **Expert** (official next-gen server; needs `--stdio`), **fall back to
+   ElixirLS** when `expert` is not on `PATH`. `spawn_spec/2` resolves the first
+   candidate whose binary is found; an app-env override replaces the list
+   entirely. Install/override notes live in the README's Configuration section.
+
 3. **Wiring — make read-only workers able to use it and prefer it:**
    - `priv/agents/explore.md` and `priv/agents/plan.md`: add `lsp` to their
      `tools:` lists (today neither has it; `general`/`implementer` already do).

@@ -37,20 +37,23 @@ defmodule ExAthena.Lsp.ServerRegistry do
     ".cjs" => :typescript
   }
 
-  # Default server definitions: {executable_name, default_args}
+  # Default server definitions: a `{executable_name, default_args}` tuple, or a
+  # LIST of such tuples tried in order (first whose binary is on PATH wins).
   #
-  # Elixir defaults to Expert (elixir-lang/expert), the official next-gen
-  # Elixir language server, which requires the `--stdio` flag for stdio mode.
-  # Install it so an `expert` binary is on PATH (e.g. `just install` →
+  # Elixir prefers Expert (elixir-lang/expert), the official next-gen Elixir
+  # language server, which requires the `--stdio` flag for stdio mode, and
+  # falls back to ElixirLS (`elixir-ls`, no args) when `expert` is not on PATH.
+  # Install Expert so an `expert` binary is on PATH (e.g. `just install` →
   # ~/.local/bin/expert), or point at a Burrito artifact via app config:
   #
   #     config :ex_athena, :lsp_servers, %{
   #       elixir: %{binary: "/path/to/expert_<os>_<arch>", args: ["--stdio"]}
   #     }
   #
-  # To stay on ElixirLS instead: `elixir: %{binary: "elixir-ls", args: []}`.
+  # An app-env override (above) replaces the candidate list entirely — set it
+  # to `%{binary: "elixir-ls", args: []}` to pin ElixirLS.
   @default_servers %{
-    elixir: {"expert", ["--stdio"]},
+    elixir: [{"expert", ["--stdio"]}, {"elixir-ls", []}],
     python: {"pyright-langserver", ["--stdio"]},
     rust: {"rust-analyzer", []},
     go: {"gopls", ["serve"]},
@@ -84,15 +87,24 @@ defmodule ExAthena.Lsp.ServerRegistry do
         {:ok, spec}
 
       Map.has_key?(@default_servers, language) ->
-        {executable, args} = Map.fetch!(@default_servers, language)
-
-        case find_executable.(executable) do
-          nil -> {:error, :unsupported}
-          path -> {:ok, %{binary: path, args: args}}
-        end
+        @default_servers
+        |> Map.fetch!(language)
+        |> List.wrap()
+        |> resolve_candidates(find_executable)
 
       true ->
         {:error, :unsupported}
     end
+  end
+
+  # Try each `{executable, args}` candidate in order; the first whose binary
+  # resolves on PATH wins. Returns `{:error, :unsupported}` if none resolve.
+  defp resolve_candidates(candidates, find_executable) do
+    Enum.find_value(candidates, {:error, :unsupported}, fn {executable, args} ->
+      case find_executable.(executable) do
+        nil -> false
+        path -> {:ok, %{binary: path, args: args}}
+      end
+    end)
   end
 end
