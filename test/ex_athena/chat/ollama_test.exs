@@ -91,4 +91,38 @@ defmodule ExAthena.Chat.OllamaTest do
       assert {:ok, ["x"]} = Ollama.list_models([])
     end
   end
+
+  describe "list_cloud_models/1" do
+    test "appends -cloud to each catalog name so it is invocable via the local daemon",
+         %{bypass: bypass, base_url: base_url} do
+      Bypass.expect_once(bypass, "GET", "/api/tags", fn conn ->
+        body =
+          Jason.encode!(%{
+            "models" => [%{"name" => "glm-5.2"}, %{"name" => "gpt-oss:120b"}]
+          })
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert {:ok, models} = Ollama.list_cloud_models(cloud_base_url: base_url)
+      assert "glm-5.2-cloud" in models
+      assert "gpt-oss:120b-cloud" in models
+    end
+
+    test "does not double-suffix a catalog name that already ends in -cloud",
+         %{bypass: bypass, base_url: base_url} do
+      Bypass.expect_once(bypass, "GET", "/api/tags", fn conn ->
+        Plug.Conn.resp(conn, 200, Jason.encode!(%{"models" => [%{"name" => "foo-cloud"}]}))
+      end)
+
+      assert {:ok, ["foo-cloud"]} = Ollama.list_cloud_models(cloud_base_url: base_url)
+    end
+
+    test "returns {:error, :ollama_unreachable} when the cloud catalog is unreachable" do
+      assert {:error, :ollama_unreachable} =
+               Ollama.list_cloud_models(cloud_base_url: "http://127.0.0.1:1")
+    end
+  end
 end

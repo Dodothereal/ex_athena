@@ -79,6 +79,61 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
     end
   end
 
+  describe "model picker selection (handle_event)" do
+    defp picker_socket(overrides) do
+      assigns =
+        Map.merge(
+          %{__changed__: %{}, model: "bge-m3:latest", model_query: "", model_open: true},
+          Map.new(overrides)
+        )
+
+      %Phoenix.LiveView.Socket{assigns: assigns}
+    end
+
+    test "closing the dropdown commits a free-typed model name" do
+      socket = picker_socket(model_query: "glm-5.2-cloud")
+
+      assert {:noreply, socket} = ChatLive.handle_event("close_models", %{}, socket)
+      assert socket.assigns.model == "glm-5.2-cloud"
+      assert socket.assigns.model_query == ""
+      assert socket.assigns.model_open == false
+    end
+
+    test "closing with a blank query keeps the current model" do
+      socket = picker_socket(model_query: "   ")
+
+      assert {:noreply, socket} = ChatLive.handle_event("close_models", %{}, socket)
+      assert socket.assigns.model == "bge-m3:latest"
+      assert socket.assigns.model_open == false
+    end
+
+    test "Enter/submit commits the typed value" do
+      socket = picker_socket(model_query: "gpt-oss:120b-cloud")
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("set_model", %{"value" => "gpt-oss:120b-cloud"}, socket)
+
+      assert socket.assigns.model == "gpt-oss:120b-cloud"
+      assert socket.assigns.model_open == false
+    end
+
+    test "clicking an option commits that model" do
+      socket = picker_socket(model_query: "gl")
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("set_model", %{"model" => "glm-5.2-cloud"}, socket)
+
+      assert socket.assigns.model == "glm-5.2-cloud"
+    end
+
+    test "set_model ignores a blank value (never wipes the current model)" do
+      socket = picker_socket(model: "llama3.1")
+
+      assert {:noreply, socket} = ChatLive.handle_event("set_model", %{"value" => "  "}, socket)
+      assert socket.assigns.model == "llama3.1"
+    end
+  end
+
   describe "filter_models/2 — model search box" do
     @models [
       "mlx-community/Qwen3.5-9B-4bit",

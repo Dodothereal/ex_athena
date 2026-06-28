@@ -428,17 +428,10 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("set_model", params, socket) do
-    # Combobox options send "model" (phx-value-model); the free-type fallback
-    # input's phx-blur sends "value". A blank value is ignored so the current
-    # model is never wiped to "".
-    case params["model"] || params["value"] do
-      model when is_binary(model) and model != "" ->
-        # Closing the dropdown; the closed box shows the chosen model as text.
-        {:noreply, assign(socket, model: model, model_query: "", model_open: false)}
-
-      _ ->
-        {:noreply, assign(socket, model_open: false)}
-    end
+    # Combobox options send "model" (phx-value-model); the free-type input's
+    # phx-blur and the form's phx-submit (Enter) send "value". A blank value is
+    # ignored so the current model is never wiped to "".
+    {:noreply, commit_model(socket, params["model"] || params["value"])}
   end
 
   # Focusing the box turns it into a search field: open the list and clear the
@@ -447,8 +440,11 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, model_open: true, model_query: "")}
   end
 
+  # Closing commits the typed text (not just closes) so a free-typed model name
+  # — e.g. an Ollama cloud model like "glm-5.2-cloud" that isn't in the list —
+  # actually takes effect. A blank query just closes, preserving the model.
   def handle_event("close_models", _params, socket) do
-    {:noreply, assign(socket, model_open: false)}
+    {:noreply, commit_model(socket, socket.assigns.model_query)}
   end
 
   def handle_event("filter_models", %{"value" => query}, socket) do
@@ -1103,7 +1099,7 @@ defmodule ExAthena.Web.Live.ChatLive do
                     server-set value would leave the box looking empty. --%>
               <div class="model-search" phx-click-away="close_models">
                 <%= if @model_open do %>
-                  <form phx-change="filter_models" autocomplete="off">
+                  <form phx-change="filter_models" phx-submit="set_model" autocomplete="off">
                     <input
                       class="field-input"
                       type="text"
@@ -2835,10 +2831,22 @@ defmodule ExAthena.Web.Live.ChatLive do
     base_url = Application.get_env(:ex_athena, :ollama, [])[:base_url]
     opts = if base_url, do: [base_url: base_url], else: []
 
-    case Ollama.list_models(opts) do
-      {:ok, models} -> models
-      _ -> []
-    end
+    local =
+      case Ollama.list_models(opts) do
+        {:ok, models} -> models
+        _ -> []
+      end
+
+    # Also surface the Ollama cloud catalog (names suffixed with `-cloud`).
+    # Listing needs no auth; running them needs `ollama signin`. Fail-soft so a
+    # missing network / offline daemon still shows the local models.
+    cloud =
+      case Ollama.list_cloud_models() do
+        {:ok, models} -> models
+        _ -> []
+      end
+
+    (local ++ cloud) |> Enum.uniq() |> Enum.sort()
   end
 
   defp fetch_models("exo") do
@@ -2870,6 +2878,15 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp fetch_models(_), do: []
+
+  # Commit a chosen/typed model, closing the dropdown. Blank input is ignored so
+  # the current model is never wiped to "".
+  defp commit_model(socket, value) do
+    case value |> to_string() |> String.trim() do
+      "" -> assign(socket, model_open: false)
+      model -> assign(socket, model: model, model_query: "", model_open: false)
+    end
+  end
 
   defp default_provider do
     Application.get_env(:ex_athena, :default_provider, :llamacpp) |> to_string()
