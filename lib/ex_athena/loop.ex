@@ -33,6 +33,10 @@ defmodule ExAthena.Loop do
       Defaults to `:react`.
     * `:cwd`, `:phase`, `:assigns` — threaded into every tool's
       `ExAthena.ToolContext`.
+    * `:allow_local_hosts` (default `false`) — let `web_fetch` reach
+      loopback/private/link-local hosts. By default those are refused (SSRF
+      guard) even when the run is unconfined; see
+      `ExAthena.Tools.WebFetch`.
     * `:allowed_tools`, `:disallowed_tools`, `:can_use_tool` — see
       `ExAthena.Permissions`.
     * `:hooks` — see `ExAthena.Hooks`.
@@ -638,6 +642,10 @@ defmodule ExAthena.Loop do
           Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
         )
         |> Map.put_new(:spawn_agent_opts, inherited_provider_opts)
+        # web_fetch SSRF opt-out: local/private hosts are refused by default
+        # (regardless of confinement); hosts opt in per run. put_new keeps a
+        # value the caller already placed in assigns.
+        |> Map.put_new(:allow_local_hosts, Keyword.get(opts, :allow_local_hosts, false))
         # Tools that surface events to the host (SpawnAgent's
         # subagent_spawn/result boundary events) read the callback from the
         # tool context. put_new keeps a callback the caller (or a spawning

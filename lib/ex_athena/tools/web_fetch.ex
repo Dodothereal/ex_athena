@@ -9,6 +9,29 @@ defmodule ExAthena.Tools.WebFetch do
 
   Response body capped at 1 MB. Redirects followed up to 5 hops.
 
+  ## SSRF guard
+
+  Every fetch target — the initial URL *and* every redirect hop — is validated
+  before a request is made: non-`http(s)` schemes are rejected, and hosts that
+  are (or resolve to) loopback, private, link-local, CGNAT, or otherwise
+  non-public addresses are refused (see `ExAthena.Net.blocked_host?/1`). This
+  applies regardless of confinement, so the default library configuration
+  cannot be steered to `http://169.254.169.254/` (cloud metadata),
+  `localhost`, or internal services — including via a public URL that 302s to
+  one. Redirects are followed manually (Req auto-redirect is disabled) so each
+  `Location` target is re-validated before it is fetched.
+
+  Hosts that legitimately need local fetching (docs served from a dev server,
+  a localhost API) opt out with `allow_local_hosts: true` on `ExAthena.run/2`
+  (threaded into `ctx.assigns[:allow_local_hosts]`), which disables the host
+  block for that run; the scheme check still applies.
+
+  Known limit (documented rather than over-engineered): hostname validation
+  resolves DNS at check time, but the HTTP client resolves again when
+  connecting, so a resolver flipping records between the two lookups
+  (DNS-rebinding TOCTOU) can still slip through. Deployments that must defend
+  against that should pin egress at the network layer.
+
   This is deliberately minimal — it's here so agents can fetch documentation
   pages, not to replace a full HTTP client. For richer access (auth headers,
   POST bodies, etc.), implement a custom tool that wraps `Req` directly.
@@ -18,6 +41,8 @@ defmodule ExAthena.Tools.WebFetch do
 
   @default_timeout 10_000
   @max_bytes 1_000_000
+  @max_redirects 5
+  @redirect_statuses [301, 302, 303, 307, 308]
 
   # A raw 1MB page flooded 9B workers' contexts (observed live: stream
   # timeouts + starved workers). Oversized bodies are summarized by a
@@ -64,8 +89,8 @@ defmodule ExAthena.Tools.WebFetch do
   def execute(%{"url" => url} = args, ctx) when is_binary(url) do
     timeout = Map.get(args, "timeout_ms", @default_timeout)
 
-    with {:ok, uri} <- validate(url, ctx),
-         {:ok, body, status} <- fetch(uri, timeout) do
+    with {:ok, uri} <- validate_target(URI.parse(url), ctx),
+         {:ok, body, status} <- fetch(uri, timeout, ctx) do
       {body, truncated?} = handle_body(body, args, ctx)
 
       ui = %{
@@ -146,9 +171,11 @@ defmodule ExAthena.Tools.WebFetch do
     _ -> nil
   end
 
-  defp validate(url, ctx) do
-    uri = URI.parse(url)
-
+  @doc false
+  # SSRF guard for one fetch target. The initial URL and EVERY redirect hop
+  # go through here before any request is made (public for tests — the only
+  # network involved is DNS resolution inside `Net.blocked_host?/1`).
+  def validate_target(%URI{} = uri, ctx) do
     cond do
       uri.scheme not in ["http", "https"] ->
         {:error, {:invalid_scheme, uri.scheme}}
@@ -156,9 +183,10 @@ defmodule ExAthena.Tools.WebFetch do
       is_nil(uri.host) or uri.host == "" ->
         {:error, :missing_host}
 
-      # SSRF guard, only when the run is confined: block private/loopback/
-      # link-local hosts (localhost, internal services, cloud metadata).
-      ExAthena.ToolContext.confined?(ctx) and ExAthena.Net.blocked_host?(uri.host) ->
+      # Default-deny private/loopback/link-local hosts (localhost, internal
+      # services, cloud metadata) regardless of confinement. Hosts opt out
+      # per run with `allow_local_hosts: true`.
+      not allow_local_hosts?(ctx) and ExAthena.Net.blocked_host?(uri.host) ->
         {:error, {:blocked_host, uri.host}}
 
       true ->
@@ -166,13 +194,25 @@ defmodule ExAthena.Tools.WebFetch do
     end
   end
 
-  defp fetch(uri, timeout) do
+  defp allow_local_hosts?(ctx) do
+    Map.get(ctx.assigns || %{}, :allow_local_hosts, false) == true
+  end
+
+  defp fetch(uri, timeout, ctx), do: fetch(uri, timeout, ctx, @max_redirects)
+
+  # Redirects are followed manually (`redirect: false`) so every Location
+  # target is re-validated — Req's auto-redirect would happily follow a
+  # public URL 302-ing to the cloud metadata endpoint or an internal host.
+  defp fetch(uri, timeout, ctx, hops_left) do
     case Req.get(URI.to_string(uri),
            receive_timeout: timeout,
-           max_redirects: 5,
+           redirect: false,
            retry: false,
            decode_body: false
          ) do
+      {:ok, %Req.Response{status: s} = resp} when s in @redirect_statuses ->
+        follow_redirect(resp, uri, timeout, ctx, hops_left)
+
       {:ok, %Req.Response{status: s, body: body}} when s in 200..299 ->
         body = to_binary(body)
 
@@ -190,6 +230,22 @@ defmodule ExAthena.Tools.WebFetch do
 
       {:error, exception} ->
         {:error, {:fetch_failed, Exception.message(exception)}}
+    end
+  end
+
+  defp follow_redirect(_resp, _uri, _timeout, _ctx, 0), do: {:error, :too_many_redirects}
+
+  defp follow_redirect(resp, uri, timeout, ctx, hops_left) do
+    case Req.Response.get_header(resp, "location") do
+      [location | _] ->
+        with {:ok, target} <- validate_target(URI.merge(uri, location), ctx) do
+          fetch(target, timeout, ctx, hops_left - 1)
+        end
+
+      [] ->
+        # A redirect status without a Location is unfollowable — surface it
+        # like any other non-2xx response.
+        {:error, {:http_error, resp.status}}
     end
   end
 

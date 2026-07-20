@@ -2,10 +2,12 @@ defmodule ExAthena.Net do
   @moduledoc """
   Network address classification for the web tools' SSRF guard.
 
-  When a run is confined, `WebFetch` refuses URLs whose host is (or resolves to)
-  a loopback, private, link-local, or otherwise non-public address — so the
-  agent can't reach `localhost`, internal services, or the cloud
-  metadata endpoint (`169.254.169.254`).
+  `WebFetch` refuses URLs — the initial one and every redirect target — whose
+  host is (or resolves to) a loopback, private, link-local, or otherwise
+  non-public address, so the agent can't reach `localhost`, internal services,
+  or the cloud metadata endpoint (`169.254.169.254`). The guard is on
+  regardless of confinement; runs opt out with `allow_local_hosts: true`
+  (see `ExAthena.Tools.WebFetch`).
   """
 
   import Bitwise, only: [&&&: 2]

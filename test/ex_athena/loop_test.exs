@@ -765,4 +765,55 @@ defmodule ExAthena.LoopTest do
       assert result.deliverable == "reflexion output"
     end
   end
+
+  describe "web_fetch SSRF opt-out wiring" do
+    defp web_fetch_script(url) do
+      script([
+        %Response{
+          text: "",
+          tool_calls: [%ToolCall{id: "c1", name: "web_fetch", arguments: %{"url" => url}}],
+          finish_reason: :tool_calls,
+          provider: :mock
+        },
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      ])
+    end
+
+    defp tool_result_contents(result) do
+      for %{role: :tool, tool_results: trs} <- result.messages,
+          tr <- trs,
+          do: to_string(tr.content)
+    end
+
+    test "web_fetch refuses local hosts by default, even unconfined", %{dir: dir} do
+      assert {:ok, result} =
+               Loop.run("fetch it",
+                 provider: :mock,
+                 mock: [responder: web_fetch_script("http://localhost:9/x")],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.WebFetch]
+               )
+
+      assert Enum.any?(tool_result_contents(result), &(&1 =~ "blocked_host"))
+    end
+
+    test "allow_local_hosts: true lets web_fetch reach a local server", %{dir: dir} do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, "GET", "/doc", fn conn ->
+        Plug.Conn.resp(conn, 200, "dev server page")
+      end)
+
+      assert {:ok, result} =
+               Loop.run("fetch it",
+                 provider: :mock,
+                 mock: [responder: web_fetch_script("http://localhost:#{bypass.port}/doc")],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.WebFetch],
+                 allow_local_hosts: true
+               )
+
+      assert Enum.any?(tool_result_contents(result), &(&1 =~ "dev server page"))
+    end
+  end
 end
