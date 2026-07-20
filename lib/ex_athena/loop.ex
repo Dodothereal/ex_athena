@@ -37,8 +37,10 @@ defmodule ExAthena.Loop do
       loopback/private/link-local hosts. By default those are refused (SSRF
       guard) even when the run is unconfined; see
       `ExAthena.Tools.WebFetch`.
-    * `:allowed_tools`, `:disallowed_tools`, `:can_use_tool` — see
-      `ExAthena.Permissions`.
+    * `:allowed_tools`, `:disallowed_tools`, `:readonly_tools`,
+      `:can_use_tool` — see `ExAthena.Permissions`. `:readonly_tools`
+      names extra tools the read-only `:plan` phase may run (merged with
+      tools that declare `read_only?/0` / MCP `readOnlyHint`).
     * `:hooks` — see `ExAthena.Hooks`.
     * `:max_iterations` (default 25) — hard iteration cap. Pass `:infinity`
       to disable it (the no-progress guard, mistake counter, and budget cap
@@ -609,6 +611,13 @@ defmodule ExAthena.Loop do
         phase: phase,
         allowed_tools: Keyword.get(opts, :allowed_tools),
         disallowed_tools: Keyword.get(opts, :disallowed_tools),
+        # Tools the read-only :plan phase may run beyond the builtin
+        # read-only set: specs that declared themselves read-only (module
+        # `read_only?/0` / MCP readOnlyHint) plus any names the host passed
+        # explicitly via `readonly_tools:`.
+        readonly_tools:
+          Keyword.get(opts, :readonly_tools, []) ++
+            for(spec <- tool_specs, spec.read_only?, do: spec.name),
         can_use_tool: Keyword.get(opts, :can_use_tool)
       }
 

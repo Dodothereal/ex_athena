@@ -38,6 +38,50 @@ defmodule ExAthena.Tool.SpecTest do
     def execute(_args, _ctx), do: {:ok, "done"}
   end
 
+  defmodule ReadOnlyModTool do
+    @behaviour ExAthena.Tool
+
+    @impl true
+    def name, do: "fake_read_only"
+
+    @impl true
+    def description, do: "A read-only fake tool"
+
+    @impl true
+    def schema, do: %{type: "object", properties: %{}, required: []}
+
+    @impl true
+    def execute(_args, _ctx), do: {:ok, "data"}
+
+    @impl true
+    def read_only?, do: true
+  end
+
+  describe "read_only? flag" do
+    test "from_module reads the optional read_only?/0 callback" do
+      assert Spec.from_module(ReadOnlyModTool).read_only? == true
+    end
+
+    test "from_module defaults read_only? to false when not implemented" do
+      assert Spec.from_module(FakeModTool).read_only? == false
+    end
+
+    test "from_mcp honours the MCP readOnlyHint annotation" do
+      tool = %{
+        "name" => "list_things",
+        "description" => "lists",
+        "inputSchema" => %{},
+        "annotations" => %{"readOnlyHint" => true}
+      }
+
+      assert Spec.from_mcp(tool, "srv").read_only? == true
+    end
+
+    test "from_mcp defaults read_only? to false without the annotation" do
+      assert Spec.from_mcp(%{"name" => "do_thing"}, "srv").read_only? == false
+    end
+  end
+
   describe "from_module/1" do
     test "builds spec with name/description/schema from module callbacks" do
       spec = Spec.from_module(FakeModTool)

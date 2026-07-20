@@ -73,5 +73,19 @@ defmodule ExAthena.Tool do
   """
   @callback parallel_safe?() :: boolean()
 
-  @optional_callbacks [parallel_safe?: 0]
+  @doc """
+  Whether this tool is read-only — it never mutates the workspace,
+  filesystem, or any external system.
+
+  The `:plan` (read-only) permission phase denies every tool it does not
+  know to be read-only. Custom tools that are genuinely read-only opt in
+  by returning `true` here; MCP tools opt in via the standard
+  `annotations.readOnlyHint` on their `tools/list` entry.
+
+  Defaults to `false` (conservative) when the callback isn't implemented —
+  an undeclared custom tool is treated as mutating and blocked in `:plan`.
+  """
+  @callback read_only?() :: boolean()
+
+  @optional_callbacks [parallel_safe?: 0, read_only?: 0]
 end

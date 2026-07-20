@@ -45,8 +45,15 @@ defmodule ExAthena.Permissions do
     2. **`allowed_tools`** — an explicit allowlist. If non-nil, denies anything
        not in it.
     3. **`phase`** — the current permission mode:
-       * `:plan` — read-only. Writes and shell execution are denied
-         (`todo_write` is allowed — it mutates only session bookkeeping).
+       * `:plan` — read-only, deny-by-default. Only tools known to be
+         read-only are allowed: the builtin read-only set, session-control
+         tools (`todo_write` / `ask_user` / `finish` — they mutate only
+         session bookkeeping), read-only bash commands, and custom/MCP
+         tools that opted in (module `read_only?/0` callback, MCP
+         `annotations.readOnlyHint`, or the `readonly_tools:` option).
+         Everything else — including unknown tools — is denied. Exiting
+         plan mode from a run the host pinned to `:plan` requires
+         `can_use_tool` approval and is denied when no callback exists.
        * `:default` — read + write. `can_use_tool` callback (if supplied) can
          ask the user.
        * `:accept_edits` — auto-allow Read/Edit/Write/Glob/Grep/WebFetch
@@ -101,9 +108,13 @@ defmodule ExAthena.Permissions do
   @readonly_tools ~w(read glob grep web_fetch web_search usage_rules plan_mode spawn_agent lsp)
   # `todo_write` is deliberately NOT here: it mutates session bookkeeping
   # (the todo list), never the workspace/filesystem, so it stays allowed in
-  # the read-only `:plan` phase (see check_phase/3). Orchestrate planning and
+  # the read-only `:plan` phase (see check_phase/4). Orchestrate planning and
   # read-only `explore` workers both need it to record their plan.
-  @mutating_tools ~w(write edit bash)
+  #
+  # Session-control tools: they interact with the host/session (asking the
+  # user a question, ending the run), never the workspace — orchestrate's
+  # planning turns need both, so they stay allowed in `:plan`.
+  @session_tools ~w(todo_write ask_user finish)
   # `:accept_edits` auto-allows file edits + every read-only tool,
   # but still falls through to the callback for everything else
   # (bash, custom tools).
@@ -118,6 +129,7 @@ defmodule ExAthena.Permissions do
           optional(:phase) => ToolContext.phase(),
           optional(:allowed_tools) => [String.t()] | nil,
           optional(:disallowed_tools) => [String.t()] | nil,
+          optional(:readonly_tools) => [String.t()] | nil,
           optional(:can_use_tool) => (String.t(), map(), ToolContext.t() -> result()),
           optional(:respect_denylist) => boolean()
         }
@@ -131,7 +143,7 @@ defmodule ExAthena.Permissions do
   def check(%ToolCall{name: name, arguments: args}, %ToolContext{} = ctx, opts) do
     with :allow <- check_disallowed(name, ctx.phase, opts),
          :allow <- check_allowed(name, opts),
-         :allow <- check_phase(name, args, ctx.phase),
+         :allow <- check_phase(name, args, ctx.phase, opts),
          :allow <- check_callback(name, args, ctx, ctx.phase, opts) do
       :allow
     end
@@ -190,15 +202,29 @@ defmodule ExAthena.Permissions do
     end
   end
 
-  defp check_phase(name, args, :plan) do
+  defp check_phase(name, args, :plan, opts) do
     cond do
-      # Session bookkeeping, not a workspace mutation — safe in read-only
-      # investigation. Lets orchestrate planning + read-only workers record
-      # their plan with todo_write without tripping the phase gate.
-      name == "todo_write" ->
+      # Exiting plan mode is a privilege escalation when the HOST pinned the
+      # run to :plan (`opts[:phase]`, the phase the run was configured with,
+      # never mutated by transitions). It must never be the model's own
+      # decision — see check_plan_mode/2.
+      name == "plan_mode" ->
+        check_plan_mode(args, opts)
+
+      # Session bookkeeping / host interaction, not a workspace mutation —
+      # safe in read-only investigation. Lets orchestrate planning + read-only
+      # workers record their plan (todo_write), ask the user (ask_user), and
+      # end the run (finish) without tripping the phase gate.
+      name in @session_tools ->
         :allow
 
       name in @readonly_tools ->
+        :allow
+
+      # Opt-in registry: custom/MCP tools declared read-only (module
+      # `read_only?/0` callback, MCP `annotations.readOnlyHint`, or the
+      # host's `readonly_tools:` option). Assembled by the loop.
+      name in List.wrap(opts[:readonly_tools]) ->
         :allow
 
       name == "bash" ->
@@ -208,7 +234,10 @@ defmodule ExAthena.Permissions do
           {:deny,
            %Denial{
              code: :phase_gated,
-             reason: "bash command is not read-only and is not allowed in plan phase",
+             reason:
+               "bash command is not recognized as read-only, so plan phase denies it " <>
+                 "(unknown commands and interpreters are treated as mutating; " <>
+                 "use read-only commands like cat/ls/grep/git log)",
              metadata: %{
                phase: :plan,
                requested_tool: "bash",
@@ -217,23 +246,63 @@ defmodule ExAthena.Permissions do
            }}
         end
 
-      name in @mutating_tools ->
+      # Deny-by-default: anything not known read-only (unrecognized builtin,
+      # MCP tool, host tool) is treated as mutating in the read-only phase.
+      true ->
         {:deny,
          %Denial{
            code: :phase_gated,
-           reason: "tool \"#{name}\" is not allowed in plan phase",
+           reason:
+             "tool \"#{name}\" is not allowed in plan phase (plan phase denies every " <>
+               "tool not known to be read-only; declare `read_only?/0` on the tool, " <>
+               "set the MCP readOnlyHint annotation, or list it in `readonly_tools:`)",
            metadata: %{phase: :plan, requested_tool: name, allowed_tools: @readonly_tools}
          }}
-
-      true ->
-        :allow
     end
   end
 
-  defp check_phase(_name, _args, :bypass_permissions), do: :allow
-  defp check_phase(_name, _args, :trusted), do: :allow
-  defp check_phase(_name, _args, :accept_edits), do: :allow
-  defp check_phase(_name, _args, _), do: :allow
+  defp check_phase(_name, _args, :bypass_permissions, _opts), do: :allow
+  defp check_phase(_name, _args, :trusted, _opts), do: :allow
+  defp check_phase(_name, _args, :accept_edits, _opts), do: :allow
+  defp check_phase(_name, _args, _, _opts), do: :allow
+
+  # Gate the `:plan → :default` self-escalation. Three cases:
+  #
+  #   * The model entered plan itself (host configured a looser phase,
+  #     `opts[:phase] != :plan`): exiting merely restores the host's original
+  #     grant — allowed without ceremony (the callback, when configured, is
+  #     still consulted downstream like for any tool).
+  #   * Host pinned the run to :plan AND a `can_use_tool` callback exists:
+  #     allow here so the normal callback step asks the host/user about the
+  #     `plan_mode` exit call — approval happens exactly once, on the same
+  #     path as every other sensitive tool.
+  #   * Host pinned the run to :plan and NO callback exists: deny. The host
+  #     explicitly confined the run to read-only and left no approval
+  #     channel — silent self-escalation is precisely the bypass this blocks.
+  #
+  # `"enter"` (and anything that isn't an exit) is never an escalation.
+  defp check_plan_mode(%{"action" => "exit"}, opts) do
+    cond do
+      opts[:phase] != :plan ->
+        :allow
+
+      is_function(opts[:can_use_tool], 3) ->
+        :allow
+
+      true ->
+        {:deny,
+         %Denial{
+           code: :phase_gated,
+           reason:
+             "exiting plan mode requires host approval, and this run was started in " <>
+               ":plan phase with no can_use_tool callback configured — finish your " <>
+               "plan and report it; only the host can lift the read-only restriction",
+           metadata: %{phase: :plan, requested_tool: "plan_mode", action: "exit"}
+         }}
+    end
+  end
+
+  defp check_plan_mode(_args, _opts), do: :allow
 
   # `:trusted`, `:bypass_permissions`, and the auto-allow set of
   # `:accept_edits` skip the callback. Everything else (default mode +
@@ -310,7 +379,7 @@ defmodule ExAthena.Permissions do
   @doc """
   Tools to advertise to the model during read-only planning/scope phases.
   Same as `readonly_tools/0` plus `"bash"`, which is conditionally allowed
-  in `:plan` (read-only commands only — see `check_phase/3`).
+  in `:plan` (read-only commands only — see `check_phase/4`).
 
   Hosts that build their plan-mode tool list from this stay in sync with
   the permissions layer automatically when ex_athena widens or narrows

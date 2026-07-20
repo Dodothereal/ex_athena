@@ -7,8 +7,13 @@ defmodule ExAthena.Tools.PlanMode do
 
     * `"enter"` — switch to `:plan` (read-only). Loop typically enforces this
       by rejecting mutation tools.
-    * `"exit"` — switch to `:default`. The loop may require user approval
-      (via `can_use_tool`) before honouring this.
+    * `"exit"` — switch to `:default`. When the run was STARTED in `:plan`
+      (host-pinned read-only), the permission layer requires `can_use_tool`
+      approval before this tool ever executes, and denies the call outright
+      when no callback is configured — the model cannot lift a host-imposed
+      read-only restriction on its own. When the model itself entered plan
+      mode from a looser phase, exiting merely restores the original grant
+      and needs no approval. See `ExAthena.Permissions`.
 
   The tool doesn't mutate `ctx` directly — `ctx` is immutable per-call. It
   returns a `{:phase_transition, new_phase}` sentinel that the loop consumes

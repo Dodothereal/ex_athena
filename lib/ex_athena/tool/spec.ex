@@ -30,6 +30,7 @@ defmodule ExAthena.Tool.Spec do
           description: String.t(),
           schema: map(),
           parallel_safe?: boolean(),
+          read_only?: boolean(),
           kind: kind(),
           module: module() | nil,
           mcp_server: String.t() | nil,
@@ -44,7 +45,8 @@ defmodule ExAthena.Tool.Spec do
     :kind,
     :module,
     :mcp_server,
-    :mcp_tool_name
+    :mcp_tool_name,
+    read_only?: false
   ]
 
   @doc "Build a spec from a module implementing `ExAthena.Tool`."
@@ -61,11 +63,15 @@ defmodule ExAthena.Tool.Spec do
     parallel_safe =
       function_exported?(mod, :parallel_safe?, 0) and mod.parallel_safe?()
 
+    read_only =
+      function_exported?(mod, :read_only?, 0) and mod.read_only?()
+
     %__MODULE__{
       name: mod.name(),
       description: mod.description(),
       schema: mod.schema(),
       parallel_safe?: parallel_safe,
+      read_only?: read_only,
       kind: :module,
       module: mod,
       mcp_server: nil,
@@ -95,6 +101,10 @@ defmodule ExAthena.Tool.Spec do
       description: Map.get(tool_map, "description", ""),
       schema: Map.get(tool_map, "inputSchema", %{}),
       parallel_safe?: false,
+      # MCP's standard read-only declaration (`annotations.readOnlyHint`).
+      # A hint from the server, not a guarantee — it gates the `:plan`
+      # phase's deny-by-default, nothing stronger.
+      read_only?: get_in(tool_map, ["annotations", "readOnlyHint"]) == true,
       kind: :mcp,
       module: nil,
       mcp_server: server_name,

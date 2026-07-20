@@ -17,11 +17,12 @@ flowchart TD
   skipDeny --> step2{allowed_tools set<br/>and name not in it?}
   step2 -- yes --> deny2[deny user_denied]
   step2 -- no --> step3{phase}
-  step3 -- :plan --> phasePlan{name in @readonly_tools?}
+  step3 -- :plan --> phasePlan{known read-only?<br/>builtin set, session tools,<br/>read-only bash, opt-in registry}
   phasePlan -- yes --> step4
-  phasePlan -- no --> phaseGated{name in @mutating_tools?}
-  phaseGated -- yes --> deny3[deny phase_gated]
-  phaseGated -- no --> step4
+  phasePlan -- "plan_mode exit, host-pinned :plan" --> planExit{can_use_tool set?}
+  planExit -- yes --> step4
+  planExit -- no --> deny3[deny phase_gated]
+  phasePlan -- no --> deny3
   step3 -- :default --> step4
   step3 -- :accept_edits --> step4
   step3 -- :trusted --> allowT[allow]
@@ -53,7 +54,7 @@ The denylist is the user's "absolutely never" list — it survives even `:bypass
 
 | Phase | Read-only tools | Write/edit/bash | `can_use_tool` consulted | Use case |
 |---|---|---|---|---|
-| `:plan` | ✅ | ❌ phase_gated (`todo_write` ✅) | only if not auto-allowed | Read-only investigation before code changes. Mirrors the agent's "plan mode." `todo_write` is allowed — it mutates only session bookkeeping, so orchestrate planning and read-only workers can record their plan. |
+| `:plan` | ✅ | ❌ phase_gated — **deny-by-default** for anything not known read-only (`todo_write`/`ask_user`/`finish` ✅) | only if not auto-allowed | Read-only investigation before code changes. Mirrors the agent's "plan mode." Session-control tools are allowed — they mutate only session bookkeeping, so orchestrate planning and read-only workers can record their plan, ask the user, and finish. Custom/MCP tools are denied unless they opt in as read-only. |
 | `:default` | ✅ | ✅ via callback | ✅ for everything | Interactive sessions where the user approves writes one-by-one. |
 | `:accept_edits` | ✅ | ✅ for write/edit/todo_write/read/glob/grep/web_fetch/plan_mode/spawn_agent | ✅ for everything else (bash, custom) | "Edits are pre-approved" — file mutations auto-allow; shell + custom still ask. |
 | `:trusted` | ✅ | ✅ | ❌ (always allow) | Trusted automation; denylist still wins unless `respect_denylist: false`. |
@@ -64,15 +65,48 @@ Phase comes from `ctx.phase` (which the Loop sets from `opts[:phase]`, default `
 ### Read-only tools (allowed in `:plan`)
 
 From [`@readonly_tools`](../lib/ex_athena/permissions.ex#L100):
-`read`, `glob`, `grep`, `web_fetch`, `plan_mode`, `spawn_agent`, `lsp`.
+`read`, `glob`, `grep`, `web_fetch`, `web_search`, `usage_rules`, `plan_mode`, `spawn_agent`, `lsp`.
 
-### Mutating tools (denied in `:plan`)
+Session-control tools (`@session_tools`: `todo_write`, `ask_user`, `finish`)
+are also allowed — they mutate only session bookkeeping (the todo list, a
+question to the user, ending the run), never the workspace.
 
-From [`@mutating_tools`](../lib/ex_athena/permissions.ex#L101):
-`write`, `edit`, `bash`.
+`bash` is conditionally allowed: only commands the allowlist classifier in
+[`ExAthena.Tools.Bash.read_only_command?/1`](../lib/ex_athena/tools/bash.ex)
+recognises as read-only (`cat`, `ls`, `grep`, `git log`, `gh issue view`, …).
+Unknown commands — including interpreter one-liners (`python -c`, `perl -e`,
+`ruby -e`, `node -e`, `ex`/`ed`), command substitution, and file redirects —
+are treated as mutating and denied. The classifier gates the `:plan` phase
+only; the OS sandbox (`ExAthena.Sandbox`) independently enforces write
+confinement for confined runs.
 
-`todo_write` is **not** here: it mutates only session bookkeeping (the todo
-list), never the workspace, so `check_phase/3` allows it in `:plan`.
+### Everything else (denied in `:plan` by default)
+
+`write`, `edit`, `apply_patch`, non-read-only `bash`, and **every custom,
+host, or MCP tool not known to be read-only** are denied with
+`code: :phase_gated`. Read-only custom tools opt in through any of:
+
+- the optional `read_only?/0` callback on the `ExAthena.Tool` module
+  (cached on `Tool.Spec`),
+- the standard MCP `annotations.readOnlyHint` on the tool's `tools/list`
+  entry,
+- the `readonly_tools: ["name", …]` option on `ExAthena.Loop.run/2`.
+
+### Exiting plan mode (`plan_mode` `"exit"`)
+
+Leaving `:plan` is a privilege escalation, gated on *who* imposed the phase:
+
+- Run **started** in `:plan` (host-pinned): the `plan_mode` exit call itself
+  must be approved through `can_use_tool` (one prompt, on the same path as
+  every other sensitive tool). With **no callback configured, exit is
+  denied** — the host confined the run to read-only and left no approval
+  channel, so only the host can lift the restriction.
+- Model entered `:plan` itself from a looser phase: exiting restores the
+  host's original grant and needs no approval.
+
+The `phase_transition` sentinel is honoured by the loop **only** when it
+comes from the `plan_mode` tool — a custom/MCP tool returning the same
+payload shape cannot switch phases.
 
 ### Auto-allowed in `:accept_edits`
 

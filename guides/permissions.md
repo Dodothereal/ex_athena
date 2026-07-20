@@ -18,17 +18,31 @@ opt). Five modes ship; one name (`:auto`) is reserved.
 
 ### `:plan`
 
-Read-only. The mutating builtins (`Write`, `Edit`, `Bash`, `TodoWrite`)
-are denied with reason `{:mutation_in_plan_mode, name}`. Read-only
-builtins (`Read`, `Glob`, `Grep`, `WebFetch`, `PlanMode`, `SpawnAgent`)
-are allowed. Custom tools fall through to the callback.
+Read-only, **deny-by-default**. Only tools known to be read-only run:
+the read-only builtins (`Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`,
+`UsageRules`, `PlanMode`, `SpawnAgent`, `Lsp`), the session-control
+tools (`TodoWrite`, `AskUser`, `Finish` — they mutate only session
+bookkeeping), and `Bash` invocations the allowlist classifier recognises
+as read-only (`cat`, `ls`, `grep`, `git log`, … — unknown commands and
+interpreter one-liners are treated as mutating). Everything else —
+`Write`, `Edit`, `ApplyPatch`, and every custom/MCP tool that hasn't
+declared itself read-only — is denied with `code: :phase_gated`.
+
+Read-only custom tools opt in via the optional `read_only?/0` callback
+on the tool module, the MCP `annotations.readOnlyHint`, or the
+`readonly_tools: ["name", …]` loop option.
 
 ```elixir
 ExAthena.run("explore the repo", tools: :all, phase: :plan)
 ```
 
 The agent uses the `PlanMode` tool to request a transition out of
-`:plan` (typically into `:default`).
+`:plan` (typically into `:default`). When the run was *started* in
+`:plan`, that exit requires `can_use_tool` approval — and is denied
+outright when no callback is configured, so a host-pinned read-only run
+stays read-only. When the agent entered `:plan` itself from a looser
+phase, exiting merely restores the original grant and needs no
+approval.
 
 ### `:default`
 

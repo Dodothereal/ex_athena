@@ -343,8 +343,15 @@ defmodule ExAthena.Modes.ReAct do
 
       spec ->
         case safe_execute(tool_meta, spec, call, ctx) do
-          {:ok, %{phase_transition: new_phase} = payload} ->
-            # Phase transition sentinel — special-case only in the single-tool runner.
+          {:ok, %{phase_transition: new_phase} = payload} when call.name == "plan_mode" ->
+            # Phase transition sentinel — special-case only in the single-tool
+            # runner, and ONLY for the plan_mode tool. Honouring the sentinel
+            # from arbitrary tools would let any custom/MCP tool (including
+            # ones marked read-only) smuggle a privilege escalation past the
+            # permission gate; a non-plan_mode payload that happens to carry
+            # the key falls through to the generic clause below and is merely
+            # stringified. plan_mode itself is approval-gated in
+            # `Permissions.check/3` before it ever executes.
             msg = Map.get(payload, :message, "phase -> #{new_phase}")
             state = %{state | ctx: %{state.ctx | phase: new_phase}}
             result = Messages.tool_result(call.id, to_string(msg))

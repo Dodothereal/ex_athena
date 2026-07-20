@@ -104,9 +104,148 @@ defmodule ExAthena.PermissionsTest do
                Permissions.check(call("bash", %{}), ctx(:plan), %{})
     end
 
+    test "denies interpreter one-liners and unknown commands (allowlist, not blocklist)" do
+      for cmd <- [
+            ~s{python -c "open('x','w').write('pwned')"},
+            ~s{python3 -c "import os; os.remove('x')"},
+            ~s{perl -e 'unlink "x"'},
+            ~s{ruby -e 'File.delete("x")'},
+            ~s{node -e "require('fs').writeFileSync('x','y')"},
+            "ex file.txt",
+            "ed file.txt",
+            ~s{sh -c "rm -rf x"},
+            ~s{bash -c "echo pwned"},
+            "some_unknown_binary --flag"
+          ] do
+        assert {:deny, %Denial{code: :phase_gated, metadata: %{requested_tool: "bash"}}} =
+                 Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected `#{cmd}` to be denied in plan phase (unknown/interpreter commands are not read-only)"
+      end
+    end
+
+    test "denies command substitution and stray redirects" do
+      for cmd <- [
+            "cat $(rm -rf x)",
+            "cat `rm -rf x`",
+            "ls > out.txt",
+            "echo hi >out.txt",
+            "find . -delete",
+            "find . -name '*.ex' -exec rm {} \\;",
+            "sort -o out.txt in.txt"
+          ] do
+        assert {:deny, %Denial{code: :phase_gated}} =
+                 Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected `#{cmd}` to be denied in plan phase"
+      end
+    end
+
+    test "allows read-only compounds, pipes, quoted metacharacters, and null redirects" do
+      for cmd <- [
+            "git log --oneline | head -5",
+            "ls -la 2>/dev/null",
+            "ls 2>&1",
+            ~s(grep -E "foo|bar" lib/),
+            "cat a.txt; ls",
+            "grep -r Foo lib/ && echo found"
+          ] do
+        assert :allow = Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected read-only `#{cmd}` to be allowed in plan phase"
+      end
+    end
+
     test "bash is unrestricted in :default phase" do
       assert :allow =
                Permissions.check(call("bash", %{"command" => "rm -rf foo"}), ctx(), %{})
+    end
+  end
+
+  describe "plan phase — deny-by-default for tools not known read-only" do
+    test "denies MCP/custom tools that are not opted in" do
+      assert {:deny,
+              %Denial{
+                code: :phase_gated,
+                metadata: %{phase: :plan, requested_tool: "myserver_create_ticket"}
+              }} = Permissions.check(call("myserver_create_ticket"), ctx(:plan), %{})
+    end
+
+    test "denies apply_patch (mutating tool outside the static lists)" do
+      assert {:deny, %Denial{code: :phase_gated}} =
+               Permissions.check(call("apply_patch"), ctx(:plan), %{})
+    end
+
+    test "allows tools opted in via the readonly_tools opt" do
+      opts = %{readonly_tools: ["myserver_list_tickets"]}
+
+      assert :allow = Permissions.check(call("myserver_list_tickets"), ctx(:plan), opts)
+      assert {:deny, _} = Permissions.check(call("myserver_create_ticket"), ctx(:plan), opts)
+    end
+
+    test "allows session-control tools (ask_user, finish) — they never touch the workspace" do
+      assert :allow = Permissions.check(call("ask_user"), ctx(:plan), %{})
+      assert :allow = Permissions.check(call("finish"), ctx(:plan), %{})
+    end
+
+    test "deny-by-default only applies to :plan — :default still allows unknown tools" do
+      assert :allow = Permissions.check(call("myserver_create_ticket"), ctx(), %{})
+    end
+  end
+
+  describe "plan_mode exit gating" do
+    test "run pinned to :plan by the host, no can_use_tool → exit denied" do
+      assert {:deny,
+              %Denial{code: :phase_gated, metadata: %{phase: :plan, requested_tool: "plan_mode"}}} =
+               Permissions.check(
+                 call("plan_mode", %{"action" => "exit"}),
+                 ctx(:plan),
+                 %{phase: :plan}
+               )
+    end
+
+    test "run pinned to :plan, can_use_tool consulted — approval allows the exit" do
+      parent = self()
+
+      approve = fn name, args, _ctx ->
+        send(parent, {:asked, name, args})
+        :allow
+      end
+
+      assert :allow =
+               Permissions.check(
+                 call("plan_mode", %{"action" => "exit"}),
+                 ctx(:plan),
+                 %{phase: :plan, can_use_tool: approve}
+               )
+
+      assert_received {:asked, "plan_mode", %{"action" => "exit"}}
+    end
+
+    test "run pinned to :plan, can_use_tool can deny the exit" do
+      deny = fn "plan_mode", %{"action" => "exit"}, _ctx -> {:deny, :user_declined} end
+
+      assert {:deny, %Denial{code: :user_denied}} =
+               Permissions.check(
+                 call("plan_mode", %{"action" => "exit"}),
+                 ctx(:plan),
+                 %{phase: :plan, can_use_tool: deny}
+               )
+    end
+
+    test "model self-entered plan from :default → exit needs no approval" do
+      assert :allow =
+               Permissions.check(
+                 call("plan_mode", %{"action" => "exit"}),
+                 ctx(:plan),
+                 %{phase: :default}
+               )
+    end
+
+    test "enter is always allowed, even in a host-pinned :plan run" do
+      assert :allow =
+               Permissions.check(
+                 call("plan_mode", %{"action" => "enter"}),
+                 ctx(:plan),
+                 %{phase: :plan}
+               )
     end
   end
 
