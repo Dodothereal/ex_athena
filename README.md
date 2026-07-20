@@ -161,11 +161,12 @@ Defaults: `:ollama` provider, the model in `config :ex_athena, :ollama, :model`,
 
 ## Try it: `mix athena.web`
 
-A browser-based chat UI with the same agent loop, accessible from any device on your network:
+A browser-based chat UI with the same agent loop, served on localhost by default:
 
 ```bash
-mix athena.web                  # http://0.0.0.0:4000
+mix athena.web                  # http://localhost:4000 (this machine only)
 mix athena.web --port 8080      # custom port
+mix athena.web --lan            # expose on your network, gated by a token
 ```
 
 The sidebar lets you switch provider, model, and mode without restarting. Features:

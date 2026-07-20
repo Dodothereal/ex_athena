@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Security
+
+- **`mix athena.web` now binds `127.0.0.1` by default** instead of `0.0.0.0`
+  (the UI is an arbitrary-command agent console — client-chosen `cwd`,
+  bash/write tools, a real interactive terminal — so binding all interfaces
+  handed a shell to anyone on the network). Exposing it wider is an explicit
+  opt-in: `--lan` (or `--host HOST`) requires a shared-secret token —
+  `--token` / `ATHENA_WEB_TOKEN`, auto-generated otherwise — printed as a
+  tokened URL at startup and enforced both by a plug (HTTP) and a LiveView
+  `on_mount` hook (the websocket, where plugs don't run). The websocket
+  origin check is no longer disabled: `check_origin: :conn` requires an
+  exact scheme/host/port match.
+  ([#134](https://github.com/udin-io/ex_athena/issues/134))
+
 ## v0.17.0 — Workspace confinement & sandboxing
 
 ### Added — cwd confinement & sandboxing

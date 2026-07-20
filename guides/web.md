@@ -1,9 +1,9 @@
 # Browser chat (mix athena.web)
 
 `mix athena.web` starts a Phoenix LiveView chat UI backed by the same agent
-loop as `mix athena.chat`. The server binds to all interfaces so you can reach
-it from a phone, a second machine, or any browser on the same network — no
-native install required.
+loop as `mix athena.chat`. By default the server binds to localhost only;
+pass `--lan` to reach it from a phone or a second machine on the same
+network — access is then gated by a shared-secret token printed at startup.
 
 ## Prerequisites
 
@@ -25,8 +25,9 @@ npm or esbuild step.
 ## Launching
 
 ```bash
-mix athena.web                  # http://0.0.0.0:4000
+mix athena.web                  # http://localhost:4000 (this machine only)
 mix athena.web --port 8080      # custom port
+mix athena.web --lan            # expose on the network (token-gated)
 ```
 
 ### Flags
@@ -34,9 +35,17 @@ mix athena.web --port 8080      # custom port
 | Flag | Description |
 |---|---|
 | `--port PORT` | HTTP port. Default: `4000`. |
+| `--lan` | Bind `0.0.0.0` instead of loopback so other devices can connect. Access requires a shared-secret token (auto-generated unless supplied). |
+| `--host HOST` | Bind an explicit IP address. Non-loopback hosts are token-gated like `--lan`. |
+| `--token TOKEN` | The shared secret gating access. Defaults: none on loopback, auto-generated on `--lan`/`--host`. The `ATHENA_WEB_TOKEN` env var works too. |
+| `--log` | Also write log output to `log/phoenix_output.log`. |
 
-The server listens on `0.0.0.0`, so any device on the same network can reach
-it at `http://<your-ip>:<port>`.
+By default the server binds `127.0.0.1` — only this machine can reach it. The
+UI runs an agent with shell and file-write tools in a directory chosen from
+the browser, so treat access to it as shell access. With `--lan` the startup
+banner prints a tokened URL (`http://…/?token=…`); open it once per browser —
+the token is then stored in the session cookie, and every page load and
+websocket mount without it is rejected.
 
 ## Layout
 
@@ -214,9 +223,10 @@ session is untouched.
 - **Multiple providers**: drop several JSON files into
   `~/.config/ex_athena/providers/` before starting — they all appear in the
   sidebar dropdown immediately.
-- **Shared server**: because the UI binds to `0.0.0.0`, team members on the
-  same network can reach it at `http://<host-ip>:4000`. Use `api_key_prompt:
-  true` in provider JSON files to let each user supply their own key without
-  sharing credentials.
+- **Shared server**: start with `--lan` so team members on the same network
+  can reach the UI at `http://<host-ip>:4000`, and share the tokened URL from
+  the startup banner — anyone holding it can run commands on your machine.
+  Use `api_key_prompt: true` in provider JSON files to let each user supply
+  their own key without sharing credentials.
 - **Session cleanup**: sessions accumulate in `~/.ex_athena/web/sessions/`.
   Delete them from the sidebar × button or remove `*.session` files directly.
