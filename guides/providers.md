@@ -200,6 +200,63 @@ config :ex_athena, :ollama,
 Feature-detect with `ExAthena.capabilities(provider)[:embeddings]`. See the
 **[Embeddings guide](embeddings.md)**.
 
+## Listing models
+
+`ExAthena.list_models/2` answers "what can this provider run?" for every
+provider through one call, so a host building a model picker never has to learn
+a backend's wire format:
+
+```elixir
+{:ok, models} = ExAthena.list_models(:ollama)
+
+Enum.map(models, & &1.id)
+#=> ["llama3.1:latest", "qwen3-coder:30b"]
+```
+
+Each entry is an `ExAthena.Model` — `:id` (pass it straight back as `model:` on
+the next call), `:name`, `:provider`, `:context_window`, `:max_output_tokens`
+and `:source`.
+
+Where the answer comes from depends on the backend, which is exactly the detail
+this API exists to hide:
+
+| Provider | Source |
+|---|---|
+| `:ollama` | the daemon's `GET /api/tags` |
+| `:llamacpp`, `:exo` | the server's `GET /v1/models` |
+| `:openai`, `:openrouter`, JSON-file providers | the endpoint's `GET /v1/models` |
+| `:anthropic`, `:gemini` | the llm_db catalog — they publish no list endpoint |
+| `:claude_code` | the models the CLI reports |
+
+`:context_window` is `nil` when it cannot be established honestly. Local servers
+do not report it and most local models are absent from the catalog; a guessed
+value would silently mis-size compaction, so absence is reported instead.
+
+Results are cached for five minutes (in the same TTL cache that already served
+JSON-file providers), so reopening a picker is free. A user-facing "reload
+models" control should pass `cache: false`:
+
+```elixir
+ExAthena.list_models(:ollama, cache: false)
+```
+
+Ollama can additionally list the [ollama.com](https://ollama.com) catalog, each
+name suffixed `-cloud` so it is invocable through a signed-in local daemon
+(`ollama signin`). It is off by default because it reaches out to the internet,
+and it fails soft — an offline machine still shows the locally installed models:
+
+```elixir
+ExAthena.list_models(:ollama, include_cloud: true)
+```
+
+Feature-detect with `ExAthena.capabilities(provider)[:model_listing]` and fall
+back to a free-text model field when it is absent.
+
+> The old per-backend helpers — `ExAthena.Chat.Ollama.list_models/1`,
+> `list_cloud_models/1`, `ExAthena.Chat.LlamaCpp.list_models/1` and
+> `ExAthena.Chat.Exo.list_models/1` — are deprecated shims over this API and
+> still return their original strings and error atoms.
+
 ## Runtime JSON config
 
 ExAthena reads every `*.json` file from `~/.config/ex_athena/providers/` at

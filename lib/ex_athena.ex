@@ -82,7 +82,7 @@ defmodule ExAthena do
   Pass `queue: false` on any individual call to bypass the queue for that call.
   """
 
-  alias ExAthena.{Config, Request, Response}
+  alias ExAthena.{Config, Model, ModelDiscovery, Request, Response}
   alias ExAthena.RequestQueue
 
   @doc """
@@ -301,6 +301,84 @@ defmodule ExAthena do
     provider
     |> Config.provider_module()
     |> apply(:capabilities, [])
+  end
+
+  @doc """
+  List the models a provider can serve, as `ExAthena.Model` structs.
+
+      ExAthena.list_models(:ollama)
+      #=> {:ok, [%Model{id: "qwen3-coder:30b", context_window: nil, …}]}
+
+  Every backend answers this question in its own dialect — Ollama's
+  `/api/tags`, an OpenAI-compatible `/v1/models`, or nothing at all (Anthropic
+  and Google are read from the llm_db catalog). Hosts building a model picker
+  get one shape regardless, and `Model.id` is exactly what to pass back as
+  `model:` on the next `query/2`.
+
+  Results are cached for five minutes in the shared model-discovery cache, so
+  reopening a picker costs nothing; pass `cache: false` to force a refetch (what
+  a user-facing "reload models" control should do).
+
+  Providers that cannot enumerate their models return a `:capability` error —
+  feature-detect ahead of time with `capabilities(provider)[:model_listing]` and
+  fall back to a free-text model field.
+
+  ## Options
+
+    * `:base_url`, `:api_key` — as `query/2`; default to the provider's config.
+    * `:cache` — `false` to bypass the TTL cache for this call.
+    * `:include_cloud` — Ollama only: also list the `ollama.com` catalogue,
+      each entry suffixed `-cloud` so it is invocable through a signed-in local
+      daemon. Off by default because it reaches out to the internet.
+  """
+  @spec list_models(atom() | module() | nil, keyword()) ::
+          {:ok, [Model.t()]} | {:error, term()}
+  def list_models(provider \\ nil, opts \\ []) do
+    provider_atom = provider || peek_provider_atom(opts)
+    opts = Keyword.put(opts, :provider, provider_atom)
+
+    case Config.provider_spec(provider_atom) do
+      # A registry/builtin JSON spec describes its own discovery endpoint and
+      # response shape; that path already exists and stays authoritative.
+      {:ok, %{model_discovery: disc} = spec} when is_map(disc) ->
+        with {:ok, ids} <- ModelDiscovery.list_models(spec) do
+          {:ok,
+           Enum.map(ids, &%Model{id: &1, name: &1, provider: provider_atom, source: :server})}
+        end
+
+      _ ->
+        {provider_mod, opts} = Config.pop_provider!(opts)
+        dispatch_list_models(provider_mod, provider_atom, opts)
+    end
+  end
+
+  # `list_models/1` is preferred because listing depends on where the provider
+  # is pointed; `list_models/0` is the older contract and only yields strings,
+  # so they are lifted into structs here rather than in every such provider.
+  defp dispatch_list_models(provider_mod, provider_atom, opts) do
+    loaded? = Code.ensure_loaded?(provider_mod)
+
+    cond do
+      loaded? and function_exported?(provider_mod, :list_models, 1) ->
+        provider_mod.list_models(Config.provider_opts(provider_mod, opts, provider_atom))
+
+      loaded? and function_exported?(provider_mod, :list_models, 0) ->
+        with {:ok, ids} <- provider_mod.list_models() do
+          {:ok,
+           Enum.map(
+             ids,
+             &%Model{id: &1, name: &1, provider: provider_atom, source: :catalog}
+           )}
+        end
+
+      true ->
+        {:error,
+         ExAthena.Error.new(
+           :capability,
+           "#{inspect(provider_mod)} cannot enumerate its models",
+           provider: provider_mod
+         )}
+    end
   end
 
   @doc """

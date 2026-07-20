@@ -67,14 +67,45 @@ defmodule ExAthena.ModelDiscovery do
 
   def list_models(%ProviderSpec{name: name, model_discovery: disc} = spec) when is_map(disc) do
     ttl_ms = Map.get(disc, "ttl_seconds", @default_ttl_seconds) * 1_000
+
+    cached(name, ttl_ms, fn -> fetch(spec, disc) end)
+  end
+
+  @doc """
+  Memoise `fun`'s successful result under `key` for `ttl_ms`.
+
+  This is the cache behind every kind of model listing in ExAthena — the
+  `ProviderSpec` fetch above and the live endpoint enumeration in
+  `ExAthena.ModelListing` both land here, so there is exactly one table, one
+  TTL policy and one thing to clear in tests.
+
+  Only `{:ok, _}` is stored. Caching an error would turn a momentarily
+  unreachable local daemon into an empty model picker for the rest of the TTL,
+  which reads as "you have no models" rather than "I could not reach it".
+
+  Pass `:no_cache` as the TTL to force a fresh computation (and refresh the
+  entry) — a user hitting "reload models" means it.
+  """
+  @spec cached(term(), non_neg_integer() | :no_cache, (-> result)) :: result when result: term()
+  def cached(key, ttl_ms, fun) when is_function(fun, 0) do
     now_ms = :erlang.monotonic_time(:millisecond)
 
-    case cache_lookup(name, now_ms, ttl_ms) do
-      {:ok, models} ->
-        {:ok, models}
+    with true <- ttl_ms != :no_cache,
+         {:ok, value} <- cache_lookup(key, now_ms, ttl_ms) do
+      {:ok, value}
+    else
+      _ -> compute_and_cache(key, fun, now_ms)
+    end
+  end
 
-      :miss ->
-        fetch_and_cache(spec, disc, now_ms)
+  defp compute_and_cache(key, fun, now_ms) do
+    case fun.() do
+      {:ok, value} = ok ->
+        :ets.insert(@table, {key, value, now_ms})
+        ok
+
+      other ->
+        other
     end
   end
 
@@ -117,7 +148,7 @@ defmodule ExAthena.ModelDiscovery do
     end
   end
 
-  defp fetch_and_cache(%ProviderSpec{name: name} = spec, disc, now_ms) do
+  defp fetch(%ProviderSpec{name: name} = spec, disc) do
     case Map.fetch(disc, "url") do
       :error ->
         {:error, :missing_url}
@@ -130,9 +161,7 @@ defmodule ExAthena.ModelDiscovery do
 
         case Req.get(url, headers: header_list ++ auth_headers) do
           {:ok, %{status: 200, body: body}} ->
-            models = extract_models(body, path)
-            :ets.insert(@table, {name, models, now_ms})
-            {:ok, models}
+            {:ok, extract_models(body, path)}
 
           {:ok, %{status: status}} ->
             Logger.warning("[ModelDiscovery] HTTP #{status} fetching models for #{inspect(name)}")

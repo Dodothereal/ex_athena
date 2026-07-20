@@ -1,7 +1,6 @@
 defmodule ExAthena.Web.Live.ChatLive do
   use Phoenix.LiveView
 
-  alias ExAthena.Chat.{Exo, LlamaCpp, Ollama}
   alias ExAthena.Messages
   alias ExAthena.Messages.ContentPart
   alias ExAthena.Web.Sessions
@@ -2817,63 +2816,29 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  defp fetch_models("llamacpp") do
-    base_url = Application.get_env(:ex_athena, :llamacpp, [])[:base_url]
-    opts = if base_url, do: [base_url: base_url], else: []
+  # One call per provider: base_url/api-key resolution, the local daemons, the
+  # Claude Code CLI and JSON-spec catalogs (OpenRouter et al) are all behind
+  # `ExAthena.list_models/2` now, so the picker no longer needs a clause — or a
+  # config lookup — per backend.
+  #
+  # Ollama additionally surfaces its cloud catalog (names suffixed `-cloud`):
+  # listing needs no auth, running them needs `ollama signin`. It fails soft, so
+  # an offline machine still shows the locally installed models.
+  #
+  # Fail-soft overall: the dropdown falls back to free-text entry, and an error
+  # here must not take the LiveView down.
+  defp fetch_models(provider) when is_binary(provider) and provider != "" do
+    case safe_atom(provider, nil) do
+      nil ->
+        []
 
-    case LlamaCpp.list_models(opts) do
-      {:ok, models} -> models
-      _ -> []
-    end
-  end
-
-  defp fetch_models("ollama") do
-    base_url = Application.get_env(:ex_athena, :ollama, [])[:base_url]
-    opts = if base_url, do: [base_url: base_url], else: []
-
-    local =
-      case Ollama.list_models(opts) do
-        {:ok, models} -> models
-        _ -> []
-      end
-
-    # Also surface the Ollama cloud catalog (names suffixed with `-cloud`).
-    # Listing needs no auth; running them needs `ollama signin`. Fail-soft so a
-    # missing network / offline daemon still shows the local models.
-    cloud =
-      case Ollama.list_cloud_models() do
-        {:ok, models} -> models
-        _ -> []
-      end
-
-    (local ++ cloud) |> Enum.uniq() |> Enum.sort()
-  end
-
-  defp fetch_models("exo") do
-    base_url = Application.get_env(:ex_athena, :exo, [])[:base_url]
-    opts = if base_url, do: [base_url: base_url], else: []
-
-    case Exo.list_models(opts) do
-      {:ok, models} -> models
-      _ -> []
-    end
-  end
-
-  defp fetch_models("claude_code") do
-    case ExAthena.Providers.ClaudeCode.list_models() do
-      {:ok, models} -> models
-      _ -> []
-    end
-  end
-
-  defp fetch_models("openrouter") do
-    # OpenRouter ships a built-in spec with model discovery; needs
-    # OPENROUTER_API_KEY in the environment to list its catalog.
-    with {:ok, spec} <- ExAthena.Config.provider_spec(:openrouter),
-         {:ok, models} <- ExAthena.ModelDiscovery.list_models(spec) do
-      models
-    else
-      _ -> []
+      provider_atom ->
+        provider_atom
+        |> ExAthena.list_models(include_cloud: provider_atom == :ollama)
+        |> case do
+          {:ok, models} -> models |> Enum.map(& &1.id) |> Enum.uniq() |> Enum.sort()
+          {:error, _reason} -> []
+        end
     end
   end
 

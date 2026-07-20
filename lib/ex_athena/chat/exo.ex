@@ -3,9 +3,11 @@ defmodule ExAthena.Chat.Exo do
   Talks to a local exo cluster's HTTP API (https://github.com/exo-explore/exo)
   for chat-time helpers.
 
-  `list_models/1` hits `GET /v1/models?status=downloaded` and returns the model
-  ids downloaded somewhere in the cluster, sorted alphabetically. exo model ids
-  are full HuggingFace ids (e.g. `mlx-community/Llama-3.2-1B-Instruct-4bit`).
+  `list_models/1` is a deprecated shim over `ExAthena.list_models(:exo)` — the
+  `GET /v1/models?status=downloaded` transport now lives in
+  `ExAthena.ModelListing` with every other backend's. It still returns the ids
+  downloaded somewhere in the cluster, sorted alphabetically; exo model ids are
+  full HuggingFace ids (e.g. `mlx-community/Llama-3.2-1B-Instruct-4bit`).
 
   `ensure_instance/2` guarantees the model has an active instance before a chat
   request: exo returns 404 ("No instance found for model …") otherwise. Because
@@ -15,25 +17,25 @@ defmodule ExAthena.Chat.Exo do
   after registration and only affects first-token latency).
   """
 
+  alias ExAthena.ModelListing
+
   @default_base_url "http://localhost:52415"
   @timeout_ms 2_000
   @default_poll_interval_ms 250
   @default_instance_timeout_ms 10_000
 
+  @deprecated "Use ExAthena.list_models(:exo) instead"
   @spec list_models(keyword()) ::
           {:ok, [String.t()]}
           | {:error, :exo_unreachable | :unexpected_response | {:http, integer()}}
   def list_models(opts \\ []) do
-    base = opts |> Keyword.get(:base_url, configured_base_url()) |> strip_v1_suffix()
-    url = base <> "/v1/models?status=downloaded"
-
-    case Req.get(url, receive_timeout: @timeout_ms, retry: false) do
-      {:ok, %Req.Response{status: 200, body: body}} -> decode_models(body)
-      {:ok, %Req.Response{status: status}} -> {:error, {:http, status}}
-      {:error, %Req.TransportError{}} -> {:error, :exo_unreachable}
-      {:error, %Mint.TransportError{}} -> {:error, :exo_unreachable}
-      {:error, _} -> {:error, :exo_unreachable}
-    end
+    [
+      openai_compatible_backend: :exo,
+      base_url: Keyword.get(opts, :base_url, configured_base_url()),
+      timeout_ms: @timeout_ms
+    ]
+    |> ModelListing.list()
+    |> ModelListing.legacy_result()
   end
 
   @doc """
@@ -136,25 +138,6 @@ defmodule ExAthena.Chat.Exo do
         end
     end
   end
-
-  defp decode_models(%{"data" => list}) when is_list(list) do
-    names =
-      list
-      |> Enum.map(&Map.get(&1, "id"))
-      |> Enum.filter(&is_binary/1)
-      |> Enum.sort()
-
-    {:ok, names}
-  end
-
-  defp decode_models(body) when is_binary(body) do
-    case Jason.decode(body) do
-      {:ok, decoded} -> decode_models(decoded)
-      {:error, _} -> {:error, :unexpected_response}
-    end
-  end
-
-  defp decode_models(_), do: {:error, :unexpected_response}
 
   defp configured_base_url do
     :ex_athena

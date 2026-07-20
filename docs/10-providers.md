@@ -37,8 +37,11 @@ Source: [`ExAthena.Provider`](../lib/ex_athena/provider.ex). The contract:
 @callback capabilities() :: Capabilities.t()
 @callback embed(String.t() | [String.t()], keyword()) ::
             {:ok, Embedding.t()} | {:error, term()}
+@callback list_models(keyword()) :: {:ok, [Model.t()]} | {:error, term()}
 
-@optional_callbacks [stream: 3, capabilities: 1, list_models: 0, embed: 2]
+@optional_callbacks [
+  stream: 3, capabilities: 1, list_models: 0, list_models: 1, embed: 2
+]
 ```
 
 The Loop calls `stream/3` when `:on_event` is set, `query/2` otherwise.
@@ -48,6 +51,15 @@ layers, not inference. It is optional because not every provider is an
 inference endpoint (`:claude_code` is a self-contained agent CLI); providers
 that implement it advertise `embeddings: true` so callers can feature-detect
 before building on it. See the [Embeddings guide](../guides/embeddings.md).
+
+`list_models/1` likewise sits outside the loop — it serves
+`ExAthena.list_models/2` for model pickers. It takes opts because *which*
+models exist depends on where the provider is pointed: two Ollama daemons hold
+different models, and an API key narrows a cloud catalog to what the account can
+actually call. `list_models/0` is the older, config-blind form; a provider
+implements whichever it can answer and advertises `model_listing: true`.
+`ExAthena.list_models/2` prefers arity 1, falls back to arity 0, and lifts that
+form's bare strings into `ExAthena.Model` structs so callers see one shape.
 
 ---
 

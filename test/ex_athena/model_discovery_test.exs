@@ -21,6 +21,34 @@ defmodule ExAthena.ModelDiscoveryTest do
     end
   end
 
+  describe "cached/3" do
+    test "computes on a miss and serves the memoised value while it is fresh" do
+      assert {:ok, :first} = ModelDiscovery.cached({:t, 1}, 60_000, fn -> {:ok, :first} end)
+      assert {:ok, :first} = ModelDiscovery.cached({:t, 1}, 60_000, fn -> {:ok, :second} end)
+    end
+
+    test "recomputes once the entry is older than the ttl" do
+      assert {:ok, :first} = ModelDiscovery.cached({:t, 2}, 0, fn -> {:ok, :first} end)
+      assert {:ok, :second} = ModelDiscovery.cached({:t, 2}, 0, fn -> {:ok, :second} end)
+    end
+
+    test "keys entries independently" do
+      assert {:ok, :a} = ModelDiscovery.cached({:t, :a}, 60_000, fn -> {:ok, :a} end)
+      assert {:ok, :b} = ModelDiscovery.cached({:t, :b}, 60_000, fn -> {:ok, :b} end)
+      assert {:ok, :a} = ModelDiscovery.cached({:t, :a}, 60_000, fn -> {:ok, :never} end)
+    end
+
+    test "does not cache failures, so a transient outage is retried" do
+      assert {:error, :down} = ModelDiscovery.cached({:t, 3}, 60_000, fn -> {:error, :down} end)
+      assert {:ok, :up} = ModelDiscovery.cached({:t, 3}, 60_000, fn -> {:ok, :up} end)
+    end
+
+    test ":no_cache forces a recompute even when a fresh entry exists" do
+      assert {:ok, :first} = ModelDiscovery.cached({:t, 4}, 60_000, fn -> {:ok, :first} end)
+      assert {:ok, :fresh} = ModelDiscovery.cached({:t, 4}, :no_cache, fn -> {:ok, :fresh} end)
+    end
+  end
+
   describe "extract_models/2 path extraction (pure)" do
     test "extracts from data.id path" do
       body = %{"data" => [%{"id" => "model-a"}, %{"id" => "model-b"}]}

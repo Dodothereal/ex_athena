@@ -55,6 +55,22 @@ defmodule ExAthena.Provider do
   @callback list_models() :: {:ok, [String.t()]} | {:error, term()}
 
   @doc """
+  Config-aware model listing, returning normalised `ExAthena.Model` structs.
+
+  Preferred over `list_models/0`: which models exist depends on where you are
+  pointed (two Ollama daemons have different models installed) and on your
+  credentials, so listing needs the same per-call opts as `query/2` —
+  `:base_url`, `:api_key`, `:req_llm_provider_tag`, `:openai_compatible_backend`.
+  This mirrors `capabilities/0` vs `capabilities/1`.
+
+  `ExAthena.list_models/2` prefers this callback and falls back to
+  `list_models/0`, wrapping its bare strings, so a provider need only implement
+  one. Advertise support with `model_listing: true` in `capabilities/0`.
+  """
+  @callback list_models(opts :: keyword()) ::
+              {:ok, [ExAthena.Model.t()]} | {:error, term()}
+
+  @doc """
   Embed one or more texts. Optional — providers that cannot embed simply omit
   the callback and declare `embeddings: false` (or nothing) in `capabilities/0`;
   `ExAthena.embed/2` then returns a `:capability` error instead of crashing.
@@ -67,5 +83,5 @@ defmodule ExAthena.Provider do
   @callback embed(input :: String.t() | [String.t()], opts :: keyword()) ::
               {:ok, Embedding.t()} | {:error, term()}
 
-  @optional_callbacks [stream: 3, capabilities: 1, list_models: 0, embed: 2]
+  @optional_callbacks [stream: 3, capabilities: 1, list_models: 0, list_models: 1, embed: 2]
 end

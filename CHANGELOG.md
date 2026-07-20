@@ -9,6 +9,29 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Model listing API — `ExAthena.list_models/2`.** Enumerating a provider's
+  models was possible only for `:claude_code` and JSON-spec providers; the
+  ReqLLM adapter — through which every mainstream provider routes — could not do
+  it at all, and Ollama listing sat off to the side in `ExAthena.Chat.Ollama`
+  hitting `/api/tags` directly. Host apps consequently re-implemented Ollama's
+  API themselves to build a model picker. `list_models/2` covers every provider
+  from one call and returns `%ExAthena.Model{}` structs (id, name, provider,
+  context window, max output tokens, source) rather than provider-specific JSON,
+  so hosts never parse a wire format. Live endpoints are enumerated where one
+  exists (`/api/tags` for Ollama, `/v1/models` for OpenAI-wire servers) and the
+  llm_db catalog answers for providers that publish no list endpoint (Anthropic,
+  Gemini) — neither `req_llm` nor `llm_db` can enumerate a live server, so the
+  transport is ours while the catalog supplies metadata. Context windows are
+  reported as `nil` rather than guessed when nothing can establish them, since a
+  wrong value mis-sizes compaction silently. Results share the existing
+  `ExAthena.ModelDiscovery` TTL cache instead of adding a second one; pass
+  `cache: false` to force a refresh. Advertised as `model_listing: true` in
+  `capabilities/0` for feature detection, and backed by a new optional
+  `ExAthena.Provider.list_models/1` callback that takes per-call opts — which
+  models exist depends on where the provider is pointed, so the config-blind
+  `list_models/0` could not answer it.
+  ([#128](https://github.com/udin-io/ex_athena/issues/128))
+
 - **Embeddings API — `ExAthena.embed/2`.** Retrieval features (pgvector search,
   grounded code Q&A, dedup) previously had to bypass the library and make their
   own HTTP calls, because ex_athena had no embeddings support at all. `embed/2`
@@ -24,6 +47,17 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `req_llm`'s own embeddings API, so Ollama, OpenAI, Gemini and OpenRouter are
   all covered by one adapter path.
   ([#127](https://github.com/udin-io/ex_athena/issues/127))
+
+### Deprecated
+
+- **`ExAthena.Chat.Ollama.list_models/1` and `list_cloud_models/1`,
+  `ExAthena.Chat.LlamaCpp.list_models/1`, `ExAthena.Chat.Exo.list_models/1`.**
+  All four are now thin shims over `ExAthena.list_models/2` and return exactly
+  the sorted strings and error atoms they always did, so existing callers keep
+  working. They held three near-identical copies of the same fetch-and-decode
+  logic — the duplication that pushed host apps into writing a fourth. Use
+  `ExAthena.list_models(:ollama | :llamacpp | :exo)` instead; for the Ollama
+  cloud catalog, `ExAthena.list_models(:ollama, include_cloud: true)`.
 
 ### Security
 

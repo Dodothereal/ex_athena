@@ -23,6 +23,11 @@ defmodule ExAthena.Capabilities do
           # `ExAthena.capabilities(provider)[:embeddings]` before building a
           # retrieval layer on top.
           optional(:embeddings) => boolean(),
+          # Provider can enumerate the models it serves (via `list_models/1` or
+          # `list_models/0`), so `ExAthena.list_models/2` returns a real list.
+          # Hosts feature-detect to choose between a model picker and a
+          # free-text model field.
+          optional(:model_listing) => boolean(),
           optional(:json_mode) => boolean(),
           optional(:structured_output) => boolean(),
           optional(:max_tokens) => pos_integer(),

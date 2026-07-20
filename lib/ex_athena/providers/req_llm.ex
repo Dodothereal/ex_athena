@@ -40,7 +40,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   require Logger
 
-  alias ExAthena.{Embedding, Error, Request, Response}
+  alias ExAthena.{Embedding, Error, ModelDiscovery, ModelListing, Request, Response}
   alias ExAthena.Messages.{Message, ToolResult}
 
   # Claude Code-style log prefix so callers can filter/tail the adapter
@@ -52,6 +52,11 @@ defmodule ExAthena.Providers.ReqLLM do
   # from eating the whole context.
   @default_completion_tokens 8_192
 
+  # Matches the ProviderSpec discovery default. Long enough that opening a model
+  # picker repeatedly costs one request, short enough that `ollama pull` shows up
+  # without restarting the app.
+  @model_list_ttl_ms 300_000
+
   @impl ExAthena.Provider
   def capabilities do
     %{
@@ -59,6 +64,7 @@ defmodule ExAthena.Providers.ReqLLM do
       streaming: true,
       json_mode: true,
       embeddings: true,
+      model_listing: true,
       structured_output: true,
       # Context-window fallback when the server doesn't report one. 8k made
       # compaction fire destructively at ~5k tokens on 32k+ local models;
@@ -238,6 +244,33 @@ defmodule ExAthena.Providers.ReqLLM do
       |> Keyword.put_new(:receive_timeout, timeout_ms)
 
     Keyword.put(opts, :req_http_options, http_opts)
+  end
+
+  # ── Model listing ─────────────────────────────────────────────────
+  #
+  # Neither req_llm nor llm_db can enumerate a live endpoint (see
+  # `ExAthena.ModelListing` for the audit), so the adapter owns discovery the
+  # same way it owns chat: one place that knows base_url/api-key plumbing for
+  # every backend routed here. Results are memoised in `ExAthena.ModelDiscovery`
+  # — the cache that already served `ProviderSpec` providers — because a model
+  # picker re-lists on every open and local daemons are slow to answer.
+
+  @impl ExAthena.Provider
+  def list_models(opts \\ []) do
+    ttl =
+      if Keyword.get(opts, :cache, true),
+        do: Keyword.get(opts, :model_list_ttl_ms, @model_list_ttl_ms),
+        else: :no_cache
+
+    ModelDiscovery.cached(list_cache_key(opts), ttl, fn -> ModelListing.list(opts) end)
+  end
+
+  # Two daemons on different ports hold different models, and the cloud
+  # catalogue is a different list again — all three must key apart.
+  defp list_cache_key(opts) do
+    {__MODULE__, Keyword.get(opts, :openai_compatible_backend),
+     Keyword.get(opts, :req_llm_provider_tag), Keyword.get(opts, :base_url),
+     Keyword.get(opts, :include_cloud, false)}
   end
 
   # ── Model resolution ──────────────────────────────────────────────

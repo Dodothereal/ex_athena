@@ -28,7 +28,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     use ExRatatui.App
 
-    alias ExAthena.Chat.{Commands, Exo, LlamaCpp, Ollama, Session}
+    alias ExAthena.Chat.{Commands, Session}
     alias ExAthena.Chat.Tui.{Runner, State, View}
     alias ExAthena.Tools
     alias ExRatatui.Event
@@ -956,20 +956,14 @@ if Code.ensure_loaded?(ExRatatui.App) do
       end
     end
 
-    defp list_models_for(%{provider: :llamacpp}), do: LlamaCpp.list_models([])
-
-    defp list_models_for(%{provider: :exo}), do: Exo.list_models([])
-
+    # One call now covers local daemons, JSON-spec catalogs and cloud providers
+    # alike — the per-provider branching this used to carry lives behind
+    # `ExAthena.list_models/2`. The popup wants plain ids, and the messages
+    # below are keyed on the legacy error atoms `legacy_result/1` preserves.
     defp list_models_for(%{provider: provider}) do
-      # Registry spec (user JSON) or a built-in spec (e.g. OpenRouter) with
-      # model discovery → fetch its catalog; otherwise fall back to Ollama.
-      case ExAthena.Config.provider_spec(provider) do
-        {:ok, %ExAthena.ProviderSpec{model_discovery: disc} = spec} when not is_nil(disc) ->
-          ExAthena.ModelDiscovery.list_models(spec)
-
-        _ ->
-          Ollama.list_models([])
-      end
+      provider
+      |> ExAthena.list_models()
+      |> ExAthena.ModelListing.legacy_result()
     end
 
     defp no_models_message(:llamacpp),
@@ -992,24 +986,12 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     # Reconcile the configured model against what the local provider has
     # available; surface diagnostics as banner rows but don't block startup.
-    defp reconcile_initial_session(%Session{provider: :ollama} = session) do
-      case Runner.select_initial_model(session.model, Ollama.list_models([])) do
-        {:ok, _} -> session
-        {:fallback, model} -> Session.set_model(session, model)
-        {:error, _} -> session
-      end
-    end
-
-    defp reconcile_initial_session(%Session{provider: :llamacpp} = session) do
-      case Runner.select_initial_model(session.model, LlamaCpp.list_models([])) do
-        {:ok, _} -> session
-        {:fallback, model} -> Session.set_model(session, model)
-        {:error, _} -> session
-      end
-    end
-
-    defp reconcile_initial_session(%Session{provider: :exo} = session) do
-      case Runner.select_initial_model(session.model, Exo.list_models([])) do
+    # Only the local servers are reconciled: they hold a small, changeable set
+    # of installed models, so a stale configured model is both likely and
+    # cheap to detect. Cloud catalogs are neither.
+    defp reconcile_initial_session(%Session{provider: provider} = session)
+         when provider in [:ollama, :llamacpp, :exo] do
+      case Runner.select_initial_model(session.model, list_models_for(session)) do
         {:ok, _} -> session
         {:fallback, model} -> Session.set_model(session, model)
         {:error, _} -> session

@@ -32,6 +32,7 @@ defmodule ExAthena.Providers.ClaudeCode do
       self_contained_tools: true,
       streaming: true,
       json_mode: true,
+      model_listing: true,
       structured_output: true,
       max_tokens: 200_000,
       supports_resume: true,
@@ -44,16 +45,23 @@ defmodule ExAthena.Providers.ClaudeCode do
   def capabilities(_opts), do: capabilities()
 
   @impl ExAthena.Provider
-  def list_models, do: list_models(model_source())
+  def list_models, do: list_models_from(model_source())
 
   @doc """
   Like `list_models/0`, but with an explicit `ExAthena.Providers.ClaudeCode.ModelSource`.
 
   Maps the CLI's reported models down to a sorted, de-duplicated list of model
   identifier strings (dropping blanks), which is what the UI dropdown needs.
+
+  Named apart from `list_models/1` because that arity now belongs to the
+  provider behaviour, where the argument is per-call opts rather than a source
+  module. `ExAthena.list_models/2` wraps this provider's strings into
+  `ExAthena.Model` structs on its behalf — the Claude Code CLI reports a fixed
+  set of models that no configuration can change, so there is nothing for an
+  opts-aware callback to do here.
   """
-  @spec list_models(module()) :: {:ok, [String.t()]} | {:error, term()}
-  def list_models(source) when is_atom(source) do
+  @spec list_models_from(module()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_models_from(source) when is_atom(source) do
     case source.supported_models() do
       {:ok, infos} when is_list(infos) ->
         models =

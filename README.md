@@ -161,7 +161,7 @@ commands switch state without restarting:
 
 | Command | What it does |
 |---|---|
-| `/model` | Live-list installed Ollama models and pick one |
+| `/model` | Live-list the current provider's models and pick one |
 | `/mode` | Switch between `react`, `plan_and_solve`, `reflexion` |
 | `/tools` | Show the tools the agent currently has access to |
 | `/clear` | Wipe conversation history (start a fresh thread) |

@@ -51,13 +51,13 @@ defmodule ExAthena.Providers.ClaudeCodeTest do
     def supported_models, do: {:error, :unavailable}
   end
 
-  test "list_models/1 returns sorted, unique, non-blank model values from the source" do
-    assert ClaudeCode.list_models(UnsortedSource) ==
+  test "list_models_from/1 returns sorted, unique, non-blank model values from the source" do
+    assert ClaudeCode.list_models_from(UnsortedSource) ==
              {:ok, ["claude-opus-4-8", "claude-sonnet-4-6"]}
   end
 
-  test "list_models/1 propagates source errors" do
-    assert ClaudeCode.list_models(ErrorSource) == {:error, :unavailable}
+  test "list_models_from/1 propagates source errors" do
+    assert ClaudeCode.list_models_from(ErrorSource) == {:error, :unavailable}
   end
 
   # ── streaming message handling ───────────────────────────────────
