@@ -45,15 +45,69 @@ defmodule ExAthena.ToolContext do
   @spec confined?(t()) :: boolean()
   def confined?(%__MODULE__{allowed_roots: roots}), do: is_list(roots)
 
+  # Mirrors the kernel's nested-symlink limit (Linux SYMLOOP_MAX/ELOOP ≈ 40).
+  # Exceeding it means a symlink loop (or absurd nesting) — treated as outside.
+  @max_symlink_hops 40
+
   @doc """
   Whether an absolute `path` lies within one of `roots`. Compares on path
   segments (not string prefixes) so `/foo` never matches `/foobar`. A path equal
   to a root counts as inside it.
+
+  Both `path` and `roots` are canonicalized first — every existing symlink
+  component is resolved to its real target — so a symlink placed inside a root
+  but pointing outside does not pass, while symlinks that stay inside the roots
+  (and roots that are themselves symlinks, e.g. macOS `/tmp` →
+  `/private/tmp`) keep working. Symlink loops count as outside.
   """
   @spec within_roots?(Path.t(), [Path.t()]) :: boolean()
   def within_roots?(path, roots) when is_list(roots) do
-    path_parts = path |> Path.expand() |> Path.split()
-    Enum.any?(roots, fn root -> List.starts_with?(path_parts, Path.split(root)) end)
+    case path |> Path.expand() |> canonicalize() do
+      {:ok, canonical} ->
+        path_parts = Path.split(canonical)
+
+        Enum.any?(roots, fn root ->
+          case root |> Path.expand() |> canonicalize() do
+            {:ok, canonical_root} -> List.starts_with?(path_parts, Path.split(canonical_root))
+            {:error, _} -> false
+          end
+        end)
+
+      {:error, _} ->
+        false
+    end
+  end
+
+  # Resolve every symlink component of an already-expanded absolute path,
+  # walking left to right the way the OS does. Components that don't exist yet
+  # are kept lexically (files about to be created canonicalize through their
+  # deepest existing ancestor). Relative link targets resolve against the
+  # link's directory; a resolved target may itself contain symlinks, so the
+  # walk restarts from its head. O(path components), bounded by the hop cap.
+  defp canonicalize(abs_path) do
+    case Path.split(abs_path) do
+      [fs_root | components] -> do_canonicalize([fs_root], components, @max_symlink_hops)
+      [] -> {:ok, abs_path}
+    end
+  end
+
+  defp do_canonicalize(resolved, [], _hops), do: {:ok, Path.join(resolved)}
+
+  defp do_canonicalize(resolved, [component | rest], hops) do
+    candidate = Path.join(resolved ++ [component])
+
+    case File.read_link(candidate) do
+      {:ok, _target} when hops <= 0 ->
+        {:error, :symlink_loop}
+
+      {:ok, target} ->
+        retarget = Path.expand(target, Path.join(resolved))
+        [fs_root | components] = Path.split(retarget)
+        do_canonicalize([fs_root], components ++ rest, hops - 1)
+
+      {:error, _not_a_symlink_or_missing} ->
+        do_canonicalize(resolved ++ [component], rest, hops)
+    end
   end
 
   @doc """
@@ -64,9 +118,10 @@ defmodule ExAthena.ToolContext do
   absolute paths pass through untouched.
 
   Confined (`allowed_roots` is a list) expands the path to an absolute one
-  (handling `..`/`~` lexically) and requires the result to fall inside one of
-  the roots, returning `{:error, {:path_outside_roots, abs}}` otherwise — so
-  neither `/etc/passwd` nor `../../secret` can escape.
+  (handling `..`/`~` lexically), resolves symlinks (see `within_roots?/2`), and
+  requires the canonical result to fall inside one of the roots, returning
+  `{:error, {:path_outside_roots, abs}}` otherwise — so neither `/etc/passwd`,
+  `../../secret`, nor an in-root symlink pointing outside can escape.
   """
   @spec resolve_path(t(), String.t()) :: {:ok, Path.t()} | {:error, term()}
   def resolve_path(%__MODULE__{} = ctx, path) when is_binary(path) do

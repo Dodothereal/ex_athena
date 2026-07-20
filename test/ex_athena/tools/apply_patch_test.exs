@@ -156,6 +156,49 @@ defmodule ExAthena.Tools.ApplyPatchTest do
     end
   end
 
+  describe "confined — symlink escape" do
+    setup %{dir: dir} do
+      root = Path.join(dir, "root")
+      outside = Path.join(dir, "outside")
+      File.mkdir_p!(root)
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "secret.txt"), "top secret\n")
+      %{root: root, outside: outside, ctx: ToolContext.new(cwd: root, allowed_roots: [root])}
+    end
+
+    test "patch targeting a symlink pointing outside the roots is rejected",
+         %{root: root, outside: outside, ctx: ctx} do
+      File.ln_s!(Path.join(outside, "secret.txt"), Path.join(root, "leak"))
+
+      patch = """
+      --- a/leak
+      +++ b/leak
+      @@ -1,1 +1,1 @@
+      -top secret
+      +pwned
+      """
+
+      assert {:error, {:path_outside_roots, _}} = ApplyPatch.execute(%{"patch" => patch}, ctx)
+      assert File.read!(Path.join(outside, "secret.txt")) == "top secret\n"
+    end
+
+    test "patch through an in-root symlink still applies", %{root: root, ctx: ctx} do
+      File.write!(Path.join(root, "real.txt"), "top secret\n")
+      File.ln_s!(Path.join(root, "real.txt"), Path.join(root, "alias"))
+
+      patch = """
+      --- a/alias
+      +++ b/alias
+      @@ -1,1 +1,1 @@
+      -top secret
+      +edited
+      """
+
+      assert {:ok, _msg, _ui} = ApplyPatch.execute(%{"patch" => patch}, ctx)
+      assert File.read!(Path.join(root, "real.txt")) == "edited\n"
+    end
+  end
+
   describe "malformed patch" do
     test "empty patch string returns :empty_patch", %{ctx: ctx} do
       assert {:error, :empty_patch} = ApplyPatch.execute(%{"patch" => ""}, ctx)

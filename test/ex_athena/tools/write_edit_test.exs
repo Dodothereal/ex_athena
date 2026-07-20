@@ -129,4 +129,59 @@ defmodule ExAthena.Tools.WriteEditTest do
                )
     end
   end
+
+  describe "confined — symlink escape" do
+    setup %{dir: dir} do
+      root = Path.join(dir, "root")
+      outside = Path.join(dir, "outside")
+      File.mkdir_p!(root)
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "secret.txt"), "top secret")
+      %{root: root, outside: outside, ctx: ToolContext.new(cwd: root, allowed_roots: [root])}
+    end
+
+    test "Write refuses a symlink pointing outside and leaves the target untouched",
+         %{root: root, outside: outside, ctx: ctx} do
+      File.ln_s!(Path.join(outside, "secret.txt"), Path.join(root, "leak"))
+
+      assert {:error, {:path_outside_roots, _}} =
+               Write.execute(%{"path" => "leak", "content" => "pwned"}, ctx)
+
+      assert File.read!(Path.join(outside, "secret.txt")) == "top secret"
+    end
+
+    test "Write refuses creating a file through an escaping directory symlink",
+         %{root: root, outside: outside, ctx: ctx} do
+      File.ln_s!(outside, Path.join(root, "esc_dir"))
+
+      assert {:error, {:path_outside_roots, _}} =
+               Write.execute(%{"path" => "esc_dir/new.txt", "content" => "pwned"}, ctx)
+
+      refute File.exists?(Path.join(outside, "new.txt"))
+    end
+
+    test "Write still works through an in-root directory symlink",
+         %{root: root, ctx: ctx} do
+      File.mkdir_p!(Path.join(root, "subdir"))
+      File.ln_s!(Path.join(root, "subdir"), Path.join(root, "sublink"))
+
+      assert {:ok, _, _} =
+               Write.execute(%{"path" => "sublink/new.txt", "content" => "ok"}, ctx)
+
+      assert File.read!(Path.join(root, "subdir/new.txt")) == "ok"
+    end
+
+    test "Edit refuses a symlink pointing outside and leaves the target untouched",
+         %{root: root, outside: outside, ctx: ctx} do
+      File.ln_s!(Path.join(outside, "secret.txt"), Path.join(root, "leak"))
+
+      assert {:error, {:path_outside_roots, _}} =
+               Edit.execute(
+                 %{"path" => "leak", "old_string" => "top", "new_string" => "pwned"},
+                 ctx
+               )
+
+      assert File.read!(Path.join(outside, "secret.txt")) == "top secret"
+    end
+  end
 end

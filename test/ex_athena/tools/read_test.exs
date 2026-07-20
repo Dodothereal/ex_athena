@@ -131,4 +131,31 @@ defmodule ExAthena.Tools.ReadTest do
     assert String.length(body) < 17_000
     assert body =~ "truncated"
   end
+
+  describe "confined — symlink escape" do
+    setup %{dir: dir} do
+      root = Path.join(dir, "root")
+      outside = Path.join(dir, "outside")
+      File.mkdir_p!(root)
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "secret.txt"), "top secret")
+      %{root: root, outside: outside, ctx: ToolContext.new(cwd: root, allowed_roots: [root])}
+    end
+
+    test "refuses to read through a symlink pointing outside the roots",
+         %{root: root, outside: outside, ctx: ctx} do
+      File.ln_s!(Path.join(outside, "secret.txt"), Path.join(root, "leak"))
+
+      assert {:error, {:path_outside_roots, _}} = Read.execute(%{"path" => "leak"}, ctx)
+    end
+
+    test "still reads through a symlink that stays inside the roots",
+         %{root: root, ctx: ctx} do
+      File.write!(Path.join(root, "real.txt"), "inside")
+      File.ln_s!(Path.join(root, "real.txt"), Path.join(root, "alias"))
+
+      assert {:ok, body, _ui} = Read.execute(%{"path" => "alias"}, ctx)
+      assert body =~ "inside"
+    end
+  end
 end
