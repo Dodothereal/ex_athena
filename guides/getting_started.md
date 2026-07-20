@@ -72,7 +72,9 @@ IO.puts(response.text)
 `response` is an `%ExAthena.Response{}` with:
 
 - `:text` — concatenated assistant text
-- `:tool_calls` — any tool calls the model wants the runtime to execute (empty in Phase 1)
+- `:tool_calls` — any tool calls the model wants the runtime to execute
+  (always empty for `query/2` unless you passed `:tools`; `ExAthena.run/2`
+  executes them for you)
 - `:finish_reason` — `:stop | :length | :tool_calls | :content_filter | :error`
 - `:usage` — token accounting when the provider reports it
 - `:model`, `:provider`, `:raw`
@@ -96,5 +98,6 @@ work per-delta, hand off to a `Task`.
 
 - [Providers](providers.md) — full config surface for each provider.
 - [Tool calls](tool_calls.md) — native vs text-tagged protocols.
-- Phase 2 ships: `ExAthena.Tool`, `ExAthena.Loop`, `ExAthena.Session`,
-  `ExAthena.extract_structured/2`.
+- [The agent loop](agent_loop.md) — `ExAthena.run/2`, `ExAthena.Tool`,
+  `ExAthena.Session`, and `ExAthena.extract_structured/2`.
+- [Embeddings](embeddings.md) — `ExAthena.embed/2`.

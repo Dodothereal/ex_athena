@@ -113,6 +113,8 @@ defmodule ExAthena.MixProject do
           ExAthena.Request,
           ExAthena.Response,
           ExAthena.Embedding,
+          ExAthena.Model,
+          ExAthena.ModelListing,
           ExAthena.Result
         ],
         "Agent loop": [

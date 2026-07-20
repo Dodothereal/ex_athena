@@ -38,7 +38,7 @@ defmodule ExAthena.Result do
       Hosts pass it back as `resume:` on the next `run/2` to continue that
       conversation; `nil` for stateless providers.
     * `:telemetry` — span metadata summarising OTel attrs for the run
-      (Phase 4).
+      (see `ExAthena.Telemetry`).
     * `:no_progress_snapshot` — the last few message pairs (assistant +
       tool results) captured when `finish_reason` is `:error_no_progress`.
       `nil` for all other terminations.

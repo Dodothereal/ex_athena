@@ -88,7 +88,7 @@ capabilities AND the response shape:
 | `native: true` | empty, no fences | returns `{:ok, []}` |
 | `native: false` | any | TextTagged |
 
-The agent loop (Phase 2) uses this to recover when a provider declares
+`ExAthena.Loop` uses this to recover when a provider declares
 native support but the model actually emits text-tagged blocks — common
 with smaller Ollama models.
 

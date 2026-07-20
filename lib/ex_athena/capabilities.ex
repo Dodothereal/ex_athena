@@ -2,9 +2,11 @@ defmodule ExAthena.Capabilities do
   @moduledoc """
   Provider-capability map shape.
 
-  Each provider declares what it can do so the agent loop (shipping in Phase 2)
-  can choose the right tool-call protocol and fall back gracefully when a
-  provider lies about its capabilities.
+  Each provider declares what it can do so `ExAthena.Loop` can choose the right
+  tool-call protocol and fall back gracefully when a provider lies about its
+  capabilities. Callers read the same map through `ExAthena.capabilities/1` to
+  feature-detect optional capabilities (embeddings, model listing, resume)
+  before depending on them.
 
   All keys are optional; missing keys are treated as `false` / `nil`.
   """

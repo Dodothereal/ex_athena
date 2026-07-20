@@ -7,14 +7,47 @@ defmodule ExAthena do
   Claude API — with the same tools, hooks, permissions, and streaming semantics
   across every provider.
 
-  ## Phase 1 surface (this release)
+  ## The public surface
 
-  Pure inference — `query/3` and `stream/3`. No tool execution, no agent loop
-  yet (those ship in Phase 2 alongside `ExAthena.Tool`, `ExAthena.Loop`, and
-  `ExAthena.Session`).
+  Everything listed here is shipped and wired — there is no "coming later"
+  half of this API.
 
-      ExAthena.query("Tell me a joke", provider: :ollama, model: "llama3.1")
-      #=> {:ok, %ExAthena.Response{text: "…", …}}
+  * `query/2` — one-shot inference, returns an `ExAthena.Response`.
+  * `stream/3` — the same call with `ExAthena.Streaming.Event` deltas pushed
+    to a callback.
+  * `run/2` — the full agent loop (`ExAthena.Loop`): infer → tool call →
+    execute → replay → repeat.
+  * `extract_structured/2` — schema-validated JSON extraction
+    (`ExAthena.Structured`).
+  * `embed/2` — text embeddings, one vector per input (`ExAthena.Embedding`).
+  * `list_models/2` — enumerate a provider's models as `ExAthena.Model`
+    structs (`ExAthena.ModelListing`).
+  * `capabilities/1` — the provider's `ExAthena.Capabilities` map. Feature-detect
+    with it before relying on any optional capability.
+
+        ExAthena.query("Tell me a joke", provider: :ollama, model: "llama3.1")
+        #=> {:ok, %ExAthena.Response{text: "…", …}}
+
+        ExAthena.run("read mix.exs and list the deps",
+          provider: :ollama,
+          tools: :all,
+          cwd: "/path/to/project")
+        #=> {:ok, %ExAthena.Result{text: "…", iterations: 3, …}}
+
+  ## The agent loop and its harness
+
+  `run/2` is the entry point to the operational harness: the builtin tool set
+  (`ExAthena.Tools` — file read/write/edit, bash, glob, grep, web fetch and
+  search, subagent spawn), native MCP servers (`ExAthena.Mcp`), five permission
+  modes (`ExAthena.Permissions`), a 14-event hook surface (`ExAthena.Hooks`), a
+  five-stage compaction pipeline (`ExAthena.Compactor`), file-based memory and
+  skills (`ExAthena.Memory`, `ExAthena.Skills`), custom agents with optional
+  git-worktree isolation (`ExAthena.Agents`), opt-in workspace confinement
+  (`confine: true` / `allowed_roots: [...]`, with an OS sandbox for `bash`),
+  and append-only session storage with checkpoint/rewind (`ExAthena.Session`,
+  `ExAthena.Checkpoint`).
+
+  See the [agent loop guide](guides/agent_loop.md) for the full option list.
 
   ## Configuring a default provider
 
@@ -100,7 +133,9 @@ defmodule ExAthena do
     * `:messages` — list of canonical messages; `prompt` is prepended as a user
       message if given.
     * `:max_tokens`, `:temperature`, `:top_p`, `:stop` — optional sampling knobs.
-    * `:timeout_ms` — request timeout (default 60_000).
+    * `:timeout_ms` — request timeout (default 300_000). The 5-minute default
+      is deliberate: local backends spend minutes prompt-processing a large
+      agent transcript before the first byte comes back.
     * `:provider_opts` — escape hatch keyword list passed through to the
       underlying provider.
     * `:images` — list of image maps to attach to the trailing user message.
@@ -172,7 +207,7 @@ defmodule ExAthena do
 
   See `ExAthena.Loop.run/2` for the full option list.
   """
-  @spec run(String.t() | nil, keyword()) :: {:ok, map()} | {:error, term()}
+  @spec run(String.t() | nil, keyword()) :: {:ok, ExAthena.Result.t()} | {:error, term()}
   def run(prompt, opts \\ []) do
     ExAthena.Loop.run(prompt, opts)
   end

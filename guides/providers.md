@@ -30,7 +30,7 @@ ExAthena.query("…", provider: :ollama, model: "qwen2.5-coder")
 | Native tool calls | ✅ (model-dependent) |
 | Streaming | ✅ |
 | JSON mode | ✅ via `format: "json"` |
-| Resume | ❌ (use `ExAthena.Session` in Phase 2) |
+| Resume | ❌ at the provider (use `ExAthena.Session` for resumable runs) |
 
 ## OpenAI-compatible (`:openai_compatible` / `:openai` / `:llamacpp`)
 
@@ -64,17 +64,36 @@ ExAthena.query("…",
 | JSON mode | ✅ via `response_format: %{type: "json_object"}` |
 | Resume | ❌ |
 
-## Claude (`:claude`)
+## Claude (`:claude` / `:anthropic`)
 
-Wraps the `claude_code` SDK. Preserves every feature the SDK provides
-natively — hooks, `can_use_tool` callbacks, MCP servers, session resume,
-prompt cache reuse — by passing them through via `:provider_opts`.
+The Anthropic Messages API over HTTP, via `req_llm` — an ordinary inference
+provider, driven by ex_athena's own agent loop and tools like every other.
 
 ```elixir
 config :ex_athena, :claude,
   api_key: System.get_env("ANTHROPIC_API_KEY"),
   model: "claude-opus-4-8"
 ```
+
+### Capabilities
+
+| Feature | Status |
+|---|---|
+| Native tool calls | ✅ `tool_use` blocks |
+| Streaming | ✅ SSE |
+| JSON mode | ✅ (see `ExAthena.extract_structured/2`) |
+| Resume | ❌ at the provider (use `ExAthena.Session` for resumable runs) |
+
+## Claude Code CLI (`:claude_code`)
+
+A different thing from `:claude`: this drives the local `claude` CLI through
+the `claude_code` SDK, authenticated by an Anthropic **subscription / OAuth
+token** (`CLAUDE_CODE_OAUTH_TOKEN`) or a logged-in CLI — no
+`ANTHROPIC_API_KEY`. The CLI is itself a complete coding agent, so it runs its
+own tools and owns its own loop; ex_athena does not execute tools for it and
+its reply text is the final answer. Pass the SDK's own knobs
+(`:allowed_tools`, `:permission_mode`, `:resume`, `:continue`, MCP servers) via
+`:provider_opts`.
 
 The `claude_code` dep is declared `optional: true` on `ex_athena`; if you
 use this provider, add it to your own deps:
@@ -87,9 +106,9 @@ use this provider, add it to your own deps:
 
 | Feature | Status |
 |---|---|
-| Native tool calls | ✅ `tool_use` blocks |
-| Streaming | Phase 2 (via `ExAthena.Session`) |
-| JSON mode | ❌ (use structured output in Phase 2) |
+| Native tool calls | ❌ — self-contained agent, runs its own tools |
+| Streaming | ✅ |
+| JSON mode | ✅ |
 | Resume | ✅ via the SDK's session resume |
 
 ## Gemini (`:gemini`)
@@ -427,6 +446,6 @@ end
 ExAthena.query("hi", provider: MyApp.MyProvider)
 ```
 
-Capabilities are used by the agent loop (Phase 2) to pick the right
+Capabilities are used by `ExAthena.Loop` to pick the right
 tool-call protocol. Declare what you actually support — if you lie, the
 loop will fall back automatically.

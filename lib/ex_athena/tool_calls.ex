@@ -117,8 +117,8 @@ defmodule ExAthena.ToolCalls do
   Append text-tagged tool-call instructions to a system prompt so
   non-native-tool-call providers know how to respond.
 
-  The agent loop (Phase 2) calls this when the chosen provider lacks native
-  tool-call support, or when the user has forced TextTagged mode.
+  `ExAthena.Loop` calls this when the chosen provider lacks native tool-call
+  support, or when the user has forced TextTagged mode.
 
   ## Options
 

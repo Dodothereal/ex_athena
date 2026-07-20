@@ -3,8 +3,10 @@ defmodule ExAthena.Streaming do
   Canonical streaming event types and the broadcaster helper.
 
   Providers emit events as tokens arrive. The `ExAthena` facade forwards them
-  to the user-supplied callback. Phase 2 (agent loop) also consumes these
-  events to build up tool-call requests and decide when to stop.
+  to the user-supplied callback. `ExAthena.Loop` consumes the same events to
+  build up tool-call requests and decide when to stop, and re-emits tool
+  activity (`:tool_call_start`, `:tool_result`) so hosts can render a live
+  transcript of the run.
   """
 
   defmodule Event do

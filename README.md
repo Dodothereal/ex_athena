@@ -10,16 +10,20 @@ Code SDK that runs on **Ollama**, **OpenAI-compatible endpoints**
 **Google Gemini**, or **Anthropic Claude** itself — with the same tools,
 hooks, permissions, and streaming semantics across every provider.
 
-> **Status (v0.12):** two front-ends land on top of the agent loop — a
-> full-screen terminal TUI (`mix athena.chat`, built on `ex_ratatui`) with
-> split message/details panes, real-time thinking, a live `git diff` Changes
-> tab, mouse support, and a stop button; and a Phoenix LiveView web UI
-> (`mix athena.web`) with session recall, fork, and a diff viewer. This
-> release also adds a first-class **llama.cpp** provider and streams
-> thinking/reasoning deltas as loop events. The TUI/web deps (`ex_ratatui`,
-> `phoenix`, `phoenix_live_view`, `bandit`) are now **optional**, so the core
-> library stays lean. See the [v0.12.0 changelog](CHANGELOG.md#v0120--interactive-tui-web-ui-llamacpp-provider-thinking-prompt-hardening)
-> for the full list.
+> **Status (v0.17):** the agent loop, tools, MCP, permissions, hooks,
+> compaction, subagents and sessions are all shipped — `ExAthena.run/2` is the
+> entry point, `ExAthena.query/2` and `stream/3` remain for plain inference,
+> and `embed/2`, `list_models/2` and `extract_structured/2` round out the API.
+> Two front-ends ride on top: a full-screen terminal TUI (`mix athena.chat`)
+> and a Phoenix LiveView web UI (`mix athena.web`) with session recall, fork,
+> and a diff viewer; their deps (`ex_ratatui`, `phoenix`, `phoenix_live_view`,
+> `bandit`) are **optional**, so the core library stays lean.
+>
+> v0.17 adds **workspace confinement + OS sandboxing** — `confine: true` /
+> `allowed_roots: [...]` restricts filesystem tools to a root set and runs
+> `bash` under `sandbox-exec` (macOS) or `bubblewrap` (Linux). See the
+> [v0.17.0 changelog](CHANGELOG.md#v0170--workspace-confinement--sandboxing);
+> v0.16 added `web_search`, `usage_rules` and OpenRouter.
 >
 > The operational harness it builds on — file-based memory
 > (`AGENTS.md`/`CLAUDE.md`), Claude Code-style skills, a five-stage compaction
@@ -316,8 +320,8 @@ ExAthena.query("…",
 - **TextTagged** — `~~~tool_call {json}` fenced blocks embedded in assistant
   prose, for models without native support.
 
-The agent loop (Phase 2) will pick the protocol based on the provider's
-declared capabilities, and fall back when the model gets it wrong.
+The agent loop picks the protocol based on the provider's declared
+capabilities, and falls back when the model gets it wrong.
 
 ## The operational harness (v0.4)
 
