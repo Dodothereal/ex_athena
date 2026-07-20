@@ -68,7 +68,27 @@ You are a code reviewer. Read the diff, identify issues, return a structured
 critique. Never modify files. Be concise — one paragraph per issue.
 ```
 
-The Markdown body becomes the subagent's `system_prompt`. Frontmatter fields override the parent's `Loop.run` opts.
+The Markdown body becomes the subagent's `system_prompt`. Frontmatter fields override the parent's `Loop.run` opts — within the guardrail bounds below.
+
+---
+
+## Guardrail inheritance — a child is never more privileged than its parent
+
+`Tools.SpawnAgent` clamps every spawn (model-initiated *and* the orchestrate
+runtime's auto-delegation) against the parent run's effective settings.
+Agent definitions and model-supplied args may **narrow** these; nothing they
+say can **widen** them:
+
+| Setting | Combination rule |
+|---|---|
+| `allowed_roots` / `confine` | A confined parent confines every child. Requested roots survive only if they lie inside a parent root (intersection); otherwise the child gets the parent's roots. The child loop still cwd-anchors its roots, so a worktree-isolated child can reach its own worktree — host-controlled, never model-controlled. |
+| `disallowed_tools` | Union of parent's and child's — a deny anywhere stays a deny. |
+| `allowed_tools` | Intersection when both exist; parent's list when only the parent has one. |
+| `can_use_tool` | Inherited from the parent unless the host already supplied one in `spawn_agent_opts` (the host is trusted; the model cannot set this). |
+| `phase` | Clamped to the more restrictive of parent's and requested (`:plan` < `:default` < `:accept_edits` < `:trusted` < `:bypass_permissions`). A `:plan` parent only ever spawns `:plan` children; a definition may still narrow (`:default` parent → `permissions: plan` child). Unknown phase atoms are treated as maximally permissive, so they always lose to the parent's phase. |
+| `hooks` | Only the parent's **`PreToolUse`** groups are inherited (they are part of the permission gate, so the parent's deny hooks protect subagent tool calls too). Other hook events are deliberately not inherited — they may assume parent context (Stop hooks persisting parent session state, SessionEnd cleanup). Hosts wanting more can pass a full hooks table via `spawn_agent_opts[:hooks]`. |
+
+Source: `inherit_guardrails/2` in [`Tools.SpawnAgent`](../lib/ex_athena/tools/spawn_agent.ex); phase ranking in [`Permissions.most_restrictive_phase/2`](../lib/ex_athena/permissions.ex). The parent's guardrails reach the tool via `ToolContext` (`allowed_roots`, `phase`) and `assigns[:run_permissions]` (set by `Loop.run` for every run, so the clamp recurses correctly for grandchildren).
 
 Source: [`Agents.Definition`](../lib/ex_athena/agents/definition.ex). The loader is in [`Agents.load!/2`](../lib/ex_athena/agents.ex).
 
@@ -191,7 +211,7 @@ The subagent is read-only (`phase: :plan`), uses a different model, and reports 
 - **`SpawnAgent` is `parallel_safe?: true`**: a parent can spawn multiple subagents concurrently. They run in separate processes (the Loop is reentrant) under `Task.async_stream`.
 - **No infinite nesting**: the parent's `parent_session_id` becomes the subagent's grandparent if it itself spawns. Track depth in `meta` if you want to limit nesting (the kernel doesn't impose a depth cap).
 - **Worktree git safety**: `Agents.Worktree.create/2` refuses to create a worktree on a dirty branch (uncommitted changes) by default. Tests cover the safety checks. Don't bypass them.
-- **Hooks on subagents**: the parent's `hooks` table is *not* automatically inherited. The subagent's Definition can carry its own hooks; otherwise it runs without. This is deliberate — subagents shouldn't be implicitly bound to parent-specific side effects.
+- **Hooks on subagents**: only the parent's `PreToolUse` groups are inherited (see "Guardrail inheritance" above) — they gate tool calls, so dropping them would let a worker bypass the parent's deny hooks. All other hook events are *not* inherited: subagents shouldn't be implicitly bound to parent-specific side effects (Stop/SessionEnd hooks often assume parent context). Pass a hooks table via `spawn_agent_opts[:hooks]` to opt in explicitly.
 - **Budget accounting**: the subagent's `usage` and `cost_usd` accrue against the parent? No — they're separate `Result`s. The parent sees the subagent's cost in the `ui_payload` returned by SpawnAgent. Tally externally if you want a top-level number.
 - **Cleanup is best-effort**: `WorktreeSweeper` is a GenServer that purges stale worktrees (no associated session, older than threshold). Don't rely on `SpawnAgent.cleanup` alone — crashes leave worktrees that the sweeper picks up later.
 

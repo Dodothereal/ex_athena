@@ -642,6 +642,14 @@ defmodule ExAthena.Loop do
           Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
         )
         |> Map.put_new(:spawn_agent_opts, inherited_provider_opts)
+        # THIS run's effective permission guardrails, read by SpawnAgent so a
+        # child is never more privileged than its parent (issue #130): the
+        # deny/allow lists and approval callback are clamped onto every
+        # sub_opts. Map.put (not put_new) — when this loop is itself a
+        # subagent, assigns arrive pre-populated with the PARENT's guardrails,
+        # and grandchildren must clamp against THIS run's (already-clamped)
+        # settings, not the stale copy.
+        |> Map.put(:run_permissions, permissions_opts)
         # web_fetch SSRF opt-out: local/private hosts are refused by default
         # (regardless of confinement); hosts opt in per run. put_new keeps a
         # value the caller already placed in assigns.

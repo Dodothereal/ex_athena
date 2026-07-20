@@ -281,6 +281,28 @@ defmodule ExAthena.Permissions do
          metadata: %{raw: other}
        }}
 
+  # Permissiveness ranking used by `most_restrictive_phase/2`. Lower rank =
+  # more restrictive. Unknown atoms rank as MOST permissive so they always
+  # lose against any known phase — a typo'd phase in an agent definition can
+  # then never widen a child's privileges past its parent.
+  @phase_rank %{plan: 0, default: 1, accept_edits: 2, trusted: 3, bypass_permissions: 4}
+
+  @doc """
+  The more restrictive of two phases (`:plan` < `:default` < `:accept_edits`
+  < `:trusted` < `:bypass_permissions`).
+
+  Used by `ExAthena.Tools.SpawnAgent` to clamp a subagent's requested phase
+  to its parent's — a child may narrow its phase but never widen it. An
+  unrecognised phase atom is treated as maximally permissive, so it is
+  always replaced by the other (known) phase.
+  """
+  @spec most_restrictive_phase(atom(), atom()) :: atom()
+  def most_restrictive_phase(a, b) do
+    if phase_rank(a) <= phase_rank(b), do: a, else: b
+  end
+
+  defp phase_rank(phase), do: Map.get(@phase_rank, phase, 99)
+
   @doc "Static list of read-only tool names the `:plan` phase permits."
   @spec readonly_tools() :: [String.t()]
   def readonly_tools, do: @readonly_tools

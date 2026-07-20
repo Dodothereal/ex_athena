@@ -25,7 +25,9 @@ defmodule ExAthena.Modes.Orchestrate do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.Loop.State
+  alias ExAthena.Loop.{Parallel, State}
+  alias ExAthena.Messages.ToolCall
+  alias ExAthena.Permissions.Denial
 
   # ONE byte-stable protocol for both phases — phase-varying system prompts
   # (and toolsets) break prefix caching on local servers at token ~0.
@@ -534,25 +536,62 @@ defmodule ExAthena.Modes.Orchestrate do
       "max_result_chars" => 8_000
     }
 
-    ctx = %{
-      state.ctx
-      | tool_call_id: "auto_delegate_#{System.unique_integer([:positive])}"
-    }
+    case gated_auto_spawn(state, args, "auto_delegate_#{System.unique_integer([:positive])}") do
+      {:halt, reason} ->
+        halt_early(state, reason)
 
-    note =
-      case ExAthena.Tools.SpawnAgent.execute(args, ctx) do
-        {:ok, text, _ui} ->
-          "[orchestration runtime] You did not delegate, so the runtime delegated the " <>
-            ~s(pending todo "#{content}" to a worker. Worker summary:\n#{text}\n) <>
-            "Update your todo list, then delegate the next pending todo with spawn_agent."
+      gate_result ->
+        note =
+          case gate_result do
+            {:ok, {:ok, text, _ui}} ->
+              "[orchestration runtime] You did not delegate, so the runtime delegated the " <>
+                ~s(pending todo "#{content}" to a worker. Worker summary:\n#{text}\n) <>
+                "Update your todo list, then delegate the next pending todo with spawn_agent."
 
-        {:error, reason} ->
-          "[orchestration runtime] Auto-delegation of \"#{content}\" failed: " <>
-            "#{inspect(reason)}. Revise the plan or delegate it yourself with spawn_agent."
-      end
+            {:ok, {:error, reason}} ->
+              "[orchestration runtime] Auto-delegation of \"#{content}\" failed: " <>
+                "#{inspect(reason)}. Revise the plan or delegate it yourself with spawn_agent."
 
-    %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
+            {:deny, reason} ->
+              "[orchestration runtime] Auto-delegation of \"#{content}\" was blocked by " <>
+                "permissions: #{deny_reason(reason)}. spawn_agent is not permitted in this " <>
+                "run — revise the plan or finish with what you have."
+          end
+
+        %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
+    end
   end
+
+  # Runtime-issued spawns run through the SAME pre-tool gate (permissions +
+  # PreToolUse hooks) as model-initiated calls — issue #130: a
+  # `disallowed_tools: ["spawn_agent"]` blocklist or a PreToolUse deny hook
+  # must stop auto-delegation too, and `PermissionDenied`/`ToolDenied`
+  # lifecycle hooks fire exactly as they would for a model call.
+  defp gated_auto_spawn(state, args, id) do
+    call = %ToolCall{id: id, name: "spawn_agent", arguments: args}
+
+    case Parallel.pre_tool_gate(call, state) do
+      :allow ->
+        ctx = %{state.ctx | tool_call_id: id}
+        {:ok, ExAthena.Tools.SpawnAgent.execute(args, ctx)}
+
+      {:deny, _reason} = deny ->
+        deny
+
+      {:halt, _reason} = halt ->
+        halt
+    end
+  end
+
+  # A `{:halt, reason}` from the gate (can_use_tool or a hook requesting a
+  # hard stop) is honored via the kernel's meta[:early_halt] check at the
+  # next loop entry — the watchdog/nudge paths themselves only ever
+  # continue.
+  defp halt_early(state, reason), do: put_in(state.meta[:early_halt], reason)
+
+  defp deny_reason(%Denial{reason: r}), do: r
+  defp deny_reason(r) when is_binary(r), do: r
+  defp deny_reason(r), do: inspect(r)
 
   defp field(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, to_string(key))
@@ -623,21 +662,30 @@ defmodule ExAthena.Modes.Orchestrate do
       "max_result_chars" => 8_000
     }
 
-    ctx = %{state.ctx | tool_call_id: "auto_research_#{System.unique_integer([:positive])}"}
+    case gated_auto_spawn(state, args, "auto_research_#{System.unique_integer([:positive])}") do
+      {:halt, reason} ->
+        halt_early(state, reason)
 
-    note =
-      case ExAthena.Tools.SpawnAgent.execute(args, ctx) do
-        {:ok, text, _ui} ->
-          "[orchestration runtime] Planning stalled, so the runtime delegated online " <>
-            "research to a worker. Findings:\n#{text}\n" <>
-            "Now record your todos with todo_write using these findings and delegate the work."
+      gate_result ->
+        note =
+          case gate_result do
+            {:ok, {:ok, text, _ui}} ->
+              "[orchestration runtime] Planning stalled, so the runtime delegated online " <>
+                "research to a worker. Findings:\n#{text}\n" <>
+                "Now record your todos with todo_write using these findings and delegate the work."
 
-        {:error, reason} ->
-          "[orchestration runtime] Auto-research failed: #{inspect(reason)}. " <>
-            "Record your todos with todo_write from what you know and delegate."
-      end
+            {:ok, {:error, reason}} ->
+              "[orchestration runtime] Auto-research failed: #{inspect(reason)}. " <>
+                "Record your todos with todo_write from what you know and delegate."
 
-    %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
+            {:deny, reason} ->
+              "[orchestration runtime] Auto-research was blocked by permissions: " <>
+                "#{deny_reason(reason)}. Record your todos with todo_write from what " <>
+                "you know."
+          end
+
+        %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
+    end
   end
 
   # The task to research = the original user request (first user message).

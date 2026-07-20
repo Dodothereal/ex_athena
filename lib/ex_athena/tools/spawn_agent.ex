@@ -26,6 +26,16 @@ defmodule ExAthena.Tools.SpawnAgent do
   Inherits the parent's provider / model / permissions unless overridden in
   `ctx.assigns[:spawn_agent_opts]`.
 
+  ## Guardrail inheritance
+
+  A child is never MORE privileged than its parent: the parent's
+  confinement roots, `disallowed_tools` / `allowed_tools`, `can_use_tool`
+  approval callback, phase, and deny-capable `PreToolUse` hooks are clamped
+  onto every spawn. Agent definitions and model args may narrow these
+  further but can never widen them — see `inherit_guardrails/2` for the
+  exact combination rules and `docs/13-agents-and-subagents.md` for the
+  policy.
+
   ## Worktree isolation
 
   When the chosen agent definition declares `isolation: :worktree` and the
@@ -195,6 +205,7 @@ defmodule ExAthena.Tools.SpawnAgent do
       |> apply_prompt_suffix(ctx)
       |> attribute_events(sub_id, ctx, args, agent_def, child_depth)
       |> Keyword.put(:parent_session_id, ctx.session_id)
+      |> inherit_guardrails(ctx)
 
     # Worktree isolation lives between resolving the agent and starting the
     # sub-loop so the sub-loop's `:cwd` becomes the worktree path. Falls back
@@ -371,6 +382,116 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp maybe_put(kw, _key, nil), do: kw
   defp maybe_put(kw, key, value), do: Keyword.put(kw, key, value)
+
+  # ── Parent guardrail inheritance (issue #130) ─────────────────────
+  #
+  # SECURITY INVARIANT: a child may be NARROWER than its parent but never
+  # MORE privileged. Agent definitions and model-supplied args can restrict
+  # a worker further; nothing they say can escape the parent's confinement
+  # roots, tool deny/allow lists, approval callback, phase, or PreToolUse
+  # deny hooks. Concretely:
+  #
+  #   * allowed_roots — a confined parent confines every child. A requested
+  #     root survives only if it lies inside a parent root (intersection);
+  #     otherwise the child gets the parent's roots verbatim. (The child
+  #     loop still cwd-anchors its roots, so a worktree-isolated child can
+  #     reach its own worktree — that is the one deliberate widening, and it
+  #     is host-controlled, never model-controlled.)
+  #   * disallowed_tools — union of parent's and child's (deny always wins).
+  #   * allowed_tools — intersection when both exist; parent's when only the
+  #     parent has one.
+  #   * can_use_tool — inherited unless the HOST already supplied one via
+  #     spawn_agent_opts (the host is trusted; the model cannot set this).
+  #   * phase — clamped to the more restrictive of parent's and requested
+  #     (see Permissions.most_restrictive_phase/2). A :plan parent can only
+  #     spawn :plan children; a definition may still narrow (:default parent
+  #     → :plan child).
+  #   * hooks — ONLY the parent's PreToolUse groups are inherited (they are
+  #     part of the permission gate). Other hook events are deliberately NOT
+  #     inherited: they may assume parent context (Stop hooks persisting
+  #     parent session state, SessionEnd cleanup, …). Hosts wanting full
+  #     hook inheritance can pass a hooks table in spawn_agent_opts.
+  defp inherit_guardrails(sub_opts, ctx) do
+    assigns = ctx.assigns || %{}
+    parent_perms = Map.get(assigns, :run_permissions) || %{}
+
+    sub_opts
+    |> inherit_confinement(ctx.allowed_roots)
+    |> clamp_phase(ctx.phase)
+    |> union_disallowed(parent_perms[:disallowed_tools])
+    |> intersect_allowed(parent_perms[:allowed_tools])
+    |> inherit_can_use_tool(parent_perms[:can_use_tool])
+    |> inherit_pre_tool_hooks(Map.get(assigns, :hooks) || %{})
+  end
+
+  defp inherit_confinement(sub_opts, nil), do: sub_opts
+
+  defp inherit_confinement(sub_opts, parent_roots) do
+    requested =
+      sub_opts
+      |> Keyword.get(:allowed_roots)
+      |> List.wrap()
+      |> Enum.map(&Path.expand/1)
+      |> Enum.filter(&ExAthena.ToolContext.within_roots?(&1, parent_roots))
+
+    roots = if requested == [], do: parent_roots, else: requested
+
+    sub_opts
+    |> Keyword.put(:allowed_roots, roots)
+    |> Keyword.delete(:confine)
+  end
+
+  defp clamp_phase(sub_opts, parent_phase) do
+    requested = Keyword.get(sub_opts, :phase, parent_phase)
+
+    Keyword.put(
+      sub_opts,
+      :phase,
+      ExAthena.Permissions.most_restrictive_phase(requested, parent_phase)
+    )
+  end
+
+  defp union_disallowed(sub_opts, nil), do: sub_opts
+
+  defp union_disallowed(sub_opts, parent_list) when is_list(parent_list) do
+    merged =
+      sub_opts
+      |> Keyword.get(:disallowed_tools)
+      |> List.wrap()
+      |> Kernel.++(parent_list)
+      |> Enum.uniq()
+
+    Keyword.put(sub_opts, :disallowed_tools, merged)
+  end
+
+  defp intersect_allowed(sub_opts, nil), do: sub_opts
+
+  defp intersect_allowed(sub_opts, parent_list) when is_list(parent_list) do
+    child =
+      case Keyword.get(sub_opts, :allowed_tools) do
+        nil -> parent_list
+        list when is_list(list) -> Enum.filter(list, &(&1 in parent_list))
+      end
+
+    Keyword.put(sub_opts, :allowed_tools, child)
+  end
+
+  defp inherit_can_use_tool(sub_opts, nil), do: sub_opts
+
+  defp inherit_can_use_tool(sub_opts, fun) when is_function(fun, 3),
+    do: Keyword.put_new(sub_opts, :can_use_tool, fun)
+
+  defp inherit_pre_tool_hooks(sub_opts, parent_hooks) do
+    case Map.get(parent_hooks, :PreToolUse) do
+      groups when is_list(groups) and groups != [] ->
+        child_hooks = Keyword.get(sub_opts, :hooks) || %{}
+        merged = Map.update(child_hooks, :PreToolUse, groups, &(&1 ++ groups))
+        Keyword.put(sub_opts, :hooks, merged)
+
+      _ ->
+        sub_opts
+    end
+  end
 
   # In strict mode, every omitted brief field gets a runtime default so the
   # worker contract stays complete without forcing a small model to produce
