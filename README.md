@@ -10,7 +10,7 @@ Code SDK that runs on **Ollama**, **OpenAI-compatible endpoints**
 **Google Gemini**, or **Anthropic Claude** itself — with the same tools,
 hooks, permissions, and streaming semantics across every provider.
 
-> **Status (v0.17):** the agent loop, tools, MCP, permissions, hooks,
+> **Status (v0.18):** the agent loop, tools, MCP, permissions, hooks,
 > compaction, subagents and sessions are all shipped — `ExAthena.run/2` is the
 > entry point, `ExAthena.query/2` and `stream/3` remain for plain inference,
 > and `embed/2`, `list_models/2` and `extract_structured/2` round out the API.
@@ -19,11 +19,18 @@ hooks, permissions, and streaming semantics across every provider.
 > and a diff viewer; their deps (`ex_ratatui`, `phoenix`, `phoenix_live_view`,
 > `bandit`) are **optional**, so the core library stays lean.
 >
-> v0.17 adds **workspace confinement + OS sandboxing** — `confine: true` /
-> `allowed_roots: [...]` restricts filesystem tools to a root set and runs
-> `bash` under `sandbox-exec` (macOS) or `bubblewrap` (Linux). See the
-> [v0.17.0 changelog](CHANGELOG.md#v0170--workspace-confinement--sandboxing);
-> v0.16 added `web_search`, `usage_rules` and OpenRouter.
+> v0.18 adds **embeddings** (`ExAthena.embed/2`), **provider-agnostic model
+> listing** (`ExAthena.list_models/2`), and **Elixir code intelligence** —
+> `workspace_symbol`/`document_symbol` on the `lsp` tool, so agents navigate by
+> symbol instead of grepping. It also hardens confinement: symlinks are resolved
+> before the roots check, the `web_fetch` SSRF guard applies even unconfined and
+> re-validates every redirect, subagents inherit their parent's confinement and
+> permissions, and plan mode is deny-by-default. **Breaking:**
+> the Claude Code provider's `list_models/1` is now `list_models_from/1` —
+> run `mix ex_athena.upgrade 0.17.0 0.18.0`. See the
+> [v0.18.0 changelog](CHANGELOG.md#v0180--embeddings-model-listing-code-intelligence--confinement-hardening);
+> v0.17 added workspace confinement + OS sandboxing, v0.16 `web_search`,
+> `usage_rules` and OpenRouter.
 >
 > The operational harness it builds on — file-based memory
 > (`AGENTS.md`/`CLAUDE.md`), Claude Code-style skills, a five-stage compaction
@@ -52,7 +59,7 @@ Or manually — add to `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_athena, "~> 0.17"},
+    {:ex_athena, "~> 0.18"},
     # optional — only needed for the Claude provider:
     {:claude_code, "~> 0.36"},
     # optional — only needed for the TUI (`mix athena.chat`):

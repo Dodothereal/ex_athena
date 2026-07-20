@@ -5,7 +5,7 @@ if Code.ensure_loaded?(Igniter) do
     @moduledoc """
     Installs ExAthena into your project.
 
-    Run once after adding `{:ex_athena, "~> 0.12"}` to `mix.exs`, or via Igniter:
+    Run once after adding `{:ex_athena, "~> 0.18"}` to `mix.exs`, or via Igniter:
 
         mix igniter.install ex_athena
         mix ex_athena.install
@@ -17,6 +17,10 @@ if Code.ensure_loaded?(Igniter) do
       * Writes sensible per-provider defaults for Ollama (base URL pointing at
         `http://localhost:11434`), OpenAI-compatible (`https://api.openai.com/v1`),
         and Claude (picks up `ANTHROPIC_API_KEY` from env).
+      * Writes an Ollama `embedding_model:` default (`nomic-embed-text`) so
+        `ExAthena.embed/2` works without further setup — the chat `model:` is
+        deliberately never a fallback for embeddings, so an unset key means
+        `embed/2` errors rather than quietly embedding with the wrong model.
       * Scaffolds `.exathena/.gitignore` so v0.4 runtime artifacts (session
         JSONL logs, file-history snapshots, worktree cache) aren't
         accidentally committed.
@@ -69,6 +73,16 @@ if Code.ensure_loaded?(Igniter) do
         `config :ex_athena, default_provider: :claude` and provide
         ANTHROPIC_API_KEY in the environment.
 
+      Embeddings
+      ──────────
+      • ExAthena.embed/2 is configured against Ollama with
+        embedding_model: "nomic-embed-text". Pull it once:
+
+            ollama pull nomic-embed-text
+
+      • The chat model is never used as a fallback for embeddings, so
+        set `embedding_model:` on any other provider you embed with.
+
       Features available out of the box
       ─────────────────────────────────
       • Memory: drop AGENTS.md at your project root for project-wide
@@ -119,6 +133,19 @@ if Code.ensure_loaded?(Igniter) do
         :ex_athena,
         [:ollama, :model],
         "llama3.1",
+        updater: &keep_existing/1
+      )
+      # Embedding models are a different population from chat models, and the
+      # chat `model:` is deliberately not a fallback (embedding with a chat
+      # model retrieves badly while looking fine), so `embed/2` errors outright
+      # when this is unset. `nomic-embed-text` is the recommended local default:
+      # its 8192-token context fits function- and module-sized code chunks,
+      # where `mxbai-embed-large` truncates at 512.
+      |> Igniter.Project.Config.configure(
+        "config.exs",
+        :ex_athena,
+        [:ollama, :embedding_model],
+        "nomic-embed-text",
         updater: &keep_existing/1
       )
     end

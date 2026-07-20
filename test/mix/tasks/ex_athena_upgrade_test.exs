@@ -95,6 +95,49 @@ defmodule Mix.Tasks.ExAthena.UpgradeTest do
     end
   end
 
+  describe "0.17.0 -> 0.18.0 (ClaudeCode.list_models/1 rename)" do
+    # The AST rewrite itself is not asserted here: it runs through
+    # `Igniter.update_all_elixir_files/2`, whose source-folder globs are
+    # relative while `Igniter.Test`'s virtual filesystem matches them against
+    # expanded absolute paths, so no file in a `test_project/1` is ever visited.
+    # That is a limitation of the harness, not of the migration — it rewrites
+    # correctly against a real project. What is asserted here is everything the
+    # harness can see: that the migration is wired to the right version range
+    # and that the notice tells an upgrader exactly what changed, which is the
+    # part that has to be right even when the rewrite misses a call site.
+    test "emits a notice naming the old and the new function" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("ex_athena.upgrade", ["0.17.0", "0.18.0"])
+
+      notice = Enum.join(igniter.notices, "\n")
+      assert notice =~ "ExAthena.Providers.ClaudeCode.list_models/1"
+      assert notice =~ "list_models_from/1"
+      # The zero-arity form and the new provider-agnostic API are unaffected,
+      # and the notice has to say so or upgraders will "fix" working code.
+      assert notice =~ "list_models/0"
+      assert notice =~ "ExAthena.list_models/2"
+    end
+
+    test "does not run the older migrations" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("ex_athena.upgrade", ["0.17.0", "0.18.0"])
+
+      notice = Enum.join(igniter.notices, "\n")
+      refute notice =~ "tool-result split"
+      refute notice =~ "ex_ratatui"
+    end
+
+    test "a within-0.18 bump does not re-run the rename notice" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("ex_athena.upgrade", ["0.18.0", "0.18.1"])
+
+      assert igniter.notices == []
+    end
+  end
+
   describe "version routing (Igniter.Upgrades.run/5)" do
     test "0.4.0 -> 0.4.0 is a no-op (range is exclusive of from)" do
       igniter =

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.18.0 — Embeddings, model listing, code intelligence & confinement hardening
 
 ### Added
 
@@ -27,7 +27,7 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `ExAthena.ModelDiscovery` TTL cache instead of adding a second one; pass
   `cache: false` to force a refresh. Advertised as `model_listing: true` in
   `capabilities/0` for feature detection, and backed by a new optional
-  `ExAthena.Provider.list_models/1` callback that takes per-call opts — which
+  `c:ExAthena.Provider.list_models/1` callback that takes per-call opts — which
   models exist depends on where the provider is pointed, so the config-blind
   `list_models/0` could not answer it.
   ([#128](https://github.com/udin-io/ex_athena/issues/128))
@@ -39,7 +39,7 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   one vector per input — batching a whole indexing run into a single provider
   round-trip, and taking a request-queue slot like every other provider call so
   it can't swamp a local server. Embeddings are an optional provider callback
-  (`ExAthena.Provider.embed/2`) advertised as `embeddings: true` in
+  (`c:ExAthena.Provider.embed/2`) advertised as `embeddings: true` in
   `capabilities/0`, so callers can feature-detect; the Mock provider implements
   it for host-app tests. Models are configured per provider under
   `embedding_model:` — the chat `model:` is deliberately not a fallback, since
@@ -47,6 +47,128 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `req_llm`'s own embeddings API, so Ollama, OpenAI, Gemini and OpenRouter are
   all covered by one adapter path.
   ([#127](https://github.com/udin-io/ex_athena/issues/127))
+
+- **Elixir code intelligence — `workspace_symbol` and `document_symbol` on the
+  `lsp` tool.** The managed LSP client already shipped, but the tool exposed
+  only *position-based* actions (`definition`, `references`, `hover`,
+  `diagnostics`), each of which demands an exact `file` plus a 0-indexed
+  `line`/`character`. There was no way to find a symbol *by name*, so agents
+  fell back to `grep` for the one job grep is worst at: text matching has no
+  notion of a module, function or type, and returns every comment, string and
+  same-named function in the tree. `workspace_symbol` (query, optional
+  `language`, default `"elixir"`) answers "where is `Foo.bar/2` defined" from
+  the compiler's own index and composes into the existing position-based
+  actions; `document_symbol` renders one file's symbol tree. Both are
+  AST-accurate and need no new infrastructure — no database, no embeddings, no
+  API key (the RAG/embedding-indexer libraries evaluated for this all wanted
+  Postgres + pgvector plus a provider key, for generic text chunking that is
+  strictly worse than what the language server already knows). The `lsp` and
+  `grep` tool descriptions, the `explore`/`plan` agent definitions and the
+  orchestrate worker contract now steer Elixir symbol lookups to `lsp` and
+  reserve `grep` for plain-text and cross-language search. Note that
+  `workspace/symbol` only answers once the project is indexed, so a call made
+  immediately after startup may return few results.
+
+- **LSP server resolution prefers Expert but falls back to ElixirLS.** The
+  Elixir language server default moved to [Expert](https://github.com/elixir-lang/expert)
+  (`expert --stdio`), the official next-generation server. Making that a hard
+  switch would have silently disabled code intelligence for everyone who has
+  ElixirLS installed and not Expert, so the default is a *candidate list*:
+  `expert` when it is on `PATH`, otherwise `elixir-ls`, and only
+  `{:error, :unsupported}` when neither is. Existing ElixirLS users keep
+  working with zero configuration and get Expert automatically the day they
+  install it. An explicit `config :ex_athena, :lsp_servers` override still
+  replaces the candidate list outright. The README gains a "Code intelligence"
+  section with the install steps and the per-language override.
+
+- **Write-capable `implementer` agent, and orchestrate now routes to it.** The
+  orchestrate protocol instructed the orchestrator to delegate everything to
+  `spawn_agent` workers, but the only worker it ever named was `explore` —
+  which is read-only (`permissions: plan`, no `write`/`edit`/`bash`). Handing an
+  implementation todo to `explore` cannot succeed, so orchestrated runs either
+  stalled on that step or reported work complete that had never touched the
+  filesystem. The new built-in `implementer` agent is write-capable
+  (`read`, `glob`, `grep`, `write`, `edit`, `apply_patch`, `bash`, `web_fetch`,
+  `web_search`, `usage_rules`, `lsp`, `todo_write`) and its prompt requires it
+  to investigate before editing, make the smallest change that matches
+  surrounding style, verify with the narrowest proving command, and report
+  `file:line` plus the verification output — including saying plainly when
+  something failed rather than claiming success. The orchestrator prompt now
+  carries an explicit worker roster (`explore` for read-only investigation,
+  `research` for external facts, `implementer` for anything that changes the
+  workspace) and a rule that implementation todos must never go to `explore`.
+  The orchestrator itself stays non-acting: it still holds only coordination
+  and read-only tools.
+
+- **Opt-in read-only declarations for plan mode — `c:ExAthena.Tool.read_only?/0`,
+  MCP `readOnlyHint`, and the `:readonly_tools` option.** Plan mode is now
+  deny-by-default (see Security below), which requires a way for a tool to say
+  it is safe there. Three routes, in decreasing order of trust: an optional
+  `c:ExAthena.Tool.read_only?/0` callback (cached on the tool
+  spec at build time); an MCP server's `annotations.readOnlyHint == true` from
+  `tools/list`, treated as a hint that only relaxes plan-phase gating; and a
+  host-supplied `readonly_tools: ["name", …]` option on `ExAthena.Loop.run/2`
+  for tools whose definitions you do not control. `ExAthena.Tool.Spec` gains a
+  `read_only?` field, defaulting to `false` — the conservative direction, so a
+  tool that says nothing is gated rather than trusted.
+
+- **`allow_local_hosts: true` on `ExAthena.run/2`** — the deliberate escape
+  hatch for the SSRF guard now that it applies unconditionally (see Security).
+  Needed for the legitimate cases the guard would otherwise break: fetching a
+  local dev server, an internal docs host, or a mock API. It relaxes only the
+  private/loopback host check; the `http`/`https` scheme restriction still
+  applies.
+
+- **The Igniter installer configures embeddings, and the upgrader covers
+  0.17 → 0.18.** `mix ex_athena.install` wrote per-provider chat config but knew
+  nothing about `embedding_model:`, so a fresh install left `ExAthena.embed/2`
+  returning a `:bad_request` until the user found the key themselves — the chat
+  `model:` is deliberately not a fallback, so there was nothing to degrade to.
+  The installer now writes `config :ex_athena, :ollama, embedding_model:
+  "nomic-embed-text"` (idempotent, like every other key it writes) and says so
+  in its notice along with the `ollama pull` needed to make it real;
+  `nomic-embed-text` is the recommended local default because its 8192-token
+  context fits function- and module-sized code chunks where `mxbai-embed-large`
+  truncates at 512. `mix ex_athena.upgrade` gains a `0.18.0` migration for the
+  Claude Code `list_models/1` rename described under **Changed**.
+
+### Changed
+
+- **BREAKING — the Claude Code provider's `list_models/1` is renamed to
+  `list_models_from/1`.** `ExAthena.Provider` grew a `list_models/1` callback
+  whose argument is per-call **opts**, while this provider's existing
+  `list_models/1` took a **`ModelSource` module**. Two incompatible meanings for
+  the same name and arity on the same module cannot coexist, and keeping the
+  source-taking one would have left the Claude Code provider unable to
+  participate in the behaviour at all. The source-taking function keeps its
+  exact semantics, spec and return shape under the new name — only the name
+  changed.
+
+  ```elixir
+  # before
+  {:ok, models} = ExAthena.Providers.ClaudeCode.list_models(MySource)
+
+  # after
+  {:ok, models} = ExAthena.Providers.ClaudeCode.list_models_from(MySource)
+  ```
+
+  The zero-arity `list_models/0` on that module is **unchanged**, so if you call
+  the zero-arity form — or reach the provider through `ExAthena.list_models/2`,
+  which is the supported path — there is nothing to do. Only direct callers that
+  pass a `ModelSource` explicitly (in practice, tests injecting a fake CLI) break
+  on upgrade, and they break loudly with an `UndefinedFunctionError` rather than
+  silently. `mix ex_athena.upgrade 0.17.0 0.18.0` rewrites the call sites and
+  function references for you.
+
+- **The `lsp` tool's argument contract changed:** `required` narrowed from
+  `["action", "file"]` to `["action"]`, because `workspace_symbol` is
+  workspace-scoped and has no file to name. `file` is still mandatory for every
+  other action — it is now validated per-action rather than by the schema. Hosts
+  that mirror the tool schema into their own UI should re-read it.
+
+- **The default Elixir language server is now `expert --stdio`**, falling back to
+  `elixir-ls` when Expert is not on `PATH` (see Added). An explicit
+  `config :ex_athena, :lsp_servers` override still wins outright.
 
 ### Deprecated
 
@@ -59,7 +181,144 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `ExAthena.list_models(:ollama | :llamacpp | :exo)` instead; for the Ollama
   cloud catalog, `ExAthena.list_models(:ollama, include_cloud: true)`.
 
+### Fixed
+
+- **The web model picker no longer discards what you typed.** The combobox
+  committed a model only on option-click or on the free-type input's blur, so
+  typing a name into the filter and then dismissing the dropdown — by clicking
+  away, or by pressing Enter, which is what people actually do — silently threw
+  the text away and left the previous selection active. The failure was
+  invisible until the next message, and the most common way to hit it was the
+  worst one: a user replacing a stale *embedding* model with a chat model kept
+  the embedding model and got an unexplained HTTP 400. Closing the dropdown and
+  submitting the search form now both commit the typed value; a blank value
+  closes the dropdown without clearing the current model, so dismissing an empty
+  box can never leave the session model-less.
+
+- **Ollama cloud models are visible in the picker.** Only locally-pulled models
+  were listed, so cloud models had to be typed from memory. The picker now
+  merges the public `ollama.com` catalog (no auth needed to *list*) with the
+  local `/api/tags` list, suffixing cloud entries with `-cloud` — the form a
+  signed-in local daemon accepts. The cloud fetch is fail-soft: if it errors or
+  you are offline, the local list is still returned, so nothing regresses for
+  air-gapped use. Running a cloud model still requires `ollama signin`.
+
+- **The web Overview panel no longer crashes on unlinked agents.** Its
+  orphan-agent filter used strict `not/1` against `a.linked_todo && …`, which
+  evaluates to `nil` — not a boolean — precisely when `linked_todo` is `nil`,
+  i.e. for the top-level unlinked workers the filter exists to find. Every
+  Overview render raised `ArgumentError` as soon as one appeared, so the subtree
+  the panel was written to show could never actually be shown.
+
 ### Security
+
+- **Symlinks are resolved before the confinement roots check.**
+  `ExAthena.ToolContext.within_roots?/2` compared paths *lexically*:
+  `Path.expand/1` collapses `.`, `..` and `~` as text and never touches the
+  filesystem. A symlink **inside** an allowed root that pointed **outside** it
+  therefore passed the check, and the file tools then followed it through the OS.
+  One `ln -s /etc/passwd ./notes.txt` — or a pre-existing directory symlink such
+  as `./vendor -> /` — turned a confined `read` into an arbitrary read, and
+  `write`/`edit`/`apply_patch` into arbitrary writes *outside* the sandbox,
+  including creating new files through an escaping directory symlink. Bash was
+  never exposed (the OS sandbox resolves real paths); this was specific to the
+  pure-Elixir file tools. Both the candidate path and each root are now
+  canonicalised component-by-component via `File.read_link/1`, restarting the
+  walk whenever a link is followed because the target may itself contain links,
+  and capped at 40 hops (mirroring the kernel's `SYMLOOP_MAX`) so a symlink cycle
+  denies rather than hangs. Missing trailing components are kept lexically, which
+  is what makes "create a file through an escaping directory symlink" refusable.
+  The rule is *canonical target inside canonical roots*, not *no symlinks* — so
+  benign in-root links (`node_modules/.bin`, `_build`) and canonicalising roots
+  themselves (macOS `/tmp -> /private/tmp`) keep working. `resolve_path/2` still
+  returns the lexical path, so tool output and error messages name the path the
+  model asked for.
+  ([#133](https://github.com/udin-io/ex_athena/issues/133))
+
+- **The `web_fetch` SSRF guard now applies unconfined, and re-validates every
+  redirect hop.** Two holes, either of which was sufficient. First, the guard
+  was gated on `confined?(ctx)` — and the library default is *unconfined*, so in
+  the default configuration `web_fetch` would happily GET
+  `http://169.254.169.254/latest/meta-data/iam/security-credentials/` and hand
+  cloud IAM credentials to the model, or reach `localhost` and RFC1918 services
+  behind the host's firewall. A prompt-injected web page is enough to trigger
+  it. Second, even confined, only the *initial* URL was checked: `Req` followed
+  `Location` headers automatically, so `https://attacker.example/x` returning
+  `302 → http://169.254.169.254/…` bypassed the guard entirely. The check is now
+  default-deny regardless of confinement, and auto-redirects are disabled in
+  favour of a manual loop (max 5 hops) that runs the same validation on every
+  hop, resolving relative `Location`s with `URI.merge/2`. Exhausting the hops
+  returns `{:error, :too_many_redirects}`. Legitimate local fetches opt in with
+  `allow_local_hosts: true`. Known limit, documented rather than papered over:
+  the guard resolves DNS at check time and the HTTP client resolves again at
+  connect time, so a rebinding attacker can still win the race — deployments
+  that need a hard guarantee should pin egress at the network layer.
+  ([#132](https://github.com/udin-io/ex_athena/issues/132))
+
+- **Subagents inherit confinement, permissions, phase and PreToolUse hooks.**
+  `spawn_agent` carried only provider/model settings into the child run, so a
+  **confined** parent — which is every `mix athena.web` and `mix athena.chat`
+  session, confined by default — spawned an **unconfined** child whose `bash`,
+  `write` and `edit` ranged over the entire filesystem. The host's tool
+  blocklist and its `can_use_tool` approval callback vanished, parent
+  `PreToolUse` deny hooks did not cover child tool calls, and `phase` reset to
+  `:default`, so a `:plan`-pinned parent could spawn a worker that writes files.
+  The escape needed no filesystem trick: one model-issued `spawn_agent` call did
+  it. Guardrails are now inherited with the invariant that *a child may be
+  narrower, never more privileged* — requested roots are intersected with the
+  parent's, `disallowed_tools` is unioned, `allowed_tools` intersected, and the
+  phase clamped by the new `ExAthena.Permissions.most_restrictive_phase/2`
+  (where an unrecognised phase atom ranks as most permissive and therefore always
+  loses, so a typo in an agent definition can never escalate). The clamp is
+  recorded per run rather than only at the top, so it composes correctly through
+  arbitrarily deep nesting. Separately, orchestrate's watchdog and
+  research-escalation paths called `SpawnAgent.execute/2` directly, skipping the
+  permission gate — a host that had explicitly forbidden `spawn_agent` still got
+  delegated child runs. Both now route through the same gate as a model-issued
+  call, and a denial surfaces to the orchestrator as a runtime note. Consequences
+  worth knowing before upgrading: `can_use_tool` now fires for child tool calls
+  (expect more prompts), and an agent definition asking for a wider phase or
+  roots outside the parent is clamped rather than honoured.
+  ([#130](https://github.com/udin-io/ex_athena/issues/130))
+
+- **Three plan-mode read-only bypasses are closed.** `:plan` is advertised as a
+  read-only phase; all three of these let a model out of it.
+  1. **Self-escalation.** `plan_mode` was classified read-only and therefore
+     auto-allowed, and its `phase_transition: :default` result was applied
+     unconditionally — so a model a host had pinned to read-only could grant
+     itself write and shell access with a single `plan_mode(action: "exit")`
+     call, without the approval the tool's own docs promised. Worse, the
+     transition was keyed on the *result shape* alone, so **any** custom or MCP
+     tool could smuggle an escalation by returning
+     `%{phase_transition: :bypass_permissions}`. The transition is now honoured
+     only from `plan_mode` itself, and only after the normal `can_use_tool`
+     prompt; a host-pinned `:plan` run with no callback cannot exit at all. A
+     model that *entered* plan mode from a looser phase can still leave it —
+     exiting merely restores the grant the host gave.
+  2. **Interpreter one-liners.** Bash's read-only classifier was a *blocklist* of
+     write verbs, which `python -c "open('x','w').write(…)"`, `perl -e`,
+     `ruby -e`, `node -e`, `ex` and `ed` all sailed straight through: arbitrary
+     code execution and arbitrary writes from inside "read-only" planning. It is
+     now an allowlist — every segment of a pipeline must head with a known
+     read-only command, with per-tool subcommand tables for `git`, `gh` and
+     `mix`, and command substitution or any file redirect disqualifies the whole
+     line. Quoted spans are masked before parsing so `grep -E "a|b"` is not
+     mis-split. Unknown commands are mutating by default.
+  3. **Everything that was not on a list.** The `:plan` gate handled a handful of
+     named tools and then fell through to `:allow`, so every mutating MCP tool,
+     every host-registered custom tool, and the built-in `apply_patch` — which
+     appeared on neither list — ran unchallenged. `:plan` is now
+     **deny-by-default**, with only session bookkeeping (`todo_write`,
+     `ask_user`, `finish`) allowed unconditionally and three opt-in routes for
+     everything else (see Added). Denials explain which route to use.
+
+  Expect `:plan` to be noticeably stricter after upgrading: `mix test`,
+  `mix compile`, `gh api`, `git branch <name>`, and any custom or MCP tool that
+  has not declared itself read-only are now refused. The refusals are explicit
+  and the model adapts; the shipped hosts are unaffected, since the TUI starts in
+  `:default`, the web host in `:accept_edits`, and the built-in `:plan` workers
+  never receive the `plan_mode` tool.
+  ([#131](https://github.com/udin-io/ex_athena/issues/131))
 
 - **`mix athena.web` now binds `127.0.0.1` by default** instead of `0.0.0.0`
   (the UI is an arbitrary-command agent console — client-chosen `cwd`,
