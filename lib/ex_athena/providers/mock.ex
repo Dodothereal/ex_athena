@@ -34,7 +34,7 @@ defmodule ExAthena.Providers.Mock do
 
   @behaviour ExAthena.Provider
 
-  alias ExAthena.{Response, Streaming}
+  alias ExAthena.{Embedding, Response, Streaming}
   alias ExAthena.Streaming.Event
 
   @impl ExAthena.Provider
@@ -42,6 +42,7 @@ defmodule ExAthena.Providers.Mock do
     %{
       native_tool_calls: true,
       streaming: true,
+      embeddings: true,
       json_mode: true,
       structured_output: true,
       max_tokens: 128_000,
@@ -82,6 +83,40 @@ defmodule ExAthena.Providers.Mock do
       true ->
         {:error, :mock_not_configured}
     end
+  end
+
+  @impl ExAthena.Provider
+  def embed(input, opts) do
+    mock = Keyword.get(opts, :mock, [])
+    texts = List.wrap(input)
+
+    cond do
+      responder = Keyword.get(mock, :embed_responder) ->
+        try do
+          {:ok, embedding(responder.(texts), opts)}
+        rescue
+          e -> {:error, {:mock_raised, e}}
+        end
+
+      vectors = Keyword.get(mock, :embeddings) ->
+        {:ok, embedding(vectors, opts)}
+
+      error = Keyword.get(mock, :error) ->
+        {:error, error}
+
+      true ->
+        {:error, :mock_not_configured}
+    end
+  end
+
+  defp embedding(vectors, opts) do
+    %Embedding{
+      embeddings: vectors,
+      model: Keyword.get(opts, :model),
+      provider: :mock,
+      usage: Keyword.get(opts, :mock, [])[:usage],
+      raw: %{mock: true}
+    }
   end
 
   @impl ExAthena.Provider

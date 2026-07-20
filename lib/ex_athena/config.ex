@@ -394,6 +394,31 @@ defmodule ExAthena.Config do
   end
 
   @doc """
+  Resolve the embedding model for a provider.
+
+  Order: per-call `:model` → per-call `:embedding_model` → the provider's
+  `embedding_model:` config → the top-level `:embedding_model` config.
+  Returns `nil` when none is set.
+
+  Embedding models are a different population from chat models
+  (`nomic-embed-text` vs `qwen3-coder`), so the provider's `model:` key is
+  deliberately **not** a fallback — silently embedding with a chat model
+  produces vectors that look fine and retrieve badly.
+  """
+  @spec embedding_model(atom() | module() | nil, keyword()) :: String.t() | nil
+  def embedding_model(provider, opts) do
+    Keyword.get(opts, :model) ||
+      Keyword.get(opts, :embedding_model) ||
+      provider_env(provider)[:embedding_model] ||
+      Application.get_env(:ex_athena, :embedding_model)
+  end
+
+  defp provider_env(atom) when is_atom(atom) and not is_nil(atom),
+    do: Application.get_env(:ex_athena, atom, [])
+
+  defp provider_env(_), do: []
+
+  @doc """
   Return the maximum concurrent request depth for `provider_atom`.
 
   Resolution order:

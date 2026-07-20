@@ -178,6 +178,28 @@ walkthrough including examples for each provider.
 | `:claude` | ✅ Any `claude-3`+ model | PNG, JPEG, GIF, WebP |
 | `:gemini` | ✅ Any `gemini-1.5`+ model | Inline + URL |
 
+## Embeddings
+
+Every provider that routes through the ReqLLM adapter (`:ollama`, `:openai`,
+`:gemini`, `:openrouter`, JSON-file providers, …) can also embed, plus `:mock`
+for tests. Because embedding models are a separate population from chat models,
+they live under their own key and are never inferred from `model:`:
+
+```elixir
+config :ex_athena, :ollama,
+  base_url: "http://localhost:11434",
+  model: "qwen3-coder",
+  embedding_model: "nomic-embed-text"
+```
+
+```elixir
+{:ok, %ExAthena.Embedding{embeddings: vectors}} =
+  ExAthena.embed(["chunk one", "chunk two"], provider: :ollama)
+```
+
+Feature-detect with `ExAthena.capabilities(provider)[:embeddings]`. See the
+**[Embeddings guide](embeddings.md)**.
+
 ## Runtime JSON config
 
 ExAthena reads every `*.json` file from `~/.config/ex_athena/providers/` at

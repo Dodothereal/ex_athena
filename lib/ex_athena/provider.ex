@@ -19,7 +19,7 @@ defmodule ExAthena.Provider do
   `ExAthena.Capabilities` for the shape.
   """
 
-  alias ExAthena.{Capabilities, Request, Response, Streaming}
+  alias ExAthena.{Capabilities, Embedding, Request, Response, Streaming}
 
   @doc "Perform a one-shot request and return the final response."
   @callback query(Request.t(), opts :: keyword()) ::
@@ -54,5 +54,18 @@ defmodule ExAthena.Provider do
   """
   @callback list_models() :: {:ok, [String.t()]} | {:error, term()}
 
-  @optional_callbacks [stream: 3, capabilities: 1, list_models: 0]
+  @doc """
+  Embed one or more texts. Optional — providers that cannot embed simply omit
+  the callback and declare `embeddings: false` (or nothing) in `capabilities/0`;
+  `ExAthena.embed/2` then returns a `:capability` error instead of crashing.
+
+  `input` is a single string or a list of strings; the returned
+  `ExAthena.Embedding` always carries one vector per input, in input order.
+  The model arrives as `opts[:model]`, already resolved from the caller's
+  `:model` or the provider's `:embedding_model` config by `ExAthena.embed/2`.
+  """
+  @callback embed(input :: String.t() | [String.t()], opts :: keyword()) ::
+              {:ok, Embedding.t()} | {:error, term()}
+
+  @optional_callbacks [stream: 3, capabilities: 1, list_models: 0, embed: 2]
 end

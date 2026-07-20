@@ -212,6 +212,85 @@ defmodule ExAthena do
   end
 
   @doc """
+  Embed text. Accepts a single string or a list of strings and returns one
+  vector per input, in input order.
+
+  Batch calls are a single provider round-trip — indexing jobs embed hundreds
+  of chunks per run, and one request per chunk would dominate their runtime.
+
+      ExAthena.embed(["def foo", "def bar"], provider: :ollama)
+      #=> {:ok, %ExAthena.Embedding{embeddings: [[0.1, …], [0.2, …]], …}}
+
+  ## Options
+
+    * `:provider` — as `query/2`. Must implement the optional `embed/2`
+      callback; feature-detect with `capabilities(provider)[:embeddings]`.
+    * `:model` — the embedding model. Defaults to the provider's
+      `embedding_model:` config, then the top-level `:embedding_model` config.
+      The provider's chat `model:` is never used — embedding models are a
+      separate population (e.g. `nomic-embed-text`).
+    * `:timeout_ms`, `:provider_opts`, `:queue`, `:queue_timeout` — as `query/2`.
+
+  Configure a default embedding model alongside the chat model:
+
+      config :ex_athena, :ollama,
+        base_url: "http://localhost:11434",
+        model: "qwen3-coder",
+        embedding_model: "nomic-embed-text"
+  """
+  @spec embed(String.t() | [String.t()], keyword()) ::
+          {:ok, ExAthena.Embedding.t()} | {:error, term()}
+  def embed(input, opts \\ []) when is_binary(input) or is_list(input) do
+    {queue, opts} = Keyword.pop(opts, :queue, true)
+    {timeout, opts} = Keyword.pop(opts, :queue_timeout, 5_000)
+    provider_atom = peek_provider_atom(opts)
+    {provider_mod, opts} = Config.pop_provider!(opts)
+
+    with :ok <- ensure_embeddings_supported(provider_mod),
+         {:ok, model} <- resolve_embedding_model(provider_atom, opts) do
+      opts = Keyword.put(opts, :model, model)
+
+      RequestQueue.with_slot(
+        provider_atom,
+        fn ->
+          provider_mod.embed(input, Config.provider_opts(provider_mod, opts, provider_atom))
+        end,
+        queue: queue,
+        timeout: timeout
+      )
+    end
+  end
+
+  defp ensure_embeddings_supported(provider_mod) do
+    if Code.ensure_loaded?(provider_mod) and function_exported?(provider_mod, :embed, 2) do
+      :ok
+    else
+      {:error,
+       ExAthena.Error.new(
+         :capability,
+         "#{inspect(provider_mod)} does not support embeddings",
+         provider: provider_mod
+       )}
+    end
+  end
+
+  defp resolve_embedding_model(provider_atom, opts) do
+    case Config.embedding_model(provider_atom, opts) do
+      model when is_binary(model) and model != "" ->
+        {:ok, model}
+
+      _ ->
+        {:error,
+         ExAthena.Error.new(
+           :bad_request,
+           "no embedding model configured. Pass model: \"nomic-embed-text\" or set " <>
+             "`config :ex_athena, :#{provider_atom}, embedding_model: \"nomic-embed-text\"`.",
+           provider: provider_atom
+         )}
+    end
+  end
+
+  @doc """
   Returns the capabilities map for a provider.
 
       ExAthena.capabilities(:mock)

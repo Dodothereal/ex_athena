@@ -40,7 +40,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   require Logger
 
-  alias ExAthena.{Error, Request, Response}
+  alias ExAthena.{Embedding, Error, Request, Response}
   alias ExAthena.Messages.{Message, ToolResult}
 
   # Claude Code-style log prefix so callers can filter/tail the adapter
@@ -58,6 +58,7 @@ defmodule ExAthena.Providers.ReqLLM do
       native_tool_calls: true,
       streaming: true,
       json_mode: true,
+      embeddings: true,
       structured_output: true,
       # Context-window fallback when the server doesn't report one. 8k made
       # compaction fire destructively at ~5k tokens on 32k+ local models;
@@ -131,6 +132,112 @@ defmodule ExAthena.Providers.ReqLLM do
           {:error, to_error(reason)}
       end
     end
+  end
+
+  # ── Embeddings ────────────────────────────────────────────────────
+  #
+  # req_llm 1.10 already ships an embeddings path (`ReqLLM.embed/3` → POST
+  # `<base_url>/embeddings`), so ExAthena rides it instead of hand-rolling
+  # Ollama's native `/api/embed`: every OpenAI-wire-compatible backend
+  # (Ollama's `/v1/embeddings`, OpenAI, Gemini, OpenRouter, …) is covered by
+  # the same adapter, with the same base_url/api_key plumbing as chat.
+
+  @impl ExAthena.Provider
+  def embed(input, opts) do
+    with {:ok, model_spec} <- resolve_embedding_model(opts) do
+      req_opts = build_embed_opts(opts)
+
+      Logger.info(
+        "#{@log_prefix} →embed model=#{model_id(model_spec)} inputs=#{length(List.wrap(input))}"
+      )
+
+      case ReqLLM.embed(model_spec, input, req_opts) do
+        {:ok, %{embedding: vectors, usage: usage}} ->
+          {:ok,
+           %Embedding{
+             embeddings: normalize_vectors(vectors),
+             model: model_id(model_spec),
+             provider: :req_llm,
+             usage: usage,
+             raw: vectors
+           }}
+
+        {:error, reason} ->
+          log_error(reason)
+          {:error, to_error(reason)}
+      end
+    end
+  end
+
+  # A single string yields a single vector; ExAthena.Embedding always exposes
+  # a list of vectors so callers never branch on input arity.
+  defp normalize_vectors([first | _] = vectors) when is_list(first), do: vectors
+  defp normalize_vectors(vector) when is_list(vector), do: [vector]
+
+  defp model_id(%LLMDB.Model{} = model), do: model.provider_model_id || model.id
+  defp model_id(spec) when is_binary(spec), do: spec
+
+  defp resolve_embedding_model(opts) do
+    case Keyword.get(opts, :model) do
+      model when is_binary(model) and model != "" ->
+        {:ok, embedding_model_spec(model, opts)}
+
+      _ ->
+        {:error, Error.new(:bad_request, "no embedding model configured", provider: :req_llm)}
+    end
+  end
+
+  # req_llm rejects any model whose catalog entry (or id) doesn't advertise
+  # embeddings — which is every local embedding model, since `nomic-embed-text`
+  # is absent from llm_db and doesn't contain the literal "embedding". Declare
+  # the capability inline: the caller asked to embed with this model, and only
+  # the server can say whether it can.
+  defp embedding_model_spec(model, opts) do
+    case Keyword.get(opts, :req_llm_provider_tag) do
+      tag when is_binary(tag) and tag != "" ->
+        ReqLLM.model!(%{
+          provider: String.to_existing_atom(tag),
+          id: strip_tag_prefix(model, tag),
+          capabilities: %{embeddings: true}
+        })
+
+      _ ->
+        model
+    end
+  end
+
+  defp build_embed_opts(opts) do
+    backend = Keyword.get(opts, :openai_compatible_backend)
+
+    base_opts =
+      [
+        api_key: resolve_api_key(Keyword.get(opts, :api_key), backend),
+        base_url: normalize_base_url(Keyword.get(opts, :base_url), backend),
+        dimensions: Keyword.get(opts, :dimensions),
+        # Usage is free here (the response carries it) and indexing jobs need
+        # it to budget large runs.
+        return_usage: true
+      ]
+      |> Keyword.reject(fn {_k, v} -> is_nil(v) or v == [] end)
+
+    base_opts
+    |> Keyword.merge(Keyword.get(opts, :provider_opts, []))
+    |> fold_extra_headers(Keyword.get(opts, :extra_headers))
+    |> put_embed_timeout(Keyword.get(opts, :timeout_ms))
+  end
+
+  # The embedding option schema is narrower than the chat one and rejects a
+  # top-level `:receive_timeout`; `prepare_embedding_request/4` instead splices
+  # `:req_http_options` straight into `Req.new/1`, so the timeout rides there.
+  defp put_embed_timeout(opts, nil), do: opts
+
+  defp put_embed_timeout(opts, timeout_ms) when is_integer(timeout_ms) do
+    http_opts =
+      opts
+      |> Keyword.get(:req_http_options, [])
+      |> Keyword.put_new(:receive_timeout, timeout_ms)
+
+    Keyword.put(opts, :req_http_options, http_opts)
   end
 
   # ── Model resolution ──────────────────────────────────────────────

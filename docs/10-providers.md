@@ -35,11 +35,19 @@ Source: [`ExAthena.Provider`](../lib/ex_athena/provider.ex). The contract:
 @callback stream(Request.t(), (Streaming.Event.t() -> term()), keyword()) ::
             {:ok, Response.t()} | {:error, term()}
 @callback capabilities() :: Capabilities.t()
+@callback embed(String.t() | [String.t()], keyword()) ::
+            {:ok, Embedding.t()} | {:error, term()}
 
-@optional_callbacks [stream: 3]
+@optional_callbacks [stream: 3, capabilities: 1, list_models: 0, embed: 2]
 ```
 
 The Loop calls `stream/3` when `:on_event` is set, `query/2` otherwise.
+
+`embed/2` sits outside the loop — it serves `ExAthena.embed/2` for retrieval
+layers, not inference. It is optional because not every provider is an
+inference endpoint (`:claude_code` is a self-contained agent CLI); providers
+that implement it advertise `embeddings: true` so callers can feature-detect
+before building on it. See the [Embeddings guide](../guides/embeddings.md).
 
 ---
 

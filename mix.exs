@@ -89,6 +89,7 @@ defmodule ExAthena.MixProject do
         "guides/web.md",
         "guides/gemini.md",
         "guides/multimodal.md",
+        "guides/embeddings.md",
         "guides/tool_calls.md",
         "guides/tools.md",
         "guides/agent_loop.md",
@@ -111,6 +112,7 @@ defmodule ExAthena.MixProject do
           ExAthena.Config,
           ExAthena.Request,
           ExAthena.Response,
+          ExAthena.Embedding,
           ExAthena.Result
         ],
         "Agent loop": [

@@ -131,6 +131,18 @@ png = File.read!("diagram.png")
 See the [Multimodal guide](guides/multimodal.md) for inline images, URL
 references, and per-provider notes.
 
+Embed text for retrieval through the same providers — pass a list to embed a
+whole batch in one round-trip:
+
+```elixir
+config :ex_athena, :ollama, embedding_model: "nomic-embed-text"
+
+{:ok, %ExAthena.Embedding{embeddings: vectors}} =
+  ExAthena.embed(["def foo", "def bar"], provider: :ollama)
+```
+
+See the [Embeddings guide](guides/embeddings.md).
+
 ## Try it: `mix athena.chat`
 
 Drop into an interactive chat REPL against a local Ollama model:
@@ -369,6 +381,7 @@ a chosen UUID. See [sessions + checkpoints](guides/sessions_and_checkpoints.md).
 - [Terminal chat (mix athena.chat)](guides/tui.md)
 - [Browser chat (mix athena.web)](guides/web.md)
 - [Multimodal (vision)](guides/multimodal.md)
+- [Embeddings](guides/embeddings.md)
 - [Gemini setup](guides/gemini.md)
 - [Tool calls](guides/tool_calls.md)
 - [The agent loop](guides/agent_loop.md)

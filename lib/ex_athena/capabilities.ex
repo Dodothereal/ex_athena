@@ -18,6 +18,11 @@ defmodule ExAthena.Capabilities do
           # the final answer.
           optional(:self_contained_tools) => boolean(),
           optional(:streaming) => boolean(),
+          # Provider implements the optional `embed/2` callback, so
+          # `ExAthena.embed/2` works against it. Callers feature-detect with
+          # `ExAthena.capabilities(provider)[:embeddings]` before building a
+          # retrieval layer on top.
+          optional(:embeddings) => boolean(),
           optional(:json_mode) => boolean(),
           optional(:structured_output) => boolean(),
           optional(:max_tokens) => pos_integer(),

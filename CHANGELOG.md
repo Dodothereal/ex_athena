@@ -7,6 +7,24 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Added
+
+- **Embeddings API — `ExAthena.embed/2`.** Retrieval features (pgvector search,
+  grounded code Q&A, dedup) previously had to bypass the library and make their
+  own HTTP calls, because ex_athena had no embeddings support at all. `embed/2`
+  accepts a string or a list of strings and returns `%ExAthena.Embedding{}` with
+  one vector per input — batching a whole indexing run into a single provider
+  round-trip, and taking a request-queue slot like every other provider call so
+  it can't swamp a local server. Embeddings are an optional provider callback
+  (`ExAthena.Provider.embed/2`) advertised as `embeddings: true` in
+  `capabilities/0`, so callers can feature-detect; the Mock provider implements
+  it for host-app tests. Models are configured per provider under
+  `embedding_model:` — the chat `model:` is deliberately not a fallback, since
+  embedding with a chat model degrades retrieval silently. Routed through
+  `req_llm`'s own embeddings API, so Ollama, OpenAI, Gemini and OpenRouter are
+  all covered by one adapter path.
+  ([#127](https://github.com/udin-io/ex_athena/issues/127))
+
 ### Security
 
 - **`mix athena.web` now binds `127.0.0.1` by default** instead of `0.0.0.0`
