@@ -32,6 +32,50 @@ defmodule Mix.Tasks.ExAthena.InstallTest do
     assert config =~ "claude-opus-4-8"
   end
 
+  test "configures an embedding model so ExAthena.embed/2 works out of the box" do
+    igniter =
+      test_project()
+      |> Igniter.compose_task("ex_athena.install", [])
+
+    # The chat `model:` is deliberately never a fallback for embeddings, so
+    # without this key a fresh install has `embed/2` erroring rather than
+    # quietly degrading.
+    config = render_source(igniter, "config/config.exs")
+    assert config =~ "embedding_model: \"nomic-embed-text\""
+  end
+
+  test "notice explains the embeddings config it wrote" do
+    igniter =
+      test_project()
+      |> Igniter.compose_task("ex_athena.install", [])
+
+    notice = Enum.join(igniter.notices, "\n")
+    assert notice =~ "Embeddings"
+    assert notice =~ "nomic-embed-text"
+    assert notice =~ "ExAthena.embed/2"
+  end
+
+  test "preserves an embedding_model the user already configured" do
+    base =
+      test_project(
+        files: %{
+          "config/config.exs" => """
+          import Config
+
+          config :ex_athena, :ollama, embedding_model: "mxbai-embed-large"
+          """
+        }
+      )
+
+    config =
+      base
+      |> Igniter.compose_task("ex_athena.install", [])
+      |> render_source("config/config.exs")
+
+    assert config =~ "embedding_model: \"mxbai-embed-large\""
+    refute config =~ "nomic-embed-text"
+  end
+
   defp render_source(igniter, path) do
     igniter.rewrite.sources
     |> Map.get(path)

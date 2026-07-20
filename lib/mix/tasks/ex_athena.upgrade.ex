@@ -25,9 +25,16 @@ if Code.ensure_loaded?(Igniter) do
         consumers who use `mix athena.chat` / `mix athena.web` must add
         the deps to their own `mix.exs`. Library-only consumers are
         unaffected.
+      * **`0.18.0`** — rewrites calls to the renamed
+        the Claude Code provider's `list_models/1`, which became
+        `list_models_from/1` once `ExAthena.Provider` grew a
+        `list_models/1` callback taking an incompatible argument. The
+        zero-arity `list_models/0` is unchanged.
     """
 
     use Igniter.Mix.Task
+
+    alias Igniter.Refactors.Rename
 
     @example "mix ex_athena.upgrade 0.3.1 0.4.0"
 
@@ -51,7 +58,8 @@ if Code.ensure_loaded?(Igniter) do
 
       upgrades = %{
         "0.4.0" => [&upgrade_0_3_to_0_4/2],
-        "0.12.0" => [&upgrade_0_11_to_0_12/2]
+        "0.12.0" => [&upgrade_0_11_to_0_12/2],
+        "0.18.0" => [&upgrade_0_17_to_0_18/2]
       }
 
       Igniter.Upgrades.run(igniter, arguments.from, arguments.to, upgrades, options)
@@ -70,6 +78,65 @@ if Code.ensure_loaded?(Igniter) do
 
     defp upgrade_0_11_to_0_12(igniter, _opts) do
       notice_optional_frontend_deps(igniter)
+    end
+
+    # ── 0.17.x → 0.18.0 migration ────────────────────────────────────
+
+    defp upgrade_0_17_to_0_18(igniter, _opts) do
+      igniter
+      |> rename_claude_code_list_models()
+      |> notice_claude_code_list_models_rename()
+    end
+
+    # Unlike the v0.4 tool-result split — where the "fix" depends on what the
+    # user meant by their pattern match, so we only ever emitted a notice —
+    # this one is a pure rename of a module-qualified function. Igniter's
+    # refactor resolves aliases and matches on the AST, so it touches
+    # `ExAthena.Providers.ClaudeCode.list_models/1` and nothing else:
+    # `list_models/0` on the same module keeps its name, and the unrelated
+    # `ExAthena.list_models/2` is a different module. Pinning `arity: 1` is
+    # what makes that true, so don't widen it.
+    defp rename_claude_code_list_models(igniter) do
+      Rename.rename_function(
+        igniter,
+        {ExAthena.Providers.ClaudeCode, :list_models},
+        {ExAthena.Providers.ClaudeCode, :list_models_from},
+        arity: 1
+      )
+    end
+
+    # The rewrite covers code; it cannot reach docs, config, or a call built
+    # by `apply/3`, so say plainly what changed and why.
+    defp notice_claude_code_list_models_rename(igniter) do
+      Igniter.add_notice(igniter, """
+      ⚠ v0.18 breaking change — ClaudeCode model listing renamed.
+
+          ExAthena.Providers.ClaudeCode.list_models/1
+          -> ExAthena.Providers.ClaudeCode.list_models_from/1
+
+      `ExAthena.Provider` gained a `list_models/1` callback whose
+      argument is per-call opts, while this provider's `list_models/1`
+      took a ModelSource module. Same name, same arity, incompatible
+      meanings — so the source-taking one was renamed. Its behaviour,
+      spec, and return shape are unchanged.
+
+          # before
+          ExAthena.Providers.ClaudeCode.list_models(MySource)
+
+          # after
+          ExAthena.Providers.ClaudeCode.list_models_from(MySource)
+
+      Call sites and function references in lib/, test/ and config/ have
+      been rewritten for you — review the diff. Anything built
+      dynamically (apply/3, docs, scripts outside those folders) needs a
+      manual pass.
+
+      `ExAthena.Providers.ClaudeCode.list_models/0` is unchanged, and so
+      is `ExAthena.list_models/2` — the supported, provider-agnostic way
+      to enumerate models, new in this release.
+
+      See CHANGELOG.md (v0.18.0 → Changed) for details.
+      """)
     end
 
     # v0.12 marked the TUI/web stack `optional`, so the core library no
