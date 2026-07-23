@@ -158,7 +158,7 @@ if Code.ensure_loaded?(Igniter) do
       your own mix.exs:
 
           # interactive terminal TUI — `mix athena.chat`
-          {:ex_ratatui, "~> 0.10"},
+          {:ex_ratatui, "~> 0.11"},
 
           # Phoenix LiveView web UI — `mix athena.web`
           {:phoenix, "~> 1.7"},

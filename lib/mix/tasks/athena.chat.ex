@@ -70,7 +70,7 @@ defmodule Mix.Tasks.Athena.Chat do
     else
       Mix.raise(
         "mix athena.chat requires the optional :ex_ratatui dependency. " <>
-          "Add `{:ex_ratatui, \"~> 0.10\"}` to your deps and re-run."
+          "Add `{:ex_ratatui, \"~> 0.11\"}` to your deps and re-run."
       )
     end
   end

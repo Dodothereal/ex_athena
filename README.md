@@ -63,7 +63,7 @@ def deps do
     # optional — only needed for the Claude provider:
     {:claude_code, "~> 0.36"},
     # optional — only needed for the TUI (`mix athena.chat`):
-    {:ex_ratatui, "~> 0.10"},
+    {:ex_ratatui, "~> 0.11"},
     # optional — only needed for the web UI (`mix athena.web`):
     {:phoenix, "~> 1.7"},
     {:phoenix_live_view, "~> 1.0"},

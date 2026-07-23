@@ -99,7 +99,7 @@ if Code.ensure_loaded?(Igniter) do
       The TUI and web UI ship as optional deps so the core library stays
       lean. Add the ones you want to your mix.exs, then run mix deps.get:
       • `mix athena.chat` — full-screen terminal TUI. Needs
-        {:ex_ratatui, "~> 0.10"}.
+        {:ex_ratatui, "~> 0.11"}.
       • `mix athena.web` — Phoenix LiveView web UI. Needs
         {:phoenix, "~> 1.7"}, {:phoenix_live_view, "~> 1.0"}, and
         {:bandit, "~> 1.5"}.

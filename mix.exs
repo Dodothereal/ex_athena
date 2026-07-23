@@ -48,7 +48,7 @@ defmodule ExAthena.MixProject do
       # Optional — only needed for the interactive TUI (`mix athena.chat`) and the
       # web UI (`mix athena.web`). The core agent loop never starts them, so library
       # consumers aren't forced to pull in Phoenix/Bandit/ex_ratatui.
-      {:ex_ratatui, "~> 0.10", optional: true},
+      {:ex_ratatui, "~> 0.11", optional: true},
       {:phoenix, "~> 1.7", optional: true},
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:bandit, "~> 1.5", optional: true},
