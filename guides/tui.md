@@ -11,7 +11,7 @@ The TUI requires the optional `:ex_ratatui` dependency:
 
 ```elixir
 # mix.exs
-{:ex_ratatui, "~> 0.11"}
+{:ex_ratatui, "~> 0.10"}
 ```
 
 ExAthena declares it `optional: true` so projects that only use the
